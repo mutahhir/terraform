@@ -177,12 +177,12 @@ func FromPlan(ctx context.Context, config *configs.Config, plan *plans.Plan, ref
 		seenObjects.Add(objAddr)
 	}
 
-	// Handle action invocations from the plan
+	// Keep track of Action Invocations
 	for _, actionChange := range plan.Changes.ActionInvocations {
 		schema, err := producer.ActionSchema(
 			ctx,
 			actionChange.ProviderAddr.Provider,
-			actionChange.Addr.Action.Action.Type,
+			actionChange.Addr.String(),
 		)
 		if err != nil {
 			diags = diags.Append(tfdiags.Sourceless(
