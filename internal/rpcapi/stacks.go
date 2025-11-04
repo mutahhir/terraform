@@ -1215,6 +1215,22 @@ func stackChangeHooks(send func(*stacks.StackChangeProgress) error, mainStackSou
 			return span
 		},
 
+		ReportActionConfigurationsPresent: func(ctx context.Context, actions []*hooks.Action) {
+			send(&stacks.StackChangeProgress{
+				Event: &stacks.StackChangeProgress_ActionInstances{
+					ActionInstances: &stacks.ActionInstances{
+						Address:               "",
+						ComponentInstanceAddr: "",
+						Type:                  "",
+						Name:                  WorkspaceNameEnvVar,
+						ProviderConfigKey:     "",
+						CountExpression:       "",
+						ForEachExpression:     "",
+					},
+				},
+			})
+		},
+
 		ReportResourceInstanceDeferred: func(ctx context.Context, span any, change *hooks.DeferredResourceInstanceChange) any {
 			span.(trace.Span).AddEvent("deferred resource instance", trace.WithAttributes(
 				attribute.String("component_instance", change.Change.Addr.Component.String()),

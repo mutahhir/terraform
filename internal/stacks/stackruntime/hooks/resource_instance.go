@@ -117,9 +117,3 @@ type DeferredResourceInstanceChange struct {
 	Reason providers.DeferredReason
 	Change *ResourceInstanceChange
 }
-
-type ActionInvocation struct {
-	Addr         stackaddrs.AbsActionInvocationInstance
-	ProviderAddr addrs.Provider
-	Trigger      plans.ActionTrigger
-}

@@ -130,7 +130,8 @@ type Hooks struct {
 	// [Hooks.BeginComponentInstancePlan].
 	ReportResourceInstanceDeferred hooks.MoreFunc[*hooks.DeferredResourceInstanceChange]
 
-	ReportActionInvocationPlanned hooks.MoreFunc[*hooks.ActionInvocation]
+	ReportActionInvocationPlanned     hooks.MoreFunc[*hooks.ActionInvocation]
+	ReportActionConfigurationsPresent hooks.SingleFunc[[]*hooks.Action]
 
 	// ReportComponentInstancePlanned is called after a component instance
 	// is planned. It should be called inside a tracing context established by

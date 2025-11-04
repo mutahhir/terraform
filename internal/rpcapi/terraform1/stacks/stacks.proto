@@ -869,6 +869,7 @@ message StackChangeProgress {
     ComponentInstances component_instances = 7;
     DeferredResourceInstancePlannedChange deferred_resource_instance_planned_change = 8;
     ActionInvocationPlanned action_invocation_planned = 9;
+    ActionInstances action_instances = 10;
   }
 
   // ComponentInstanceStatus describes the current status of a component instance
@@ -1024,6 +1025,17 @@ message StackChangeProgress {
     repeated string instance_addrs = 2;
   }
 }
+
+message ActionInstances {
+  string address = 1;
+  string component_instance_addr = 2;
+  string type = 3;
+  string name = 4;
+  string provider_config_key = 5;
+  string count_expression = 6;
+  string for_each_expression = 7;
+}
+
 
 message ListResourceIdentities {
   message Request {
