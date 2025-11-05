@@ -1219,7 +1219,7 @@ func stackChangeHooks(send func(*stacks.StackChangeProgress) error, mainStackSou
 			return span
 		},
 
-		ReportActionConfigurationsPresent: func(ctx context.Context, actions []*hooks.Action) {
+		ReportActionInstancesPresent: func(ctx context.Context, actions []*hooks.Action) {
 			actionInstances := []*stacks.ActionInstance{}
 
 			for _, action := range actions {

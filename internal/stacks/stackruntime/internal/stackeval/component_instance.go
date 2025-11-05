@@ -376,7 +376,7 @@ func (c *ComponentInstance) CheckModuleTreePlan(ctx context.Context) (*plans.Pla
 						hookActions = append(hookActions, &hookAction)
 					}
 
-					hookSingle(ctx, h.ReportActionConfigurationsPresent, hookActions)
+					hookSingle(ctx, h.ReportActionInstancesPresent, hookActions)
 				} else {
 					hookMore(ctx, seq, h.DeferComponentInstancePlan, c.Addr())
 				}
