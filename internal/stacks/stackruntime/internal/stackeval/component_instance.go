@@ -370,8 +370,8 @@ func (c *ComponentInstance) CheckModuleTreePlan(ctx context.Context) (*plans.Pla
 							ProviderAddr:      act.Provider,
 							Type:              act.Type,
 							Name:              act.Name,
-							CountExpression:   "",
-							ForEachExpression: "",
+							Count:             act.Count,
+							ForEach:           act.ForEach,
 						}
 						hookActions = append(hookActions, &hookAction)
 					}

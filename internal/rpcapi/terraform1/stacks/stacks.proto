@@ -1027,14 +1027,35 @@ message StackChangeProgress {
 }
 
 message ActionInstances {
+  repeated ActionInstance action_instances = 1;
+}
+
+message ActionInstance {
   string address = 1;
   string component_instance_addr = 2;
   string type = 3;
   string name = 4;
   string provider_config_key = 5;
-  string count_expression = 6;
-  string for_each_expression = 7;
+  expression count_expression = 6;
+  expression for_each_expression = 7;
+
+  message expression {
+    oneof expression_type {
+      constant_value constant_value = 1;
+      references references = 2;
+    }
+  }
+
+  message constant_value {
+    bytes constant_value = 1;
+  }
+
+  message references {
+    repeated string references = 1;
+  }
 }
+
+
 
 
 message ListResourceIdentities {

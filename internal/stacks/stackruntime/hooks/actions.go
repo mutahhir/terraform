@@ -4,6 +4,7 @@
 package hooks
 
 import (
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/plans"
 	"github.com/hashicorp/terraform/internal/stacks/stackaddrs"
@@ -21,6 +22,6 @@ type Action struct {
 	ProviderAddr      addrs.Provider
 	Type              string
 	Name              string
-	CountExpression   string
-	ForEachExpression string
+	Count             hcl.Expression
+	ForEach           hcl.Expression
 }
