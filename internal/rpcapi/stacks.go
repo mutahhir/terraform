@@ -1219,20 +1219,14 @@ func stackChangeHooks(send func(*stacks.StackChangeProgress) error, mainStackSou
 			return span
 		},
 
-		ReportActionInstancesPresent: func(ctx context.Context, actions []*hooks.Action) {
-			actionInstances := []*stacks.ActionInstance{}
-
-			for _, action := range actions {
-				actionInstances = append(actionInstances, toActionInstance(action))
-			}
-
-			send(&stacks.StackChangeProgress{
-				Event: &stacks.StackChangeProgress_ActionInstances{
-					ActionInstances: &stacks.ActionInstances{
-						ActionInstances: actionInstances,
+		ReportInvocableActionPresent: func(ctx context.Context, action *hooks.Action) {
+			if action != nil {
+				send(&stacks.StackChangeProgress{
+					Event: &stacks.StackChangeProgress_InvocableActionPresent{
+						InvocableActionPresent: toActionInstance(action),
 					},
-				},
-			})
+				})
+			}
 		},
 
 		ReportResourceInstanceDeferred: func(ctx context.Context, span any, change *hooks.DeferredResourceInstanceChange) any {
@@ -1391,8 +1385,8 @@ func evtComponentInstanceStatus(ci stackaddrs.AbsComponentInstance, status hooks
 	}
 }
 
-func toActionInstance(action *hooks.Action) *stacks.ActionInstance {
-	return &stacks.ActionInstance{
+func toActionInstance(action *hooks.Action) *stacks.InvocableAction {
+	return &stacks.InvocableAction{
 		Address:               action.Addr,
 		ComponentInstanceAddr: action.ComponentInstance.String(),
 		Type:                  action.Type,
@@ -1403,8 +1397,8 @@ func toActionInstance(action *hooks.Action) *stacks.ActionInstance {
 	}
 }
 
-func marshalActionExpression(expr hcl.Expression) *stacks.ActionInstanceExpression {
-	var res stacks.ActionInstanceExpression
+func marshalActionExpression(expr hcl.Expression) *stacks.InvocableActionExpression {
+	var res stacks.InvocableActionExpression
 
 	if expr == nil {
 		return &res
@@ -1413,8 +1407,8 @@ func marshalActionExpression(expr hcl.Expression) *stacks.ActionInstanceExpressi
 	val, _ := expr.Value(nil)
 	if val != cty.NilVal {
 		valBytes, _ := ctyJson.Marshal(val, val.Type())
-		res.ExpressionType = &stacks.ActionInstanceExpression_ConstantValue{
-			ConstantValue: &stacks.ActionInstanceConstantValue{
+		res.ExpressionType = &stacks.InvocableActionExpression_ConstantValue{
+			ConstantValue: &stacks.InvocableActionConstantValue{
 				ConstantValue: valBytes,
 			},
 		}
@@ -1455,8 +1449,8 @@ func marshalActionExpression(expr hcl.Expression) *stacks.ActionInstanceExpressi
 				}
 			}
 
-			res.ExpressionType = &stacks.ActionInstanceExpression_References{
-				References: &stacks.ActionInstanceReferences{
+			res.ExpressionType = &stacks.InvocableActionExpression_References{
+				References: &stacks.InvocableActionReferences{
 					References: varString,
 				},
 			}

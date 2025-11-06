@@ -354,15 +354,12 @@ func (c *ComponentInstance) CheckModuleTreePlan(ctx context.Context) (*plans.Pla
 				if plan.Complete {
 					hookMore(ctx, seq, h.EndComponentInstancePlan, c.Addr())
 
-					// we need to update actions and emit hooks for this
 					module := c.ModuleTree(ctx)
 					actions := module.Module.Actions
 
 					// Convert actions to a type that hooks can use hook.Action
 					// This is only going to show actions that belong to the root module of the
 					// component instance.
-					var hookActions []*hooks.Action
-
 					for addr, act := range actions {
 						hookAction := hooks.Action{
 							ComponentInstance: c.Addr(),
@@ -373,10 +370,8 @@ func (c *ComponentInstance) CheckModuleTreePlan(ctx context.Context) (*plans.Pla
 							Count:             act.Count,
 							ForEach:           act.ForEach,
 						}
-						hookActions = append(hookActions, &hookAction)
+						hookSingle(ctx, h.ReportInvocableActionPresent, &hookAction)
 					}
-
-					hookSingle(ctx, h.ReportActionInstancesPresent, hookActions)
 				} else {
 					hookMore(ctx, seq, h.DeferComponentInstancePlan, c.Addr())
 				}
