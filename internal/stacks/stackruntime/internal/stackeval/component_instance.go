@@ -22,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform/internal/providers"
 	"github.com/hashicorp/terraform/internal/stacks/stackaddrs"
 	"github.com/hashicorp/terraform/internal/stacks/stackplan"
+	"github.com/hashicorp/terraform/internal/stacks/stackruntime/hooks"
 	"github.com/hashicorp/terraform/internal/stacks/stackstate"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
@@ -352,6 +353,25 @@ func (c *ComponentInstance) CheckModuleTreePlan(ctx context.Context) (*plans.Pla
 				ReportComponentInstance(ctx, plan, h, seq, c)
 				if plan.Complete {
 					hookMore(ctx, seq, h.EndComponentInstancePlan, c.Addr())
+
+					module := c.ModuleTree(ctx)
+					actions := module.Module.Actions
+
+					// Convert actions to a type that hooks can use hook.Action
+					// This is only going to show actions that belong to the root module of the
+					// component instance.
+					for addr, act := range actions {
+						hookAction := hooks.Action{
+							ComponentInstance: c.Addr(),
+							Addr:              addr,
+							ProviderAddr:      act.Provider,
+							Type:              act.Type,
+							Name:              act.Name,
+							Count:             act.Count,
+							ForEach:           act.ForEach,
+						}
+						hookSingle(ctx, h.ReportInvocableActionPresent, &hookAction)
+					}
 				} else {
 					hookMore(ctx, seq, h.DeferComponentInstancePlan, c.Addr())
 				}

@@ -12,7 +12,10 @@ import (
 
 	"github.com/hashicorp/go-slug/sourceaddrs"
 	"github.com/hashicorp/go-slug/sourcebundle"
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform-svchost/disco"
+	"github.com/zclconf/go-cty/cty"
+	ctyJson "github.com/zclconf/go-cty/cty/json"
 	"go.opentelemetry.io/otel/attribute"
 	otelCodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -21,6 +24,7 @@ import (
 
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/depsfile"
+	"github.com/hashicorp/terraform/internal/lang/langrefs"
 	"github.com/hashicorp/terraform/internal/plans"
 	"github.com/hashicorp/terraform/internal/providercache"
 	"github.com/hashicorp/terraform/internal/providers"
@@ -1215,6 +1219,16 @@ func stackChangeHooks(send func(*stacks.StackChangeProgress) error, mainStackSou
 			return span
 		},
 
+		ReportInvocableActionPresent: func(ctx context.Context, action *hooks.Action) {
+			if action != nil {
+				send(&stacks.StackChangeProgress{
+					Event: &stacks.StackChangeProgress_InvocableActionPresent{
+						InvocableActionPresent: toActionInstance(action),
+					},
+				})
+			}
+		},
+
 		ReportResourceInstanceDeferred: func(ctx context.Context, span any, change *hooks.DeferredResourceInstanceChange) any {
 			span.(trace.Span).AddEvent("deferred resource instance", trace.WithAttributes(
 				attribute.String("component_instance", change.Change.Addr.Component.String()),
@@ -1369,6 +1383,109 @@ func evtComponentInstanceStatus(ci stackaddrs.AbsComponentInstance, status hooks
 			},
 		},
 	}
+}
+
+func toActionInstance(action *hooks.Action) *stacks.InvocableAction {
+	return &stacks.InvocableAction{
+		Address:               action.Addr,
+		ComponentInstanceAddr: action.ComponentInstance.String(),
+		Type:                  action.Type,
+		Name:                  action.Name,
+		ProviderConfigKey:     action.ProviderAddr.String(),
+		CountExpression:       marshalActionExpression(action.Count),
+		ForEachExpression:     marshalActionExpression(action.ForEach),
+	}
+}
+
+func marshalActionExpression(expr hcl.Expression) *stacks.InvocableActionExpression {
+	var res stacks.InvocableActionExpression
+
+	if expr == nil {
+		return &res
+	}
+
+	val, _ := expr.Value(nil)
+	if val != cty.NilVal {
+		valBytes, _ := ctyJson.Marshal(val, val.Type())
+		res.ExpressionType = &stacks.InvocableActionExpression_ConstantValue{
+			ConstantValue: &stacks.InvocableActionConstantValue{
+				ConstantValue: valBytes,
+			},
+		}
+	}
+
+	refs, _ := langrefs.ReferencesInExpr(addrs.ParseRef, expr)
+	if len(refs) > 0 {
+		var varString []string
+		for _, ref := range refs {
+			// We work backwards here, starting with the full reference +
+			// remaining traversal, and then unwrapping the remaining traversals
+			// into parts until we end up at the smallest referenceable address.
+			remains := ref.Remaining
+			for len(remains) > 0 {
+				varString = append(varString, fmt.Sprintf("%s%s", ref.Subject, traversalStr(remains)))
+				remains = remains[:(len(remains) - 1)]
+			}
+			varString = append(varString, ref.Subject.String())
+
+			switch ref.Subject.(type) {
+			case addrs.ModuleCallInstance:
+				if ref.Subject.(addrs.ModuleCallInstance).Key != addrs.NoKey {
+					// Include the module call, without the key
+					varString = append(varString, ref.Subject.(addrs.ModuleCallInstance).Call.String())
+				}
+			case addrs.ResourceInstance:
+				if ref.Subject.(addrs.ResourceInstance).Key != addrs.NoKey {
+					// Include the resource, without the key
+					varString = append(varString, ref.Subject.(addrs.ResourceInstance).Resource.String())
+				}
+			case addrs.ModuleCallInstanceOutput:
+				// Include the module name, without the output name
+				varString = append(varString, ref.Subject.(addrs.ModuleCallInstanceOutput).Call.String())
+			case addrs.ActionInstance:
+				if ref.Subject.(addrs.ActionInstance).Key != addrs.NoKey {
+					// Include the action, without the key
+					varString = append(varString, ref.Subject.(addrs.ActionInstance).Action.String())
+				}
+			}
+
+			res.ExpressionType = &stacks.InvocableActionExpression_References{
+				References: &stacks.InvocableActionReferences{
+					References: varString,
+				},
+			}
+		}
+	}
+
+	return &res
+}
+
+// traversalStr produces a representation of an HCL traversal that is compact,
+// resembles HCL native syntax, and is suitable for display in the UI.
+//
+// This was copied (and simplified) from internal/command/views/json/diagnostic.go.
+func traversalStr(traversal hcl.Traversal) string {
+	var buf bytes.Buffer
+	for _, step := range traversal {
+		switch tStep := step.(type) {
+		case hcl.TraverseRoot:
+			buf.WriteString(tStep.Name)
+		case hcl.TraverseAttr:
+			buf.WriteByte('.')
+			buf.WriteString(tStep.Name)
+		case hcl.TraverseIndex:
+			buf.WriteByte('[')
+			switch tStep.Key.Type() {
+			case cty.String:
+				buf.WriteString(fmt.Sprintf("%q", tStep.Key.AsString()))
+			case cty.Number:
+				bf := tStep.Key.AsBigFloat()
+				buf.WriteString(bf.Text('g', 10))
+			}
+			buf.WriteByte(']')
+		}
+	}
+	return buf.String()
 }
 
 // syncPlanStackChangesServer is a wrapper around a

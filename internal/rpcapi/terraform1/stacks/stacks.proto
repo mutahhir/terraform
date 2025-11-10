@@ -869,6 +869,7 @@ message StackChangeProgress {
     ComponentInstances component_instances = 7;
     DeferredResourceInstancePlannedChange deferred_resource_instance_planned_change = 8;
     ActionInvocationPlanned action_invocation_planned = 9;
+    InvocableAction invocable_action_present = 10;
   }
 
   // ComponentInstanceStatus describes the current status of a component instance
@@ -1022,6 +1023,31 @@ message StackChangeProgress {
   message ComponentInstances {
     string component_addr = 1;
     repeated string instance_addrs = 2;
+  }
+}
+
+message InvocableAction {
+  string address = 1;
+  string component_instance_addr = 2;
+  string type = 3;
+  string name = 4;
+  string provider_config_key = 5;
+  expression count_expression = 6;
+  expression for_each_expression = 7;
+
+  message expression {
+    oneof expression_type {
+      constant_value constant_value = 1;
+      references references = 2;
+    }
+  }
+
+  message constant_value {
+    bytes constant_value = 1;
+  }
+
+  message references {
+    repeated string references = 1;
   }
 }
 
