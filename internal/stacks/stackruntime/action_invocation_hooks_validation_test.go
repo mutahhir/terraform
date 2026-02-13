@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package stackruntime
 
 import (
@@ -34,14 +37,10 @@ func TestActionInvocationHooksValidation(t *testing.T) {
 		// Level 3: Validate ActionInvocationStatusHookData structure
 
 		// This should be the structure of each hook:
-		exampleHook := &hooks.ActionInvocationStatusHookData{
+		_ = &hooks.ActionInvocationStatusHookData{
 			// Addr: stackaddrs.AbsActionInvocationInstance - the action address
 			// ProviderAddr: string - the provider address
 			// Status: ActionInvocationStatus - status value (Pending, Running, Completed, Errored)
-		}
-
-		if exampleHook == nil {
-			t.Fatal("ActionInvocationStatusHookData should be defined")
 		}
 
 		t.Log("✓ ActionInvocationStatusHookData structure is properly defined")

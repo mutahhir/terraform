@@ -220,7 +220,7 @@ func (h *componentInstanceTerraformHook) StartAction(id terraform.HookActionIden
 	return terraform.HookActionContinue, nil
 }
 
-// ProgressAction fires for intermediate diagnostic messages (NO status changes)
+// ProgressAction fires for intermediate diagnostic messages with optional status changes
 func (h *componentInstanceTerraformHook) ProgressAction(id terraform.HookActionIdentity, progress string) (terraform.HookAction, error) {
 	log.Printf("[DEBUG] terraform_hook.ProgressAction called for action: %s, progress=%s", id.Addr.String(), progress)
 	ai := h.actionInvocationFromHookActionIdentity(id)
@@ -230,6 +230,19 @@ func (h *componentInstanceTerraformHook) ProgressAction(id terraform.HookActionI
 		Addr:         ai.Addr,
 		ProviderAddr: id.ProviderAddr.Provider,
 		Message:      progress,
+	})
+
+	// Map progress status to ActionInvocationStatus
+	status := hooks.ActionInvocationRunning // default
+	if progress == "pending" {
+		status = hooks.ActionInvocationPending
+	}
+
+	// Report status based on progress
+	hookMore(h.ctx, h.seq, h.hooks.ReportActionInvocationStatus, &hooks.ActionInvocationStatusHookData{
+		Addr:         ai.Addr,
+		ProviderAddr: id.ProviderAddr.Provider,
+		Status:       status,
 	})
 
 	return terraform.HookActionContinue, nil
