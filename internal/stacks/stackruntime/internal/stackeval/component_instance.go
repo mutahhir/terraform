@@ -799,7 +799,7 @@ func (c *ComponentInstance) ResourceSchema(ctx context.Context, providerTypeAddr
 }
 
 // ActionSchema implements stackplan.PlanProducer.
-func (c *ComponentInstance) ActionSchema(ctx context.Context, providerTypeAddr addrs.Provider, typ string) (providers.ActionSchema, error) {
+func (c *ComponentInstance) ActionSchema(ctx context.Context, providerTypeAddr addrs.Provider, actionType string) (providers.ActionSchema, error) {
 	// This should not be able to fail with an error because we should
 	// be retrieving the same schema that was already used to encode
 	// the object we're working with. The error handling here is for
@@ -810,9 +810,9 @@ func (c *ComponentInstance) ActionSchema(ctx context.Context, providerTypeAddr a
 	if err != nil {
 		return providers.ActionSchema{}, err
 	}
-	ret := providerSchema.SchemaForActionType(typ)
+	ret := providerSchema.SchemaForActionType(actionType)
 	if ret.ConfigSchema == nil {
-		return providers.ActionSchema{}, fmt.Errorf("schema does not include %q", typ)
+		return providers.ActionSchema{}, fmt.Errorf("schema does not include %q", actionType)
 	}
 	return ret, nil
 }
