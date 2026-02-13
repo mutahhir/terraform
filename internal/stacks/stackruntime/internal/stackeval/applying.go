@@ -274,6 +274,9 @@ func ApplyComponentPlan(ctx context.Context, main *Main, plan *plans.Plan, requi
 			// count of deferred changes from the plan, but we're not actually
 			// making changes for this so the "true" count is zero.
 			Defer: stackPlan.DeferredResourceInstanceChanges.Len(),
+
+			// Action invocations that were planned are now being applied.
+			ActionInvocation: stackPlan.ActionInvocations.Len(),
 		}
 
 		// We need to report what changes were applied, which is mostly just
