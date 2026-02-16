@@ -200,7 +200,7 @@ func readTfplan(r io.Reader) (*plans.Plan, error) {
 	}
 
 	for _, rawAction := range rawPlan.ActionInvocations {
-		action, err := ActionInvocationFromTfplan(rawAction)
+		action, err := actionInvocationFromTfplan(rawAction)
 		if err != nil {
 			// errors from actionInvocationFromTfplan already include context
 			return nil, err
@@ -571,7 +571,7 @@ func deferredActionInvocationFromTfplan(dai *planproto.DeferredActionInvocation)
 		return nil, fmt.Errorf("deferred action invocation object is absent")
 	}
 
-	actionInvocation, err := ActionInvocationFromTfplan(dai.ActionInvocation)
+	actionInvocation, err := actionInvocationFromTfplan(dai.ActionInvocation)
 	if err != nil {
 		return nil, err
 	}
@@ -1321,7 +1321,16 @@ func CheckResultsToPlanProto(checkResults *states.CheckResults) ([]*planproto.Ch
 	}
 }
 
-func ActionInvocationFromTfplan(rawAction *planproto.ActionInvocationInstance) (*plans.ActionInvocationInstanceSrc, error) {
+// ActionInvocationFromProto decodes an isolated action invocation from
+// its representation as a protocol buffers message.
+//
+// This is used by the stackplan package, which includes planproto messages
+// in its own wire format while using a different overall container.
+func ActionInvocationFromProto(rawAction *planproto.ActionInvocationInstance) (*plans.ActionInvocationInstanceSrc, error) {
+	return actionInvocationFromTfplan(rawAction)
+}
+
+func actionInvocationFromTfplan(rawAction *planproto.ActionInvocationInstance) (*plans.ActionInvocationInstanceSrc, error) {
 	if rawAction == nil {
 		// Should never happen in practice, since protobuf can't represent
 		// a nil value in a list.
