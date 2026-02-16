@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"time"
 
 	"github.com/hashicorp/go-slug/sourceaddrs"
@@ -1217,9 +1216,6 @@ func stackChangeHooks(send func(*stacks.StackChangeProgress) error, mainStackSou
 		},
 
 		ReportActionInvocationStatus: func(ctx context.Context, span any, status *hooks.ActionInvocationStatusHookData) any {
-			log.Printf("[DEBUG] ReportActionInvocationStatus called: Action=%s, Status=%s, Provider=%s",
-				status.Addr.Item.String(), status.Status.String(), status.ProviderAddr.String())
-
 			span.(trace.Span).AddEvent("action invocation status", trace.WithAttributes(
 				attribute.String("component_instance", status.Addr.Component.String()),
 				attribute.String("action_instance", status.Addr.Item.String()),
@@ -1227,8 +1223,6 @@ func stackChangeHooks(send func(*stacks.StackChangeProgress) error, mainStackSou
 			))
 
 			protoStatus := status.Status.ForProtobuf()
-			log.Printf("[DEBUG] Sending ActionInvocationStatus to gRPC client: Addr=%s, Status=%d (proto)",
-				status.Addr.String(), protoStatus)
 
 			send(&stacks.StackChangeProgress{
 				Event: &stacks.StackChangeProgress_ActionInvocationStatus_{
@@ -1240,22 +1234,15 @@ func stackChangeHooks(send func(*stacks.StackChangeProgress) error, mainStackSou
 				},
 			})
 
-			log.Printf("[DEBUG] ActionInvocationStatus event successfully sent to client")
 			return span
 		},
 
 		ReportActionInvocationProgress: func(ctx context.Context, span any, progress *hooks.ActionInvocationProgressHookData) any {
-			log.Printf("[DEBUG] ReportActionInvocationProgress called: Action=%s, Message=%s, Provider=%s",
-				progress.Addr.Item.String(), progress.Message, progress.ProviderAddr.String())
-
 			span.(trace.Span).AddEvent("action invocation progress", trace.WithAttributes(
 				attribute.String("component_instance", progress.Addr.Component.String()),
 				attribute.String("action_instance", progress.Addr.Item.String()),
 				attribute.String("message", progress.Message),
 			))
-
-			log.Printf("[DEBUG] Sending ActionInvocationProgress to gRPC client: Addr=%s, Message=%s",
-				progress.Addr.String(), progress.Message)
 
 			send(&stacks.StackChangeProgress{
 				Event: &stacks.StackChangeProgress_ActionInvocationProgress_{
@@ -1267,7 +1254,6 @@ func stackChangeHooks(send func(*stacks.StackChangeProgress) error, mainStackSou
 				},
 			})
 
-			log.Printf("[DEBUG] ActionInvocationProgress event successfully sent to client")
 			return span
 		},
 
