@@ -330,7 +330,7 @@ func (l *Loader) AddRaw(rawMsg *anypb.Any) error {
 		}
 
 		// Convert the proto invocation to the plans.ActionInvocationInstanceSrc type
-		src, err := planfile.ActionInvocationFromTfplan(msg.Invocation)
+		src, err := planfile.ActionInvocationFromProto(msg.Invocation)
 		if err != nil {
 			return fmt.Errorf("invalid action invocation for %s: %w", actionAddr, err)
 		}
