@@ -11,6 +11,7 @@ import (
 
 	"github.com/hashicorp/terraform/internal/depsfile"
 	"github.com/hashicorp/terraform/internal/providercache"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
 	"github.com/hashicorp/terraform/internal/stacks/stackconfig"
 	"github.com/hashicorp/terraform/internal/stacks/stackplan"
 	"github.com/hashicorp/terraform/internal/stacks/stackstate"
@@ -111,6 +112,19 @@ func (t *handleTable) StackConfig(hnd handle[*stackconfig.Config]) *stackconfig.
 }
 
 func (t *handleTable) CloseStackConfig(hnd handle[*stackconfig.Config]) error {
+	return closeHandle(t, hnd)
+}
+
+func (t *handleTable) NewRunbookConfig(cfg *runbookconfig.Config) handle[*runbookconfig.Config] {
+	return newHandle(t, cfg)
+}
+
+func (t *handleTable) RunbookConfig(hnd handle[*runbookconfig.Config]) *runbookconfig.Config {
+	ret, _ := readHandle(t, hnd)
+	return ret
+}
+
+func (t *handleTable) CloseRunbookConfig(hnd handle[*runbookconfig.Config]) error {
 	return closeHandle(t, hnd)
 }
 

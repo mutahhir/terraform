@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform/internal/rpcapi/dynrpcserver"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/dependencies"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/packages"
+	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/setup"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/stacks"
 )
@@ -57,6 +58,8 @@ func serverHandshake(s *grpc.Server, opts *serviceOpts) func(context.Context, *s
 	stacks.RegisterStacksServer(s, stacksStub)
 	packagesStub := dynrpcserver.NewPackagesStub()
 	packages.RegisterPackagesServer(s, packagesStub)
+	runbooksStub := dynrpcserver.NewRunbooksStub()
+	runbooks.RegisterRunbooksServer(s, runbooksStub)
 
 	return func(ctx context.Context, request *setup.Handshake_Request, stopper *stopper) (*setup.ServerCapabilities, error) {
 		// All of our servers will share a common handles table so that objects
@@ -86,6 +89,7 @@ func serverHandshake(s *grpc.Server, opts *serviceOpts) func(context.Context, *s
 		dependenciesStub.ActivateRPCServer(newDependenciesServer(handles, services))
 		stacksStub.ActivateRPCServer(newStacksServer(stopper, handles, services, opts))
 		packagesStub.ActivateRPCServer(newPackagesServer(services))
+		runbooksStub.ActivateRPCServer(newRunbooksServer(handles))
 
 		// If the client requested any extra capabililties that we're going
 		// to honor then we should announce them in this result.

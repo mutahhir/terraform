@@ -1,0 +1,177 @@
+// Copyright IBM Corp. 2014, 2026
+// SPDX-License-Identifier: BUSL-1.1
+
+syntax = "proto3";
+package terraform1.runbooks;
+
+import "terraform1.proto";
+
+service Runbooks {
+  rpc OpenRunbookConfiguration(OpenRunbookConfiguration.Request)
+      returns (OpenRunbookConfiguration.Response);
+  rpc CloseRunbookConfiguration(CloseRunbookConfiguration.Request)
+      returns (CloseRunbookConfiguration.Response);
+  rpc ValidateRunbookConfiguration(ValidateRunbookConfiguration.Request)
+      returns (ValidateRunbookConfiguration.Response);
+  rpc FindRunbookConfigurationSteps(FindRunbookConfigurationSteps.Request)
+      returns (FindRunbookConfigurationSteps.Response);
+  rpc PlanRunbookStep(PlanRunbookStep.Request)
+      returns (PlanRunbookStep.Response);
+  rpc ExecuteRunbookStep(ExecuteRunbookStep.Request)
+      returns (ExecuteRunbookStep.Response);
+  rpc GetRunnableRunbookSteps(GetRunnableRunbookSteps.Request)
+      returns (GetRunnableRunbookSteps.Response);
+}
+
+message DynamicValue {
+  bytes msgpack = 1;
+}
+
+message EvalScope {
+  // Variables available as var.<name>
+  DynamicValue variables = 1;
+  // Search results available as list.<type>.<name>...
+  DynamicValue list = 2;
+  // Action results available as actions.<type>.<name>...
+  DynamicValue actions = 3;
+  // Prior step outputs available as steps.<name>.<output>
+  DynamicValue steps = 4;
+  // Step local values available as local.<name>
+  DynamicValue locals = 5;
+}
+
+enum StepStatus {
+  STEP_STATUS_INVALID = 0;
+  STEP_STATUS_READY = 1;
+  STEP_STATUS_SKIPPED = 2;
+  STEP_STATUS_FAILED = 3;
+  STEP_STATUS_SUCCEEDED = 4;
+}
+
+message OpenRunbookConfiguration {
+  message Request {
+    string config_path = 1;
+  }
+  message Response {
+    int64 runbook_config_handle = 1;
+    repeated terraform1.Diagnostic diagnostics = 2;
+  }
+}
+
+message CloseRunbookConfiguration {
+  message Request {
+    int64 runbook_config_handle = 1;
+  }
+  message Response {
+  }
+}
+
+message ValidateRunbookConfiguration {
+  message Request {
+    int64 runbook_config_handle = 1;
+  }
+  message Response {
+    repeated terraform1.Diagnostic diagnostics = 1;
+  }
+}
+
+message FindRunbookConfigurationSteps {
+  message Request {
+    int64 runbook_config_handle = 1;
+  }
+  message Response {
+    RunbookConfig config = 1;
+  }
+
+  message RunbookConfig {
+    string source_addr = 1;
+    string terraform_version = 2;
+    repeated ProviderConfig providers = 3;
+    map<string, Step> steps = 4;
+    repeated Variable variables = 5;
+  }
+
+  message ProviderConfig {
+    string type = 1;
+  }
+
+  message Step {
+    bool has_config = 1;
+    int64 action_count = 2;
+    int64 list_count = 3;
+    int64 execute_count = 4;
+    repeated Condition preconditions = 5;
+    repeated Condition postconditions = 6;
+    repeated string locals = 7;
+    repeated string outputs = 8;
+  }
+
+  message Variable {
+    string name = 1;
+    bool has_default = 2;
+  }
+
+  message Condition {
+    enum OnFail {
+      ON_FAIL_INVALID = 0;
+      ON_FAIL_ERROR = 1;
+      ON_FAIL_SKIP = 2;
+    }
+
+    OnFail on_fail = 1;
+  }
+}
+
+message PlanRunbookStep {
+  message PlannedAction {
+    string address = 1;
+    string action_type = 2;
+    string action_name = 3;
+  }
+
+  message LoweredFile {
+    string path = 1;
+    bytes content = 2;
+  }
+
+  message Request {
+    int64 runbook_config_handle = 1;
+    string step_name = 2;
+    EvalScope scope = 3;
+  }
+
+  message Response {
+    StepStatus status = 1;
+    string detail = 2;
+    repeated terraform1.Diagnostic diagnostics = 3;
+    repeated PlannedAction planned_actions = 4;
+    repeated LoweredFile lowered_files = 5;
+  }
+}
+
+message ExecuteRunbookStep {
+  message Request {
+    int64 runbook_config_handle = 1;
+    string step_name = 2;
+    EvalScope pre_execute_scope = 3;
+    EvalScope post_execute_scope = 4;
+  }
+
+  message Response {
+    StepStatus status = 1;
+    string detail = 2;
+    repeated terraform1.Diagnostic diagnostics = 3;
+  }
+}
+
+message GetRunnableRunbookSteps {
+  message Request {
+    int64 runbook_config_handle = 1;
+    repeated string completed_steps = 2;
+  }
+
+  message Response {
+    repeated string step_names = 1;
+    repeated terraform1.Diagnostic diagnostics = 2;
+  }
+}
