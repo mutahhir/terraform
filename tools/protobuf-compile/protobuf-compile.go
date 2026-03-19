@@ -144,6 +144,23 @@ var protocSteps = []protocStep{
 		},
 	},
 	{
+		"terraform1 (Terraform Core RPC API) runbooks",
+		"internal/rpcapi/terraform1/runbooks",
+		[]string{
+			"--go_out=.",
+			"--go_opt=paths=source_relative",
+			"--go_opt=Mrunbooks.proto=github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks",
+			"--go_opt=Mterraform1.proto=github.com/hashicorp/terraform/internal/rpcapi/terraform1",
+			"--go-grpc_out=.",
+			"--go-grpc_opt=paths=source_relative",
+			"--go-grpc_opt=Mrunbooks.proto=github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks",
+			"--go-grpc_opt=Mterraform1.proto=github.com/hashicorp/terraform/internal/rpcapi/terraform1",
+			"-I.",
+			"-I..",
+			"./runbooks.proto",
+		},
+	},
+	{
 		"tfplan (plan file serialization)",
 		"internal/plans/planproto",
 		[]string{
