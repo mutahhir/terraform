@@ -209,6 +209,15 @@ func TestRunbooksPlanRunbookStepIncludesPlannedActions(t *testing.T) {
 }
 
 step "first" {
+  list "aws_lambda" "inventory" {
+    provider = aws
+
+    config {}
+
+    include_resource = true
+    limit            = 10
+  }
+
   action "action_example" "target" {
     config {
       attr = "hello"
@@ -245,11 +254,12 @@ step "first" {
 	if got, want := resp.PlannedActions[0].Address, "action.action_example.target"; got != want {
 		t.Fatalf("wrong planned action address: got %q want %q", got, want)
 	}
-	if got, want := len(resp.LoweredFiles), 1; got != want {
+	if got, want := len(resp.LoweredFiles), 2; got != want {
 		t.Fatalf("wrong lowered file count: got %d want %d", got, want)
 	}
-	if got, want := resp.LoweredFiles[0].Path, "main.tf"; got != want {
-		t.Fatalf("wrong lowered file path: got %q want %q", got, want)
+	paths := []string{resp.LoweredFiles[0].Path, resp.LoweredFiles[1].Path}
+	if !(paths[0] == "main.tf" && paths[1] == "main.tfquery.hcl" || paths[0] == "main.tfquery.hcl" && paths[1] == "main.tf") {
+		t.Fatalf("wrong lowered file paths: got %v", paths)
 	}
 }
 

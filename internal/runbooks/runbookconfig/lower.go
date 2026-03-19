@@ -4,6 +4,8 @@
 package runbookconfig
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -34,40 +36,71 @@ func LowerStep(cfg *Config, step *Step) (*LoweredStepBundle, tfdiags.Diagnostics
 		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Cannot lower step", err.Error()))
 	}
 
+	files := make(map[string][]byte)
+	mainSrc, mainDiags := buildMainTF(cfg, step)
+	diags = diags.Append(mainDiags)
+	if len(bytes.TrimSpace(mainSrc)) > 0 {
+		files["main.tf"] = mainSrc
+	}
+	querySrc, queryDiags := buildQueryTF(step)
+	diags = diags.Append(queryDiags)
+	if len(bytes.TrimSpace(querySrc)) > 0 {
+		files["main.tfquery.hcl"] = querySrc
+	}
+
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), src, 0644); err != nil {
+			return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Cannot write lowered step file", err.Error()))
+		}
+	}
+
+	parser := configs.NewParser(afero.NewOsFs())
+	for name, src := range files {
+		parser.ForceFileSource(filepath.Join(dir, name), src)
+	}
+	_, hclDiags := parser.LoadConfigDir(dir)
+	diags = diags.Append(hclDiags)
+
+	return &LoweredStepBundle{StepName: step.Name, Dir: dir, Files: files}, diags
+}
+
+func buildMainTF(cfg *Config, step *Step) ([]byte, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
 	mainFile := hclwrite.NewEmptyFile()
 	rootBody := mainFile.Body()
-
 	if cfg.Runbook != nil {
 		appendTerraformSettings(rootBody, cfg.Runbook)
 		appendProviderBlocks(rootBody, cfg.Runbook)
 	}
-	for _, list := range step.Lists {
-		appendListBlock(rootBody, list)
-	}
 	for _, action := range step.Actions {
-		appendActionBlock(rootBody, action)
+		if action == nil || len(bytes.TrimSpace(action.Src)) == 0 {
+			continue
+		}
+		parsed, parseDiags := hclwrite.ParseConfig(action.Src, action.DeclRange.Filename, hcl.InitialPos)
+		if parseDiags.HasErrors() || parsed == nil {
+			diags = diags.Append(parseDiags)
+			continue
+		}
+		rootBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+		rootBody.AppendNewline()
 	}
+	return hclwrite.Format(mainFile.Bytes()), diags
+}
 
-	mainSrc := hclwrite.Format(mainFile.Bytes())
-	mainPath := filepath.Join(dir, "main.tf")
-	if err := os.WriteFile(mainPath, mainSrc, 0644); err != nil {
-		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Cannot write lowered step file", err.Error()))
+func buildQueryTF(step *Step) ([]byte, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	if step == nil || len(step.Lists) == 0 {
+		return nil, diags
 	}
-
-	bundle := &LoweredStepBundle{
-		StepName: step.Name,
-		Dir:      dir,
-		Files: map[string][]byte{
-			"main.tf": mainSrc,
-		},
+	var buf bytes.Buffer
+	for _, list := range step.Lists {
+		if list == nil || len(bytes.TrimSpace(list.Src)) == 0 {
+			continue
+		}
+		buf.Write(bytes.TrimSpace(list.Src))
+		buf.WriteString("\n\n")
 	}
-
-	parser := configs.NewParser(afero.NewOsFs())
-	parser.ForceFileSource(mainPath, mainSrc)
-	_, hclDiags := parser.LoadConfigDir(dir)
-	diags = diags.Append(hclDiags)
-
-	return bundle, diags
+	return buf.Bytes(), diags
 }
 
 func appendTerraformSettings(body *hclwrite.Body, runbook *Runbook) {
@@ -89,7 +122,7 @@ func appendTerraformSettings(body *hclwrite.Body, runbook *Runbook) {
 	for _, name := range providerNames {
 		valueFile := hclwrite.NewEmptyFile()
 		valueBody := valueFile.Body()
-		valueBody.SetAttributeValue("source", cty.StringVal("hashicorp/"+name))
+		valueBody.SetAttributeValue("source", cty.StringVal(providerSourceForName(name)))
 		rpBody.SetAttributeRaw(name, valueBody.BuildTokens(nil))
 	}
 }
@@ -103,66 +136,9 @@ func appendProviderBlocks(body *hclwrite.Body, runbook *Runbook) {
 	}
 }
 
-func appendActionBlock(body *hclwrite.Body, action *Action) {
-	if action == nil {
-		return
+func providerSourceForName(name string) string {
+	if name == "bufo" {
+		return "austinvalle/bufo"
 	}
-	block := body.AppendNewBlock("action", []string{action.Type, action.Name})
-	if action.Config == nil {
-		return
-	}
-	content, _, _ := action.Config.PartialContent(&hcl.BodySchema{})
-	if content == nil {
-		return
-	}
-	for name, attr := range content.Attributes {
-		block.Body().SetAttributeRaw(name, expressionTokens(attr.Expr))
-	}
-	for _, nested := range content.Blocks {
-		appendNestedBlock(block.Body(), nested)
-	}
-}
-
-func appendListBlock(body *hclwrite.Body, list *List) {
-	if list == nil {
-		return
-	}
-	block := body.AppendNewBlock("list", []string{list.Type, list.Name})
-	if list.Config == nil {
-		return
-	}
-	content, _, _ := list.Config.PartialContent(&hcl.BodySchema{})
-	if content == nil {
-		return
-	}
-	for name, attr := range content.Attributes {
-		block.Body().SetAttributeRaw(name, expressionTokens(attr.Expr))
-	}
-	for _, nested := range content.Blocks {
-		appendNestedBlock(block.Body(), nested)
-	}
-}
-
-func appendNestedBlock(body *hclwrite.Body, block *hcl.Block) {
-	if block == nil {
-		return
-	}
-	newBlock := body.AppendNewBlock(block.Type, block.Labels)
-	content, _, _ := block.Body.PartialContent(&hcl.BodySchema{})
-	if content == nil {
-		return
-	}
-	for name, attr := range content.Attributes {
-		newBlock.Body().SetAttributeRaw(name, expressionTokens(attr.Expr))
-	}
-	for _, nested := range content.Blocks {
-		appendNestedBlock(newBlock.Body(), nested)
-	}
-}
-
-func expressionTokens(expr hcl.Expression) hclwrite.Tokens {
-	if expr == nil {
-		return nil
-	}
-	return hclwrite.TokensForValue(cty.StringVal(expr.Range().String()))
+	return fmt.Sprintf("hashicorp/%s", name)
 }

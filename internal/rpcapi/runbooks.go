@@ -6,6 +6,9 @@ package rpcapi
 import (
 	"context"
 
+	"github.com/hashicorp/terraform/internal/configs"
+	"github.com/hashicorp/terraform/internal/configs/configload"
+	"github.com/hashicorp/terraform/internal/plans"
 	"github.com/zclconf/go-cty/cty"
 	ctymsgpack "github.com/zclconf/go-cty/cty/msgpack"
 	"google.golang.org/grpc/codes"
@@ -13,6 +16,8 @@ import (
 
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/hashicorp/terraform/internal/states"
+	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
@@ -94,6 +99,10 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 
 	cfg := s.handles.RunbookConfig(handle[*runbookconfig.Config](req.RunbookConfigHandle))
 	plan := runbookconfig.PlanStepWithConfig(cfg, step, scope)
+	if plan.Lowered != nil {
+		lowerDiags := validateAndPlanLoweredStepDir(plan.Lowered.Dir)
+		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(lowerDiags)
+	}
 	plannedActions := make([]*runbooks.PlanRunbookStep_PlannedAction, 0, len(plan.Actions))
 	for _, action := range plan.Actions {
 		plannedActions = append(plannedActions, &runbooks.PlanRunbookStep_PlannedAction{
@@ -299,4 +308,36 @@ func stepStatusToProto(status runbookconfig.StepStatus) runbooks.StepStatus {
 	default:
 		return runbooks.StepStatus_STEP_STATUS_INVALID
 	}
+}
+
+func validateAndPlanLoweredStepDir(dir string) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	loader, err := configload.NewLoader(&configload.Config{
+		ModulesDir:        dir + "/.terraform/modules",
+		IncludeQueryFiles: true,
+	})
+	if err != nil {
+		return diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize lowered step loader", err.Error()))
+	}
+	rootMod, hclDiags := loader.LoadRootModule(dir)
+	diags = diags.Append(hclDiags)
+	if rootMod == nil || hclDiags.HasErrors() {
+		return diags
+	}
+	config, buildDiags := terraform.BuildConfigWithGraph(rootMod, loader.ModuleWalker(), terraform.InputValues{}, configs.MockDataLoaderFunc(loader.LoadExternalMockData))
+	diags = diags.Append(buildDiags)
+	if config == nil {
+		return diags
+	}
+	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1})
+	diags = diags.Append(ctxDiags)
+	if ctxDiags.HasErrors() {
+		return diags
+	}
+	_, planDiags := tfCtx.Plan(config, states.NewState(), &terraform.PlanOpts{
+		Mode:  plans.NormalMode,
+		Query: true,
+	})
+	diags = diags.Append(planDiags)
+	return diags
 }

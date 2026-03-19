@@ -68,6 +68,7 @@ type Action struct {
 	Type      string
 	Name      string
 	Config    hcl.Body
+	Src       []byte
 	DeclRange tfdiags.SourceRange
 }
 
@@ -87,6 +88,7 @@ type List struct {
 	Type      string
 	Name      string
 	Config    hcl.Body
+	Src       []byte
 	DeclRange tfdiags.SourceRange
 }
 
@@ -223,11 +225,15 @@ func ParseFileSource(src []byte, path string) (*File, tfdiags.Diagnostics) {
 		))
 	}
 
-	return DecodeFileBody(body, path)
+	return DecodeFileBody(src, body, path)
 }
 
-func DecodeFileBody(body hcl.Body, path string) (*File, tfdiags.Diagnostics) {
+func DecodeFileBody(src []byte, body hcl.Body, path string) (*File, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
+	var syntaxBlocks map[string]map[string]*hclsyntax.Block
+	if syntaxBody, ok := body.(*hclsyntax.Body); ok {
+		syntaxBlocks = indexSyntaxBlocks(syntaxBody.Blocks)
+	}
 
 	ret := &File{
 		Path:      path,
@@ -274,7 +280,7 @@ func DecodeFileBody(body hcl.Body, path string) (*File, tfdiags.Diagnostics) {
 			}
 			ret.Variables[variable.Name] = variable
 		case "step":
-			step, moreDiags := decodeStepBlock(block)
+			step, moreDiags := decodeStepBlock(src, block, syntaxBlocks)
 			diags = diags.Append(moreDiags)
 			if step == nil {
 				continue
@@ -353,7 +359,7 @@ func decodeVariableBlock(block *hcl.Block) (*Variable, tfdiags.Diagnostics) {
 	return ret, diags
 }
 
-func decodeStepBlock(block *hcl.Block) (*Step, tfdiags.Diagnostics) {
+func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[string]*hclsyntax.Block) (*Step, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	ret := &Step{
@@ -375,6 +381,7 @@ func decodeStepBlock(block *hcl.Block) (*Step, tfdiags.Diagnostics) {
 	diags = diags.Append(hclDiags)
 
 	for _, nested := range content.Blocks {
+		syntaxBlock := lookupSyntaxBlock(syntaxBlocks, nested)
 		switch nested.Type {
 		case "config":
 			ret.HasConfig = true
@@ -386,14 +393,14 @@ func decodeStepBlock(block *hcl.Block) (*Step, tfdiags.Diagnostics) {
 			}
 		case "action":
 			ret.ActionCount++
-			action, moreDiags := decodeRunbookActionBlock(nested)
+			action, moreDiags := decodeRunbookActionBlock(src, nested, syntaxBlock)
 			diags = diags.Append(moreDiags)
 			if action != nil {
 				ret.Actions = append(ret.Actions, action)
 			}
 		case "list":
 			ret.ListCount++
-			list, moreDiags := decodeRunbookListBlock(nested)
+			list, moreDiags := decodeRunbookListBlock(src, nested, syntaxBlock)
 			diags = diags.Append(moreDiags)
 			if list != nil {
 				ret.Lists = append(ret.Lists, list)
@@ -520,12 +527,13 @@ func decodeOutputBlock(block *hcl.Block) (*Output, tfdiags.Diagnostics) {
 	return ret, diags
 }
 
-func decodeRunbookActionBlock(block *hcl.Block) (*Action, tfdiags.Diagnostics) {
+func decodeRunbookActionBlock(src []byte, block *hcl.Block, syntaxBlock *hclsyntax.Block) (*Action, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	ret := &Action{
 		Type:      block.Labels[0],
 		Name:      block.Labels[1],
 		Config:    block.Body,
+		Src:       sourceSlice(src, syntaxBlockRange(block, syntaxBlock)),
 		DeclRange: tfdiags.SourceRangeFromHCL(block.DefRange),
 	}
 	if !hclsyntax.ValidIdentifier(ret.Type) {
@@ -547,12 +555,13 @@ func decodeRunbookActionBlock(block *hcl.Block) (*Action, tfdiags.Diagnostics) {
 	return ret, diags
 }
 
-func decodeRunbookListBlock(block *hcl.Block) (*List, tfdiags.Diagnostics) {
+func decodeRunbookListBlock(src []byte, block *hcl.Block, syntaxBlock *hclsyntax.Block) (*List, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	ret := &List{
 		Type:      block.Labels[0],
 		Name:      block.Labels[1],
 		Config:    block.Body,
+		Src:       sourceSlice(src, syntaxBlockRange(block, syntaxBlock)),
 		DeclRange: tfdiags.SourceRangeFromHCL(block.DefRange),
 	}
 	if !hclsyntax.ValidIdentifier(ret.Type) {
@@ -572,6 +581,49 @@ func decodeRunbookListBlock(block *hcl.Block) (*List, tfdiags.Diagnostics) {
 		})
 	}
 	return ret, diags
+}
+
+func sourceSlice(src []byte, rng hcl.Range) []byte {
+	if src == nil || rng.Start.Byte < 0 || rng.End.Byte < rng.Start.Byte || rng.End.Byte > len(src) {
+		return nil
+	}
+	ret := make([]byte, rng.End.Byte-rng.Start.Byte)
+	copy(ret, src[rng.Start.Byte:rng.End.Byte])
+	return ret
+}
+
+func indexSyntaxBlocks(blocks hclsyntax.Blocks) map[string]map[string]*hclsyntax.Block {
+	ret := make(map[string]map[string]*hclsyntax.Block)
+	for _, block := range blocks {
+		key := syntaxBlockKey(block.Type, block.Labels)
+		if _, ok := ret[block.Type]; !ok {
+			ret[block.Type] = make(map[string]*hclsyntax.Block)
+		}
+		ret[block.Type][key] = block
+	}
+	return ret
+}
+
+func lookupSyntaxBlock(index map[string]map[string]*hclsyntax.Block, block *hcl.Block) *hclsyntax.Block {
+	if index == nil || block == nil {
+		return nil
+	}
+	byType := index[block.Type]
+	if byType == nil {
+		return nil
+	}
+	return byType[syntaxBlockKey(block.Type, block.Labels)]
+}
+
+func syntaxBlockKey(typ string, labels []string) string {
+	return typ + ":" + strings.Join(labels, ":")
+}
+
+func syntaxBlockRange(block *hcl.Block, syntaxBlock *hclsyntax.Block) hcl.Range {
+	if syntaxBlock != nil {
+		return hcl.RangeBetween(syntaxBlock.TypeRange, syntaxBlock.CloseBraceRange)
+	}
+	return block.DefRange
 }
 
 func decodeExecuteBlock(block *hcl.Block) ([]*ExecuteActionInvoke, tfdiags.Diagnostics) {
