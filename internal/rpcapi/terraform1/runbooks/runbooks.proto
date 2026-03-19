@@ -9,8 +9,12 @@ import "terraform1.proto";
 service Runbooks {
   rpc OpenRunbookConfiguration(OpenRunbookConfiguration.Request)
       returns (OpenRunbookConfiguration.Response);
+  rpc OpenRunbookRuntime(OpenRunbookRuntime.Request)
+      returns (OpenRunbookRuntime.Response);
   rpc CloseRunbookConfiguration(CloseRunbookConfiguration.Request)
       returns (CloseRunbookConfiguration.Response);
+  rpc CloseRunbookRuntime(CloseRunbookRuntime.Request)
+      returns (CloseRunbookRuntime.Response);
   rpc ValidateRunbookConfiguration(ValidateRunbookConfiguration.Request)
       returns (ValidateRunbookConfiguration.Response);
   rpc FindRunbookConfigurationSteps(FindRunbookConfigurationSteps.Request)
@@ -55,6 +59,24 @@ message OpenRunbookConfiguration {
   message Response {
     int64 runbook_config_handle = 1;
     repeated terraform1.Diagnostic diagnostics = 2;
+  }
+}
+
+message OpenRunbookRuntime {
+  message Request {
+    int64 dependency_locks_handle = 1;
+    int64 provider_cache_handle = 2;
+  }
+  message Response {
+    int64 runbook_runtime_handle = 1;
+  }
+}
+
+message CloseRunbookRuntime {
+  message Request {
+    int64 runbook_runtime_handle = 1;
+  }
+  message Response {
   }
 }
 
@@ -129,6 +151,11 @@ message PlanRunbookStep {
     string action_name = 3;
   }
 
+  message PlannedQuery {
+    string address = 1;
+    int64 result_count = 2;
+  }
+
   message LoweredFile {
     string path = 1;
     bytes content = 2;
@@ -136,8 +163,9 @@ message PlanRunbookStep {
 
   message Request {
     int64 runbook_config_handle = 1;
-    string step_name = 2;
-    EvalScope scope = 3;
+    int64 runbook_runtime_handle = 2;
+    string step_name = 3;
+    EvalScope scope = 4;
   }
 
   message Response {
@@ -146,15 +174,17 @@ message PlanRunbookStep {
     repeated terraform1.Diagnostic diagnostics = 3;
     repeated PlannedAction planned_actions = 4;
     repeated LoweredFile lowered_files = 5;
+    repeated PlannedQuery planned_queries = 6;
   }
 }
 
 message ExecuteRunbookStep {
   message Request {
     int64 runbook_config_handle = 1;
-    string step_name = 2;
-    EvalScope pre_execute_scope = 3;
-    EvalScope post_execute_scope = 4;
+    int64 runbook_runtime_handle = 2;
+    string step_name = 3;
+    EvalScope pre_execute_scope = 4;
+    EvalScope post_execute_scope = 5;
   }
 
   message Response {

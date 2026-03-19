@@ -5,7 +5,3 @@ terraform {
     }
   }
 }
-
-resource "test_resource" "target" {
-  value = "hello"
-}

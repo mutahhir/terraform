@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -69,8 +70,12 @@ func buildMainTF(cfg *Config, step *Step) ([]byte, tfdiags.Diagnostics) {
 	mainFile := hclwrite.NewEmptyFile()
 	rootBody := mainFile.Body()
 	if cfg.Runbook != nil {
-		appendTerraformSettings(rootBody, cfg.Runbook)
-		appendProviderBlocks(rootBody, cfg.Runbook)
+		settingsDiags := appendTerraformSettings(rootBody, cfg)
+		diags = diags.Append(settingsDiags)
+		variableDiags := appendVariableBlocks(rootBody, cfg)
+		diags = diags.Append(variableDiags)
+		providerDiags := appendProviderBlocks(rootBody, cfg)
+		diags = diags.Append(providerDiags)
 	}
 	for _, action := range step.Actions {
 		if action == nil || len(bytes.TrimSpace(action.Src)) == 0 {
@@ -103,42 +108,111 @@ func buildQueryTF(step *Step) ([]byte, tfdiags.Diagnostics) {
 	return buf.Bytes(), diags
 }
 
-func appendTerraformSettings(body *hclwrite.Body, runbook *Runbook) {
+func appendTerraformSettings(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	runbook := cfg.Runbook
 	terraformBlock := body.AppendNewBlock("terraform", nil)
 	terraformBody := terraformBlock.Body()
 	if runbook.TerraformVersion != "" {
 		terraformBody.SetAttributeValue("required_version", cty.StringVal(runbook.TerraformVersion))
 	}
-	if len(runbook.Providers) == 0 {
-		return
+	if len(runbook.RequiredProviders) == 0 {
+		return diags
 	}
-	requiredProviders := terraformBody.AppendNewBlock("required_providers", nil)
-	rpBody := requiredProviders.Body()
-	providerNames := make([]string, 0, len(runbook.Providers))
-	for _, provider := range runbook.Providers {
-		providerNames = append(providerNames, provider.Type)
-	}
-	sort.Strings(providerNames)
-	for _, name := range providerNames {
-		valueFile := hclwrite.NewEmptyFile()
-		valueBody := valueFile.Body()
-		valueBody.SetAttributeValue("source", cty.StringVal(providerSourceForName(name)))
-		rpBody.SetAttributeRaw(name, valueBody.BuildTokens(nil))
-	}
-}
-
-func appendProviderBlocks(body *hclwrite.Body, runbook *Runbook) {
-	for _, provider := range runbook.Providers {
+	var rpSrc strings.Builder
+	rpSrc.WriteString("required_providers {\n")
+	providerNames := make([]string, 0, len(runbook.RequiredProviders))
+	requiredProviders := make(map[string]*RequiredProvider, len(runbook.RequiredProviders))
+	for _, provider := range runbook.RequiredProviders {
 		if provider == nil {
 			continue
 		}
-		body.AppendNewBlock("provider", []string{provider.Type})
+		providerNames = append(providerNames, provider.Name)
+		requiredProviders[provider.Name] = provider
 	}
+	sort.Strings(providerNames)
+	for _, name := range providerNames {
+		req := requiredProviders[name]
+		if req == nil {
+			continue
+		}
+		rpSrc.WriteString(fmt.Sprintf("  %s = {\n", name))
+		rpSrc.WriteString(fmt.Sprintf("    source = %q\n", req.Source))
+		rpSrc.WriteString("  }\n")
+	}
+	rpSrc.WriteString("}\n")
+	parsed, _ := hclwrite.ParseConfig([]byte(rpSrc.String()), "required_providers.hcl", hcl.InitialPos)
+	if parsed != nil {
+		terraformBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+	}
+	return diags
 }
 
-func providerSourceForName(name string) string {
-	if name == "bufo" {
-		return "austinvalle/bufo"
+func appendProviderBlocks(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if cfg == nil {
+		return diags
 	}
-	return fmt.Sprintf("hashicorp/%s", name)
+	providers := make([]*ProviderConfig, 0)
+	for _, file := range cfg.Files {
+		for _, provider := range file.Providers {
+			if provider != nil {
+				providers = append(providers, provider)
+			}
+		}
+	}
+	sort.Slice(providers, func(i, j int) bool {
+		if providers[i].Type != providers[j].Type {
+			return providers[i].Type < providers[j].Type
+		}
+		return providers[i].Alias < providers[j].Alias
+	})
+	for _, provider := range providers {
+		if len(bytes.TrimSpace(provider.Src)) == 0 {
+			labels := []string{provider.Type}
+			if provider.Alias != "" {
+				labels = append(labels, provider.Alias)
+			}
+			body.AppendNewBlock("provider", labels)
+			continue
+		}
+		parsed, parseDiags := hclwrite.ParseConfig(provider.Src, provider.DeclRange.Filename, hcl.InitialPos)
+		if parseDiags.HasErrors() || parsed == nil {
+			diags = diags.Append(parseDiags)
+			continue
+		}
+		body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+		body.AppendNewline()
+	}
+	return diags
+}
+
+func appendVariableBlocks(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if cfg == nil {
+		return diags
+	}
+	variables := make([]*Variable, 0, len(cfg.Variables))
+	for _, variable := range cfg.Variables {
+		if variable != nil {
+			variables = append(variables, variable)
+		}
+	}
+	sort.Slice(variables, func(i, j int) bool {
+		return variables[i].Name < variables[j].Name
+	})
+	for _, variable := range variables {
+		if len(bytes.TrimSpace(variable.Src)) == 0 {
+			body.AppendNewBlock("variable", []string{variable.Name})
+			continue
+		}
+		parsed, parseDiags := hclwrite.ParseConfig(variable.Src, variable.DeclRange.Filename, hcl.InitialPos)
+		if parseDiags.HasErrors() || parsed == nil {
+			diags = diags.Append(parseDiags)
+			continue
+		}
+		body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+		body.AppendNewline()
+	}
+	return diags
 }

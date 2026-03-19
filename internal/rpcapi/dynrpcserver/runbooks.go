@@ -31,6 +31,14 @@ func (s *Runbooks) CloseRunbookConfiguration(a0 context.Context, a1 *runbooks.Cl
 	return impl.CloseRunbookConfiguration(a0, a1)
 }
 
+func (s *Runbooks) CloseRunbookRuntime(a0 context.Context, a1 *runbooks.CloseRunbookRuntime_Request) (*runbooks.CloseRunbookRuntime_Response, error) {
+	impl, err := s.realRPCServer()
+	if err != nil {
+		return nil, err
+	}
+	return impl.CloseRunbookRuntime(a0, a1)
+}
+
 func (s *Runbooks) ExecuteRunbookStep(a0 context.Context, a1 *runbooks.ExecuteRunbookStep_Request) (*runbooks.ExecuteRunbookStep_Response, error) {
 	impl, err := s.realRPCServer()
 	if err != nil {
@@ -61,6 +69,14 @@ func (s *Runbooks) OpenRunbookConfiguration(a0 context.Context, a1 *runbooks.Ope
 		return nil, err
 	}
 	return impl.OpenRunbookConfiguration(a0, a1)
+}
+
+func (s *Runbooks) OpenRunbookRuntime(a0 context.Context, a1 *runbooks.OpenRunbookRuntime_Request) (*runbooks.OpenRunbookRuntime_Response, error) {
+	impl, err := s.realRPCServer()
+	if err != nil {
+		return nil, err
+	}
+	return impl.OpenRunbookRuntime(a0, a1)
 }
 
 func (s *Runbooks) PlanRunbookStep(a0 context.Context, a1 *runbooks.PlanRunbookStep_Request) (*runbooks.PlanRunbookStep_Response, error) {

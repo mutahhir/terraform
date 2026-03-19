@@ -18,6 +18,11 @@ import (
 	"github.com/hashicorp/terraform/internal/states"
 )
 
+type runbookRuntime struct {
+	Locks         *depsfile.Locks
+	ProviderCache *providercache.Dir
+}
+
 // handle represents an identifier shared between client and server to identify
 // a particular object.
 //
@@ -125,6 +130,19 @@ func (t *handleTable) RunbookConfig(hnd handle[*runbookconfig.Config]) *runbookc
 }
 
 func (t *handleTable) CloseRunbookConfig(hnd handle[*runbookconfig.Config]) error {
+	return closeHandle(t, hnd)
+}
+
+func (t *handleTable) NewRunbookRuntime(runtime *runbookRuntime) handle[*runbookRuntime] {
+	return newHandle(t, runtime)
+}
+
+func (t *handleTable) RunbookRuntime(hnd handle[*runbookRuntime]) *runbookRuntime {
+	ret, _ := readHandle(t, hnd)
+	return ret
+}
+
+func (t *handleTable) CloseRunbookRuntime(hnd handle[*runbookRuntime]) error {
 	return closeHandle(t, hnd)
 }
 

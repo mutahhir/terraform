@@ -110,7 +110,18 @@ func provider() simple {
 					},
 				},
 			},
-			Actions: map[string]providers.ActionSchema{},
+			Actions: map[string]providers.ActionSchema{
+				"simple_action": {
+					ConfigSchema: &configschema.Block{
+						Attributes: map[string]*configschema.Attribute{
+							"value": {
+								Optional: true,
+								Type:     cty.String,
+							},
+						},
+					},
+				},
+			},
 			StateStores: map[string]providers.Schema{
 				inMemStoreName: stateStoreInMemGetSchema(), // simple6_inmem
 				fsStoreName:    stateStoreFsGetSchema(),    // simple6_fs
@@ -460,21 +471,15 @@ func (s simple) DeleteState(req providers.DeleteStateRequest) providers.DeleteSt
 }
 
 func (s simple) PlanAction(providers.PlanActionRequest) providers.PlanActionResponse {
-	// Our schema doesn't include any actions, so it should be
-	// impossible to get here.
-	panic("PlanAction on provider that didn't declare any actions")
+	return providers.PlanActionResponse{}
 }
 
 func (s simple) InvokeAction(providers.InvokeActionRequest) providers.InvokeActionResponse {
-	// Our schema doesn't include any actions, so it should be
-	// impossible to get here.
-	panic("InvokeAction on provider that didn't declare any actions")
+	return providers.InvokeActionResponse{}
 }
 
 func (s simple) ValidateActionConfig(providers.ValidateActionConfigRequest) providers.ValidateActionConfigResponse {
-	// Our schema doesn't include any actions, so it should be
-	// impossible to get here.
-	panic("ValidateActionConfig on provider that didn't declare any actions")
+	return providers.ValidateActionConfigResponse{}
 }
 
 func (s simple) Close() error {

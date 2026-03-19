@@ -5,11 +5,17 @@ package rpcapi
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/hashicorp/terraform-svchost/disco"
+	"github.com/hashicorp/terraform/internal/addrs"
+	"github.com/hashicorp/terraform/internal/configs/configschema"
+	"github.com/hashicorp/terraform/internal/providers"
+	provider_testing "github.com/hashicorp/terraform/internal/providers/testing"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/zclconf/go-cty/cty"
 	ctymsgpack "github.com/zclconf/go-cty/cty/msgpack"
@@ -20,7 +26,7 @@ import (
 func TestRunbooksOpenCloseConfiguration(t *testing.T) {
 	ctx := context.Background()
 	handles := newHandleTable()
-	server := newRunbooksServer(handles)
+	server := newRunbooksServer(handles, disco.New())
 
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
@@ -97,7 +103,7 @@ step "first" {
 func TestRunbooksFindConfigurationSteps(t *testing.T) {
 	ctx := context.Background()
 	handles := newHandleTable()
-	server := newRunbooksServer(handles)
+	server := newRunbooksServer(handles, disco.New())
 
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
@@ -201,34 +207,49 @@ variable "lambda_name" {
 func TestRunbooksPlanRunbookStepIncludesPlannedActions(t *testing.T) {
 	ctx := context.Background()
 	handles := newHandleTable()
-	server := newRunbooksServer(handles)
+	server := newRunbooksServer(handles, disco.New())
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(testRunbookProvider()),
+	}
 
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
   terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
 }
 
-step "first" {
-  list "aws_lambda" "inventory" {
-    provider = aws
+provider "test" {}
 
-    config {}
+step "first" {
+  list "test_resource" "inventory" {
+    provider = test
+
+    config {
+      filter = {
+        attr = "hello"
+      }
+    }
 
     include_resource = true
     limit            = 10
   }
 
-  action "action_example" "target" {
-    config {
-      attr = "hello"
-    }
-  }
+	  action "test_action" "target" {
+	    config {
+	      attr = "hello"
+	    }
+	  }
 
-  execute {
-    action_invoke {
-      action = action.action_example.target
-    }
-  }
+	  execute {
+	    action_invoke {
+	      action = action.test_action.target
+	    }
+	  }
 }
 `), 0644)
 	if err != nil {
@@ -251,8 +272,14 @@ step "first" {
 	if got, want := len(resp.PlannedActions), 1; got != want {
 		t.Fatalf("wrong planned action count: got %d want %d", got, want)
 	}
-	if got, want := resp.PlannedActions[0].Address, "action.action_example.target"; got != want {
+	if got, want := resp.PlannedActions[0].Address, "action.test_action.target"; got != want {
 		t.Fatalf("wrong planned action address: got %q want %q", got, want)
+	}
+	if got, want := len(resp.GetPlannedQueries()), 1; got != want {
+		t.Fatalf("wrong planned query count: got %d want %d; status=%v detail=%q diagnostics=%v", got, want, resp.Status, resp.Detail, resp.Diagnostics)
+	}
+	if got, want := resp.GetPlannedQueries()[0].Address, `list.test_resource.inventory`; got != want {
+		t.Fatalf("wrong planned query address: got %q want %q", got, want)
 	}
 	if got, want := len(resp.LoweredFiles), 2; got != want {
 		t.Fatalf("wrong lowered file count: got %d want %d", got, want)
@@ -266,7 +293,7 @@ step "first" {
 func TestRunbooksPlanRunbookStepSkippedByPrecondition(t *testing.T) {
 	ctx := context.Background()
 	handles := newHandleTable()
-	server := newRunbooksServer(handles)
+	server := newRunbooksServer(handles, disco.New())
 
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
@@ -326,7 +353,7 @@ step "first" {
 func TestRunbooksExecuteRunbookStepPostconditionFailure(t *testing.T) {
 	ctx := context.Background()
 	handles := newHandleTable()
-	server := newRunbooksServer(handles)
+	server := newRunbooksServer(handles, disco.New())
 
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
@@ -407,7 +434,7 @@ step "first" {
 func TestRunbooksGetRunnableRunbookSteps(t *testing.T) {
 	ctx := context.Background()
 	handles := newHandleTable()
-	server := newRunbooksServer(handles)
+	server := newRunbooksServer(handles, disco.New())
 
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
@@ -469,4 +496,113 @@ func mustMsgpackValue(t *testing.T, v cty.Value) []byte {
 		t.Fatal(err)
 	}
 	return ret
+}
+
+func fixedMockProviderFactory(provider providers.Interface) providers.Factory {
+	return func() (providers.Interface, error) {
+		return provider, nil
+	}
+}
+
+func testRunbookProvider() *provider_testing.MockProvider {
+	provider := new(provider_testing.MockProvider)
+	provider.GetProviderSchemaResponse = &providers.GetProviderSchemaResponse{
+		Provider: providers.Schema{Body: &configschema.Block{}},
+		ResourceTypes: map[string]providers.Schema{
+			"test_resource": {
+				Body: &configschema.Block{
+					Attributes: map[string]*configschema.Attribute{
+						"id": {
+							Type:     cty.String,
+							Computed: true,
+						},
+						"instance_type": {
+							Type:     cty.String,
+							Computed: true,
+						},
+					},
+				},
+				Identity: &configschema.Object{
+					Nesting: configschema.NestingSingle,
+					Attributes: map[string]*configschema.Attribute{
+						"id": {
+							Type:     cty.String,
+							Required: true,
+						},
+					},
+				},
+			},
+		},
+		ListResourceTypes: map[string]providers.Schema{
+			"test_resource": {
+				Body: &configschema.Block{
+					Attributes: map[string]*configschema.Attribute{
+						"data": {
+							Type:     cty.DynamicPseudoType,
+							Computed: true,
+						},
+					},
+					BlockTypes: map[string]*configschema.NestedBlock{
+						"config": {
+							Nesting: configschema.NestingSingle,
+							Block: configschema.Block{
+								Attributes: map[string]*configschema.Attribute{
+									"filter": {
+										Required: true,
+										NestedType: &configschema.Object{
+											Nesting: configschema.NestingSingle,
+											Attributes: map[string]*configschema.Attribute{
+												"attr": {
+													Type:     cty.String,
+													Required: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Actions: map[string]providers.ActionSchema{
+			"test_action": {
+				ConfigSchema: &configschema.Block{
+					Attributes: map[string]*configschema.Attribute{
+						"attr": {
+							Type:     cty.String,
+							Optional: true,
+						},
+					},
+				},
+			},
+		},
+	}
+	provider.ListResourceFn = func(request providers.ListResourceRequest) providers.ListResourceResponse {
+		result := map[string]cty.Value{
+			"data": cty.TupleVal([]cty.Value{
+				cty.ObjectVal(map[string]cty.Value{
+					"identity": cty.ObjectVal(map[string]cty.Value{
+						"id": cty.StringVal("i-1"),
+					}),
+					"display_name": cty.StringVal("Item 1"),
+					"state": cty.ObjectVal(map[string]cty.Value{
+						"id":            cty.StringVal("1"),
+						"instance_type": cty.StringVal(fmt.Sprintf("from-%s", request.TypeName)),
+					}),
+				}),
+			}),
+		}
+		for k, v := range request.Config.AsValueMap() {
+			if k != "data" {
+				result[k] = v
+			}
+		}
+		return providers.ListResourceResponse{Result: cty.ObjectVal(result)}
+	}
+	provider.PlanActionFn = func(req providers.PlanActionRequest) providers.PlanActionResponse {
+		return providers.PlanActionResponse{}
+	}
+	return provider
 }

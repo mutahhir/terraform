@@ -14,6 +14,8 @@ import (
 	"github.com/hashicorp/go-plugin"
 
 	"github.com/hashicorp/terraform/internal/rpcapi"
+	"github.com/hashicorp/terraform/internal/rpcapi/terraform1"
+	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/dependencies"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/setup"
 )
@@ -52,9 +54,10 @@ func (c *RunbookCommand) Run(args []string) int {
 		c.Ui.Error(fmt.Sprintf("Failed to complete RPC handshake: %s", err))
 		return 1
 	}
+	ctx := context.Background()
 
 	configPath := c.WorkingDir.RootModuleDir()
-	openResp, err := core.Runbooks().OpenRunbookConfiguration(context.Background(), &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	openResp, err := core.Runbooks().OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to open runbook configuration: %s", err))
 		return 1
@@ -67,7 +70,15 @@ func (c *RunbookCommand) Run(args []string) int {
 			return 1
 		}
 	}
-	stepsResp, err := core.Runbooks().FindRunbookConfigurationSteps(context.Background(), &runbooks.FindRunbookConfigurationSteps_Request{
+
+	runbookRuntimeHandle, cleanupRuntime, err := c.openRunbookRuntime(ctx, core)
+	if err != nil {
+		c.Ui.Error(fmt.Sprintf("Failed to open runbook runtime: %s", err))
+		return 1
+	}
+	defer cleanupRuntime()
+
+	stepsResp, err := core.Runbooks().FindRunbookConfigurationSteps(ctx, &runbooks.FindRunbookConfigurationSteps_Request{
 		RunbookConfigHandle: openResp.RunbookConfigHandle,
 	})
 	if err != nil {
@@ -75,7 +86,7 @@ func (c *RunbookCommand) Run(args []string) int {
 		return 1
 	}
 
-	runnableResp, err := core.Runbooks().GetRunnableRunbookSteps(context.Background(), &runbooks.GetRunnableRunbookSteps_Request{
+	runnableResp, err := core.Runbooks().GetRunnableRunbookSteps(ctx, &runbooks.GetRunnableRunbookSteps_Request{
 		RunbookConfigHandle: openResp.RunbookConfigHandle,
 	})
 	if err != nil {
@@ -103,22 +114,29 @@ func (c *RunbookCommand) Run(args []string) int {
 			}
 		}
 		c.Ui.Output(fmt.Sprintf("- step %s [%s]", stepName, status))
-		planResp, err := core.Runbooks().PlanRunbookStep(context.Background(), &runbooks.PlanRunbookStep_Request{
-			RunbookConfigHandle: openResp.RunbookConfigHandle,
-			StepName:            stepName,
-			Scope:               &runbooks.EvalScope{},
+		planResp, _ := core.Runbooks().PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+			RunbookConfigHandle:  openResp.RunbookConfigHandle,
+			RunbookRuntimeHandle: runbookRuntimeHandle,
+			StepName:             stepName,
+			Scope:                &runbooks.EvalScope{},
 		})
-		if err == nil && planResp.Detail != "" {
-			c.Ui.Output(fmt.Sprintf("  plan: %s", planResp.Detail))
+		for _, diag := range planResp.Diagnostics {
+			c.Ui.Output(fmt.Sprintf("  diagnostic: %s: %s", diag.Summary, diag.Detail))
 		}
 		for _, action := range planResp.PlannedActions {
 			c.Ui.Output(fmt.Sprintf("  will invoke: %s", action.Address))
+		}
+		for _, query := range planResp.PlannedQueries {
+			c.Ui.Output(fmt.Sprintf("  will list: %s", query.Address))
 		}
 		for _, file := range planResp.LoweredFiles {
 			c.Ui.Output(fmt.Sprintf("  lowered file: %s", file.Path))
 		}
 		if step.ActionCount > 0 {
 			c.Ui.Output(fmt.Sprintf("  actions: %d", step.ActionCount))
+		}
+		if step.ListCount > 0 {
+			c.Ui.Output(fmt.Sprintf("  queries: %d", step.ListCount))
 		}
 		if step.ExecuteCount > 0 {
 			c.Ui.Output(fmt.Sprintf("  execute blocks: %d", step.ExecuteCount))
@@ -129,6 +147,72 @@ func (c *RunbookCommand) Run(args []string) int {
 	}
 
 	return 0
+}
+
+func (c *RunbookCommand) openRunbookRuntime(ctx context.Context, core *rpcapi.GRPCCoreClient) (int64, func(), error) {
+	deps := core.Dependencies()
+	cleanup := func() {}
+
+	locks, diags := c.lockedDependencies()
+	if diags.HasErrors() {
+		return 0, cleanup, fmt.Errorf(diags.Err().Error())
+	}
+	providerSelections := make([]*terraform1.ProviderPackage, 0, len(locks.AllProviders()))
+	for _, lock := range locks.AllProviders() {
+		hashes := lock.AllHashes()
+		hashStrs := make([]string, len(hashes))
+		for i, hash := range hashes {
+			hashStrs[i] = hash.String()
+		}
+		providerSelections = append(providerSelections, &terraform1.ProviderPackage{
+			SourceAddr: lock.Provider().String(),
+			Version:    lock.Version().String(),
+			Hashes:     hashStrs,
+		})
+	}
+
+	lockResp, err := deps.CreateDependencyLocks(ctx, &dependencies.CreateDependencyLocks_Request{
+		ProviderSelections: providerSelections,
+	})
+	if err != nil {
+		return 0, cleanup, err
+	}
+
+	cacheResp, err := deps.OpenProviderPluginCache(ctx, &dependencies.OpenProviderPluginCache_Request{CacheDir: c.providerLocalCacheDir().BasePath()})
+	if err != nil {
+		if lockResp.DependencyLocksHandle != 0 {
+			_, _ = deps.CloseDependencyLocks(ctx, &dependencies.CloseDependencyLocks_Request{DependencyLocksHandle: lockResp.DependencyLocksHandle})
+		}
+		return 0, cleanup, err
+	}
+
+	runtimeResp, err := core.Runbooks().OpenRunbookRuntime(ctx, &runbooks.OpenRunbookRuntime_Request{
+		DependencyLocksHandle: lockResp.DependencyLocksHandle,
+		ProviderCacheHandle:   cacheResp.ProviderCacheHandle,
+	})
+	if err != nil {
+		if cacheResp.ProviderCacheHandle != 0 {
+			_, _ = deps.CloseProviderPluginCache(ctx, &dependencies.CloseProviderPluginCache_Request{ProviderCacheHandle: cacheResp.ProviderCacheHandle})
+		}
+		if lockResp.DependencyLocksHandle != 0 {
+			_, _ = deps.CloseDependencyLocks(ctx, &dependencies.CloseDependencyLocks_Request{DependencyLocksHandle: lockResp.DependencyLocksHandle})
+		}
+		return 0, cleanup, err
+	}
+
+	cleanup = func() {
+		if runtimeResp.RunbookRuntimeHandle != 0 {
+			_, _ = core.Runbooks().CloseRunbookRuntime(ctx, &runbooks.CloseRunbookRuntime_Request{RunbookRuntimeHandle: runtimeResp.RunbookRuntimeHandle})
+		}
+		if cacheResp.ProviderCacheHandle != 0 {
+			_, _ = deps.CloseProviderPluginCache(ctx, &dependencies.CloseProviderPluginCache_Request{ProviderCacheHandle: cacheResp.ProviderCacheHandle})
+		}
+		if lockResp.DependencyLocksHandle != 0 {
+			_, _ = deps.CloseDependencyLocks(ctx, &dependencies.CloseDependencyLocks_Request{DependencyLocksHandle: lockResp.DependencyLocksHandle})
+		}
+	}
+
+	return runtimeResp.RunbookRuntimeHandle, cleanup, nil
 }
 
 func (c *RunbookCommand) rpcCoreClient(ctx context.Context) (*rpcapi.GRPCCoreClient, *plugin.Client, error) {

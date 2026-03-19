@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 
+	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/dependencies"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/setup"
 )
@@ -45,6 +46,10 @@ type GRPCCoreClient struct {
 
 func (c *GRPCCoreClient) Setup() setup.SetupClient {
 	return setup.NewSetupClient(c.conn)
+}
+
+func (c *GRPCCoreClient) Dependencies() dependencies.DependenciesClient {
+	return dependencies.NewDependenciesClient(c.conn)
 }
 
 func (c *GRPCCoreClient) Runbooks() runbooks.RunbooksClient {

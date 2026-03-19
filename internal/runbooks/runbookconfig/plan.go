@@ -16,9 +16,15 @@ type PlannedAction struct {
 	ActionName string
 }
 
+type PlannedQuery struct {
+	Address string
+	Count   int
+}
+
 type StepPlan struct {
 	Evaluation StepEvaluation
 	Actions    []PlannedAction
+	Queries    []PlannedQuery
 	Lowered    *LoweredStepBundle
 }
 

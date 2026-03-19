@@ -6,9 +6,14 @@ package rpcapi
 import (
 	"context"
 
+	"github.com/hashicorp/terraform-svchost/disco"
+	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configload"
+	"github.com/hashicorp/terraform/internal/depsfile"
 	"github.com/hashicorp/terraform/internal/plans"
+	"github.com/hashicorp/terraform/internal/providercache"
+	"github.com/hashicorp/terraform/internal/providers"
 	"github.com/zclconf/go-cty/cty"
 	ctymsgpack "github.com/zclconf/go-cty/cty/msgpack"
 	"google.golang.org/grpc/codes"
@@ -24,11 +29,14 @@ import (
 type runbooksServer struct {
 	runbooks.UnimplementedRunbooksServer
 
-	handles *handleTable
+	handles  *handleTable
+	services *disco.Disco
+
+	providerCacheOverride map[addrs.Provider]providers.Factory
 }
 
-func newRunbooksServer(handles *handleTable) *runbooksServer {
-	return &runbooksServer{handles: handles}
+func newRunbooksServer(handles *handleTable, services *disco.Disco) *runbooksServer {
+	return &runbooksServer{handles: handles, services: services}
 }
 
 func (s *runbooksServer) OpenRunbookConfiguration(ctx context.Context, req *runbooks.OpenRunbookConfiguration_Request) (*runbooks.OpenRunbookConfiguration_Response, error) {
@@ -45,6 +53,27 @@ func (s *runbooksServer) OpenRunbookConfiguration(ctx context.Context, req *runb
 		RunbookConfigHandle: configHnd.ForProtobuf(),
 		Diagnostics:         diagnosticsToProto(diags),
 	}, nil
+}
+
+func (s *runbooksServer) OpenRunbookRuntime(ctx context.Context, req *runbooks.OpenRunbookRuntime_Request) (*runbooks.OpenRunbookRuntime_Response, error) {
+	locks := s.handles.DependencyLocks(handle[*depsfile.Locks](req.DependencyLocksHandle))
+	if locks == nil {
+		return nil, status.Error(codes.InvalidArgument, "the given dependency locks handle is invalid")
+	}
+	cache := s.handles.ProviderPluginCache(handle[*providercache.Dir](req.ProviderCacheHandle))
+	if cache == nil {
+		return nil, status.Error(codes.InvalidArgument, "the given provider cache handle is invalid")
+	}
+	runtimeHnd := s.handles.NewRunbookRuntime(&runbookRuntime{Locks: locks, ProviderCache: cache})
+	return &runbooks.OpenRunbookRuntime_Response{RunbookRuntimeHandle: runtimeHnd.ForProtobuf()}, nil
+}
+
+func (s *runbooksServer) CloseRunbookRuntime(ctx context.Context, req *runbooks.CloseRunbookRuntime_Request) (*runbooks.CloseRunbookRuntime_Response, error) {
+	hnd := handle[*runbookRuntime](req.RunbookRuntimeHandle)
+	if err := s.handles.CloseRunbookRuntime(hnd); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return &runbooks.CloseRunbookRuntime_Response{}, nil
 }
 
 func (s *runbooksServer) CloseRunbookConfiguration(ctx context.Context, req *runbooks.CloseRunbookConfiguration_Request) (*runbooks.CloseRunbookConfiguration_Response, error) {
@@ -100,8 +129,41 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 	cfg := s.handles.RunbookConfig(handle[*runbookconfig.Config](req.RunbookConfigHandle))
 	plan := runbookconfig.PlanStepWithConfig(cfg, step, scope)
 	if plan.Lowered != nil {
-		lowerDiags := validateAndPlanLoweredStepDir(plan.Lowered.Dir)
+		runtime, err := s.lookupRunbookRuntime(req.RunbookRuntimeHandle)
+		if err != nil {
+			return nil, err
+		}
+		tfPlan, lowerDiags := s.validateAndPlanLoweredStepDir(plan.Lowered.Dir, runtime)
 		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(lowerDiags)
+		if tfPlan != nil && tfPlan.Changes != nil {
+			for _, q := range tfPlan.Changes.Queries {
+				count := int64(0)
+				if q != nil {
+					if ty, err := q.Results.ImpliedType(); err == nil {
+						if val, err := q.Results.Decode(ty); err == nil && val != cty.NilVal && val.Type().HasAttribute("data") {
+							data := val.GetAttr("data")
+							if data.IsKnown() && !data.IsNull() && (data.Type().IsTupleType() || data.Type().IsListType()) {
+								count = int64(data.LengthInt())
+							}
+						}
+					}
+				}
+				plan.Queries = append(plan.Queries, runbookconfig.PlannedQuery{
+					Address: q.Addr.String(),
+					Count:   int(count),
+				})
+			}
+			for _, action := range tfPlan.Changes.ActionInvocations {
+				if action == nil {
+					continue
+				}
+				plan.Actions = append(plan.Actions, runbookconfig.PlannedAction{
+					Address:    action.Addr.String(),
+					ActionType: action.Addr.Action.Action.Type,
+					ActionName: action.Addr.Action.Action.Name,
+				})
+			}
+		}
 	}
 	plannedActions := make([]*runbooks.PlanRunbookStep_PlannedAction, 0, len(plan.Actions))
 	for _, action := range plan.Actions {
@@ -109,6 +171,13 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 			Address:    action.Address,
 			ActionType: action.ActionType,
 			ActionName: action.ActionName,
+		})
+	}
+	plannedQueries := make([]*runbooks.PlanRunbookStep_PlannedQuery, 0, len(plan.Queries))
+	for _, query := range plan.Queries {
+		plannedQueries = append(plannedQueries, &runbooks.PlanRunbookStep_PlannedQuery{
+			Address:     query.Address,
+			ResultCount: int64(query.Count),
 		})
 	}
 	loweredFiles := make([]*runbooks.PlanRunbookStep_LoweredFile, 0)
@@ -123,6 +192,7 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 		Diagnostics:    diagnosticsToProto(plan.Evaluation.Diags),
 		PlannedActions: plannedActions,
 		LoweredFiles:   loweredFiles,
+		PlannedQueries: plannedQueries,
 	}, nil
 }
 
@@ -178,9 +248,12 @@ func runbookConfigToProto(cfg *runbookconfig.Config) *runbooks.FindRunbookConfig
 
 	if cfg.Runbook != nil {
 		ret.TerraformVersion = cfg.Runbook.TerraformVersion
-		for _, provider := range cfg.Runbook.Providers {
+		for _, provider := range cfg.Runbook.RequiredProviders {
+			if provider == nil {
+				continue
+			}
 			ret.Providers = append(ret.Providers, &runbooks.FindRunbookConfigurationSteps_ProviderConfig{
-				Type: provider.Type,
+				Type: provider.Name,
 			})
 		}
 		for _, variable := range cfg.Variables {
@@ -310,34 +383,68 @@ func stepStatusToProto(status runbookconfig.StepStatus) runbooks.StepStatus {
 	}
 }
 
-func validateAndPlanLoweredStepDir(dir string) tfdiags.Diagnostics {
+func (s *runbooksServer) validateAndPlanLoweredStepDir(dir string, runtime *runbookRuntime) (*plans.Plan, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	loader, err := configload.NewLoader(&configload.Config{
 		ModulesDir:        dir + "/.terraform/modules",
 		IncludeQueryFiles: true,
 	})
 	if err != nil {
-		return diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize lowered step loader", err.Error()))
+		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize lowered step loader", err.Error()))
 	}
 	rootMod, hclDiags := loader.LoadRootModule(dir)
 	diags = diags.Append(hclDiags)
 	if rootMod == nil || hclDiags.HasErrors() {
-		return diags
+		return nil, diags
 	}
-	config, buildDiags := terraform.BuildConfigWithGraph(rootMod, loader.ModuleWalker(), terraform.InputValues{}, configs.MockDataLoaderFunc(loader.LoadExternalMockData))
+	inputValues := make(terraform.InputValues)
+	for name := range rootMod.Variables {
+		inputValues[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
+	}
+	config, buildDiags := terraform.BuildConfigWithGraph(rootMod, loader.ModuleWalker(), inputValues, configs.MockDataLoaderFunc(loader.LoadExternalMockData))
 	diags = diags.Append(buildDiags)
 	if config == nil {
-		return diags
+		return nil, diags
 	}
-	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1})
+	providerFactories := map[addrs.Provider]providers.Factory{}
+	if s != nil && s.providerCacheOverride != nil {
+		providerFactories = s.providerCacheOverride
+	} else if runtime != nil {
+		var err error
+		providerFactories, err = providerFactoriesForLocks(runtime.Locks, runtime.ProviderCache)
+		if err != nil {
+			diags = diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize runbook providers", err.Error()))
+		}
+	}
+	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1, Providers: providerFactories})
 	diags = diags.Append(ctxDiags)
 	if ctxDiags.HasErrors() {
-		return diags
+		return nil, diags
 	}
-	_, planDiags := tfCtx.Plan(config, states.NewState(), &terraform.PlanOpts{
-		Mode:  plans.NormalMode,
-		Query: true,
+	plan, planDiags := tfCtx.Plan(config, states.NewState(), &terraform.PlanOpts{
+		Mode:         plans.NormalMode,
+		Query:        true,
+		SetVariables: inputValues,
 	})
+	if plan != nil && plan.Changes != nil && len(plan.Changes.Queries) == 0 {
+		diags = diags.Append(tfdiags.Sourceless(
+			tfdiags.Warning,
+			"Lowered step produced no query changes",
+			"Terraform planned the lowered step but did not record any query changes for the lowered .tfquery configuration.",
+		))
+	}
 	diags = diags.Append(planDiags)
-	return diags
+	return plan, diags
+}
+
+func (s *runbooksServer) lookupRunbookRuntime(runtimeHandle int64) (*runbookRuntime, error) {
+	if runtimeHandle == 0 {
+		return nil, nil
+	}
+	hnd := handle[*runbookRuntime](runtimeHandle)
+	runtime := s.handles.RunbookRuntime(hnd)
+	if runtime == nil {
+		return nil, status.Error(codes.InvalidArgument, "the given runbook runtime handle is invalid")
+	}
+	return runtime, nil
 }

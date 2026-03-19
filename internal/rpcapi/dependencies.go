@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	terraformProvider "github.com/hashicorp/terraform/internal/builtin/providers/terraform"
 	"github.com/hashicorp/terraform/internal/depsfile"
 	"github.com/hashicorp/terraform/internal/getproviders"
+	reattachproviders "github.com/hashicorp/terraform/internal/getproviders/reattach"
 	"github.com/hashicorp/terraform/internal/logging"
 	tfplugin "github.com/hashicorp/terraform/internal/plugin"
 	tfplugin6 "github.com/hashicorp/terraform/internal/plugin6"
@@ -644,11 +646,18 @@ func init() {
 func providerFactoriesForLocks(locks *depsfile.Locks, pluginsDir *providercache.Dir) (map[addrs.Provider]providers.Factory, error) {
 	var err error
 	ret := make(map[addrs.Provider]providers.Factory)
+	reattachedProviders, reattachErr := reattachproviders.ParseReattachProviders(os.Getenv(reattachproviders.TF_REATTACH_PROVIDERS))
+	if reattachErr != nil {
+		return nil, reattachErr
+	}
 	for name, infallibleFactory := range builtinProviders {
 		infallibleFactory := infallibleFactory // each iteration must have its own symbol
 		ret[addrs.NewBuiltInProvider(name)] = func() (providers.Interface, error) {
 			return infallibleFactory(), nil
 		}
+	}
+	for addr, reattach := range reattachedProviders {
+		ret[addr] = unmanagedProviderFactory(addr, reattach)
 	}
 	selectedProviders := locks.AllProviders()
 	if pluginsDir == nil {
@@ -661,6 +670,10 @@ func providerFactoriesForLocks(locks *depsfile.Locks, pluginsDir *providercache.
 	for addr, lock := range selectedProviders {
 		addr := addr
 		lock := lock
+
+		if _, ok := reattachedProviders[addr]; ok {
+			continue
+		}
 
 		selectedVersion := lock.Version()
 		cached := pluginsDir.ProviderVersion(addr, selectedVersion)
@@ -729,4 +742,61 @@ func providerFactoriesForLocks(locks *depsfile.Locks, pluginsDir *providercache.
 		}
 	}
 	return ret, err
+}
+
+func unmanagedProviderFactory(provider addrs.Provider, reattach *plugin.ReattachConfig) providers.Factory {
+	return func() (providers.Interface, error) {
+		config := &plugin.ClientConfig{
+			HandshakeConfig:  tfplugin.Handshake,
+			Logger:           logging.NewProviderLogger("unmanaged."),
+			AllowedProtocols: []plugin.Protocol{plugin.ProtocolGRPC},
+			Managed:          false,
+			Reattach:         reattach,
+			SyncStdout:       logging.PluginOutputMonitor(fmt.Sprintf("%s:stdout", provider)),
+			SyncStderr:       logging.PluginOutputMonitor(fmt.Sprintf("%s:stderr", provider)),
+		}
+
+		if reattach.ProtocolVersion == 0 {
+			if defaultPlugins, ok := tfplugin.VersionedPlugins[5]; ok {
+				config.Plugins = defaultPlugins
+			} else {
+				return nil, errors.New("no supported plugins for protocol 0")
+			}
+		} else if plugins, ok := tfplugin.VersionedPlugins[reattach.ProtocolVersion]; !ok {
+			return nil, fmt.Errorf("no supported plugins for protocol %d", reattach.ProtocolVersion)
+		} else {
+			config.Plugins = plugins
+		}
+
+		client := plugin.NewClient(config)
+		rpcClient, err := client.Client()
+		if err != nil {
+			return nil, err
+		}
+
+		raw, err := rpcClient.Dispense(tfplugin.ProviderPluginName)
+		if err != nil {
+			return nil, err
+		}
+
+		protoVer := client.NegotiatedVersion()
+		if reattach.ProtocolVersion != 0 {
+			protoVer = reattach.ProtocolVersion
+		}
+
+		switch protoVer {
+		case 5:
+			p := raw.(*tfplugin.GRPCProvider)
+			p.PluginClient = client
+			p.Addr = provider
+			return p, nil
+		case 6:
+			p := raw.(*tfplugin6.GRPCProvider)
+			p.PluginClient = client
+			p.Addr = provider
+			return p, nil
+		default:
+			return nil, fmt.Errorf("unsupported protocol version %d", protoVer)
+		}
+	}
 }

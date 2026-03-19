@@ -23,7 +23,9 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	Runbooks_OpenRunbookConfiguration_FullMethodName      = "/terraform1.runbooks.Runbooks/OpenRunbookConfiguration"
+	Runbooks_OpenRunbookRuntime_FullMethodName            = "/terraform1.runbooks.Runbooks/OpenRunbookRuntime"
 	Runbooks_CloseRunbookConfiguration_FullMethodName     = "/terraform1.runbooks.Runbooks/CloseRunbookConfiguration"
+	Runbooks_CloseRunbookRuntime_FullMethodName           = "/terraform1.runbooks.Runbooks/CloseRunbookRuntime"
 	Runbooks_ValidateRunbookConfiguration_FullMethodName  = "/terraform1.runbooks.Runbooks/ValidateRunbookConfiguration"
 	Runbooks_FindRunbookConfigurationSteps_FullMethodName = "/terraform1.runbooks.Runbooks/FindRunbookConfigurationSteps"
 	Runbooks_PlanRunbookStep_FullMethodName               = "/terraform1.runbooks.Runbooks/PlanRunbookStep"
@@ -36,7 +38,9 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RunbooksClient interface {
 	OpenRunbookConfiguration(ctx context.Context, in *OpenRunbookConfiguration_Request, opts ...grpc.CallOption) (*OpenRunbookConfiguration_Response, error)
+	OpenRunbookRuntime(ctx context.Context, in *OpenRunbookRuntime_Request, opts ...grpc.CallOption) (*OpenRunbookRuntime_Response, error)
 	CloseRunbookConfiguration(ctx context.Context, in *CloseRunbookConfiguration_Request, opts ...grpc.CallOption) (*CloseRunbookConfiguration_Response, error)
+	CloseRunbookRuntime(ctx context.Context, in *CloseRunbookRuntime_Request, opts ...grpc.CallOption) (*CloseRunbookRuntime_Response, error)
 	ValidateRunbookConfiguration(ctx context.Context, in *ValidateRunbookConfiguration_Request, opts ...grpc.CallOption) (*ValidateRunbookConfiguration_Response, error)
 	FindRunbookConfigurationSteps(ctx context.Context, in *FindRunbookConfigurationSteps_Request, opts ...grpc.CallOption) (*FindRunbookConfigurationSteps_Response, error)
 	PlanRunbookStep(ctx context.Context, in *PlanRunbookStep_Request, opts ...grpc.CallOption) (*PlanRunbookStep_Response, error)
@@ -62,10 +66,30 @@ func (c *runbooksClient) OpenRunbookConfiguration(ctx context.Context, in *OpenR
 	return out, nil
 }
 
+func (c *runbooksClient) OpenRunbookRuntime(ctx context.Context, in *OpenRunbookRuntime_Request, opts ...grpc.CallOption) (*OpenRunbookRuntime_Response, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OpenRunbookRuntime_Response)
+	err := c.cc.Invoke(ctx, Runbooks_OpenRunbookRuntime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *runbooksClient) CloseRunbookConfiguration(ctx context.Context, in *CloseRunbookConfiguration_Request, opts ...grpc.CallOption) (*CloseRunbookConfiguration_Response, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CloseRunbookConfiguration_Response)
 	err := c.cc.Invoke(ctx, Runbooks_CloseRunbookConfiguration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *runbooksClient) CloseRunbookRuntime(ctx context.Context, in *CloseRunbookRuntime_Request, opts ...grpc.CallOption) (*CloseRunbookRuntime_Response, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CloseRunbookRuntime_Response)
+	err := c.cc.Invoke(ctx, Runbooks_CloseRunbookRuntime_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +151,9 @@ func (c *runbooksClient) GetRunnableRunbookSteps(ctx context.Context, in *GetRun
 // for forward compatibility.
 type RunbooksServer interface {
 	OpenRunbookConfiguration(context.Context, *OpenRunbookConfiguration_Request) (*OpenRunbookConfiguration_Response, error)
+	OpenRunbookRuntime(context.Context, *OpenRunbookRuntime_Request) (*OpenRunbookRuntime_Response, error)
 	CloseRunbookConfiguration(context.Context, *CloseRunbookConfiguration_Request) (*CloseRunbookConfiguration_Response, error)
+	CloseRunbookRuntime(context.Context, *CloseRunbookRuntime_Request) (*CloseRunbookRuntime_Response, error)
 	ValidateRunbookConfiguration(context.Context, *ValidateRunbookConfiguration_Request) (*ValidateRunbookConfiguration_Response, error)
 	FindRunbookConfigurationSteps(context.Context, *FindRunbookConfigurationSteps_Request) (*FindRunbookConfigurationSteps_Response, error)
 	PlanRunbookStep(context.Context, *PlanRunbookStep_Request) (*PlanRunbookStep_Response, error)
@@ -146,8 +172,14 @@ type UnimplementedRunbooksServer struct{}
 func (UnimplementedRunbooksServer) OpenRunbookConfiguration(context.Context, *OpenRunbookConfiguration_Request) (*OpenRunbookConfiguration_Response, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method OpenRunbookConfiguration not implemented")
 }
+func (UnimplementedRunbooksServer) OpenRunbookRuntime(context.Context, *OpenRunbookRuntime_Request) (*OpenRunbookRuntime_Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method OpenRunbookRuntime not implemented")
+}
 func (UnimplementedRunbooksServer) CloseRunbookConfiguration(context.Context, *CloseRunbookConfiguration_Request) (*CloseRunbookConfiguration_Response, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CloseRunbookConfiguration not implemented")
+}
+func (UnimplementedRunbooksServer) CloseRunbookRuntime(context.Context, *CloseRunbookRuntime_Request) (*CloseRunbookRuntime_Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CloseRunbookRuntime not implemented")
 }
 func (UnimplementedRunbooksServer) ValidateRunbookConfiguration(context.Context, *ValidateRunbookConfiguration_Request) (*ValidateRunbookConfiguration_Response, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ValidateRunbookConfiguration not implemented")
@@ -203,6 +235,24 @@ func _Runbooks_OpenRunbookConfiguration_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Runbooks_OpenRunbookRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OpenRunbookRuntime_Request)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RunbooksServer).OpenRunbookRuntime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Runbooks_OpenRunbookRuntime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RunbooksServer).OpenRunbookRuntime(ctx, req.(*OpenRunbookRuntime_Request))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Runbooks_CloseRunbookConfiguration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CloseRunbookConfiguration_Request)
 	if err := dec(in); err != nil {
@@ -217,6 +267,24 @@ func _Runbooks_CloseRunbookConfiguration_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RunbooksServer).CloseRunbookConfiguration(ctx, req.(*CloseRunbookConfiguration_Request))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Runbooks_CloseRunbookRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CloseRunbookRuntime_Request)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RunbooksServer).CloseRunbookRuntime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Runbooks_CloseRunbookRuntime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RunbooksServer).CloseRunbookRuntime(ctx, req.(*CloseRunbookRuntime_Request))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -323,8 +391,16 @@ var Runbooks_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Runbooks_OpenRunbookConfiguration_Handler,
 		},
 		{
+			MethodName: "OpenRunbookRuntime",
+			Handler:    _Runbooks_OpenRunbookRuntime_Handler,
+		},
+		{
 			MethodName: "CloseRunbookConfiguration",
 			Handler:    _Runbooks_CloseRunbookConfiguration_Handler,
+		},
+		{
+			MethodName: "CloseRunbookRuntime",
+			Handler:    _Runbooks_CloseRunbookRuntime_Handler,
 		},
 		{
 			MethodName: "ValidateRunbookConfiguration",

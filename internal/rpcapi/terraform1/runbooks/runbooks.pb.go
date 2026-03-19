@@ -126,7 +126,7 @@ func (x FindRunbookConfigurationSteps_Condition_OnFail) Number() protoreflect.En
 
 // Deprecated: Use FindRunbookConfigurationSteps_Condition_OnFail.Descriptor instead.
 func (FindRunbookConfigurationSteps_Condition_OnFail) EnumDescriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{5, 6, 0}
+	return file_runbooks_proto_rawDescGZIP(), []int{7, 6, 0}
 }
 
 type DynamicValue struct {
@@ -290,6 +290,78 @@ func (*OpenRunbookConfiguration) Descriptor() ([]byte, []int) {
 	return file_runbooks_proto_rawDescGZIP(), []int{2}
 }
 
+type OpenRunbookRuntime struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OpenRunbookRuntime) Reset() {
+	*x = OpenRunbookRuntime{}
+	mi := &file_runbooks_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpenRunbookRuntime) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpenRunbookRuntime) ProtoMessage() {}
+
+func (x *OpenRunbookRuntime) ProtoReflect() protoreflect.Message {
+	mi := &file_runbooks_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpenRunbookRuntime.ProtoReflect.Descriptor instead.
+func (*OpenRunbookRuntime) Descriptor() ([]byte, []int) {
+	return file_runbooks_proto_rawDescGZIP(), []int{3}
+}
+
+type CloseRunbookRuntime struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CloseRunbookRuntime) Reset() {
+	*x = CloseRunbookRuntime{}
+	mi := &file_runbooks_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloseRunbookRuntime) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloseRunbookRuntime) ProtoMessage() {}
+
+func (x *CloseRunbookRuntime) ProtoReflect() protoreflect.Message {
+	mi := &file_runbooks_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloseRunbookRuntime.ProtoReflect.Descriptor instead.
+func (*CloseRunbookRuntime) Descriptor() ([]byte, []int) {
+	return file_runbooks_proto_rawDescGZIP(), []int{4}
+}
+
 type CloseRunbookConfiguration struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -298,7 +370,7 @@ type CloseRunbookConfiguration struct {
 
 func (x *CloseRunbookConfiguration) Reset() {
 	*x = CloseRunbookConfiguration{}
-	mi := &file_runbooks_proto_msgTypes[3]
+	mi := &file_runbooks_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -310,7 +382,7 @@ func (x *CloseRunbookConfiguration) String() string {
 func (*CloseRunbookConfiguration) ProtoMessage() {}
 
 func (x *CloseRunbookConfiguration) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[3]
+	mi := &file_runbooks_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -323,7 +395,7 @@ func (x *CloseRunbookConfiguration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseRunbookConfiguration.ProtoReflect.Descriptor instead.
 func (*CloseRunbookConfiguration) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{3}
+	return file_runbooks_proto_rawDescGZIP(), []int{5}
 }
 
 type ValidateRunbookConfiguration struct {
@@ -334,7 +406,7 @@ type ValidateRunbookConfiguration struct {
 
 func (x *ValidateRunbookConfiguration) Reset() {
 	*x = ValidateRunbookConfiguration{}
-	mi := &file_runbooks_proto_msgTypes[4]
+	mi := &file_runbooks_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -346,7 +418,7 @@ func (x *ValidateRunbookConfiguration) String() string {
 func (*ValidateRunbookConfiguration) ProtoMessage() {}
 
 func (x *ValidateRunbookConfiguration) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[4]
+	mi := &file_runbooks_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -359,7 +431,7 @@ func (x *ValidateRunbookConfiguration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateRunbookConfiguration.ProtoReflect.Descriptor instead.
 func (*ValidateRunbookConfiguration) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{4}
+	return file_runbooks_proto_rawDescGZIP(), []int{6}
 }
 
 type FindRunbookConfigurationSteps struct {
@@ -370,7 +442,7 @@ type FindRunbookConfigurationSteps struct {
 
 func (x *FindRunbookConfigurationSteps) Reset() {
 	*x = FindRunbookConfigurationSteps{}
-	mi := &file_runbooks_proto_msgTypes[5]
+	mi := &file_runbooks_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -382,7 +454,7 @@ func (x *FindRunbookConfigurationSteps) String() string {
 func (*FindRunbookConfigurationSteps) ProtoMessage() {}
 
 func (x *FindRunbookConfigurationSteps) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[5]
+	mi := &file_runbooks_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -395,7 +467,7 @@ func (x *FindRunbookConfigurationSteps) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FindRunbookConfigurationSteps.ProtoReflect.Descriptor instead.
 func (*FindRunbookConfigurationSteps) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{5}
+	return file_runbooks_proto_rawDescGZIP(), []int{7}
 }
 
 type PlanRunbookStep struct {
@@ -406,7 +478,7 @@ type PlanRunbookStep struct {
 
 func (x *PlanRunbookStep) Reset() {
 	*x = PlanRunbookStep{}
-	mi := &file_runbooks_proto_msgTypes[6]
+	mi := &file_runbooks_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -418,7 +490,7 @@ func (x *PlanRunbookStep) String() string {
 func (*PlanRunbookStep) ProtoMessage() {}
 
 func (x *PlanRunbookStep) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[6]
+	mi := &file_runbooks_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -431,7 +503,7 @@ func (x *PlanRunbookStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanRunbookStep.ProtoReflect.Descriptor instead.
 func (*PlanRunbookStep) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{6}
+	return file_runbooks_proto_rawDescGZIP(), []int{8}
 }
 
 type ExecuteRunbookStep struct {
@@ -442,7 +514,7 @@ type ExecuteRunbookStep struct {
 
 func (x *ExecuteRunbookStep) Reset() {
 	*x = ExecuteRunbookStep{}
-	mi := &file_runbooks_proto_msgTypes[7]
+	mi := &file_runbooks_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -454,7 +526,7 @@ func (x *ExecuteRunbookStep) String() string {
 func (*ExecuteRunbookStep) ProtoMessage() {}
 
 func (x *ExecuteRunbookStep) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[7]
+	mi := &file_runbooks_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -467,7 +539,7 @@ func (x *ExecuteRunbookStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteRunbookStep.ProtoReflect.Descriptor instead.
 func (*ExecuteRunbookStep) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{7}
+	return file_runbooks_proto_rawDescGZIP(), []int{9}
 }
 
 type GetRunnableRunbookSteps struct {
@@ -478,7 +550,7 @@ type GetRunnableRunbookSteps struct {
 
 func (x *GetRunnableRunbookSteps) Reset() {
 	*x = GetRunnableRunbookSteps{}
-	mi := &file_runbooks_proto_msgTypes[8]
+	mi := &file_runbooks_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -490,7 +562,7 @@ func (x *GetRunnableRunbookSteps) String() string {
 func (*GetRunnableRunbookSteps) ProtoMessage() {}
 
 func (x *GetRunnableRunbookSteps) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[8]
+	mi := &file_runbooks_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -503,7 +575,7 @@ func (x *GetRunnableRunbookSteps) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunnableRunbookSteps.ProtoReflect.Descriptor instead.
 func (*GetRunnableRunbookSteps) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{8}
+	return file_runbooks_proto_rawDescGZIP(), []int{10}
 }
 
 type OpenRunbookConfiguration_Request struct {
@@ -515,7 +587,7 @@ type OpenRunbookConfiguration_Request struct {
 
 func (x *OpenRunbookConfiguration_Request) Reset() {
 	*x = OpenRunbookConfiguration_Request{}
-	mi := &file_runbooks_proto_msgTypes[9]
+	mi := &file_runbooks_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -527,7 +599,7 @@ func (x *OpenRunbookConfiguration_Request) String() string {
 func (*OpenRunbookConfiguration_Request) ProtoMessage() {}
 
 func (x *OpenRunbookConfiguration_Request) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[9]
+	mi := &file_runbooks_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -560,7 +632,7 @@ type OpenRunbookConfiguration_Response struct {
 
 func (x *OpenRunbookConfiguration_Response) Reset() {
 	*x = OpenRunbookConfiguration_Response{}
-	mi := &file_runbooks_proto_msgTypes[10]
+	mi := &file_runbooks_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -572,7 +644,7 @@ func (x *OpenRunbookConfiguration_Response) String() string {
 func (*OpenRunbookConfiguration_Response) ProtoMessage() {}
 
 func (x *OpenRunbookConfiguration_Response) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[10]
+	mi := &file_runbooks_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -602,6 +674,182 @@ func (x *OpenRunbookConfiguration_Response) GetDiagnostics() []*terraform1.Diagn
 	return nil
 }
 
+type OpenRunbookRuntime_Request struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	DependencyLocksHandle int64                  `protobuf:"varint,1,opt,name=dependency_locks_handle,json=dependencyLocksHandle,proto3" json:"dependency_locks_handle,omitempty"`
+	ProviderCacheHandle   int64                  `protobuf:"varint,2,opt,name=provider_cache_handle,json=providerCacheHandle,proto3" json:"provider_cache_handle,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *OpenRunbookRuntime_Request) Reset() {
+	*x = OpenRunbookRuntime_Request{}
+	mi := &file_runbooks_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpenRunbookRuntime_Request) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpenRunbookRuntime_Request) ProtoMessage() {}
+
+func (x *OpenRunbookRuntime_Request) ProtoReflect() protoreflect.Message {
+	mi := &file_runbooks_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpenRunbookRuntime_Request.ProtoReflect.Descriptor instead.
+func (*OpenRunbookRuntime_Request) Descriptor() ([]byte, []int) {
+	return file_runbooks_proto_rawDescGZIP(), []int{3, 0}
+}
+
+func (x *OpenRunbookRuntime_Request) GetDependencyLocksHandle() int64 {
+	if x != nil {
+		return x.DependencyLocksHandle
+	}
+	return 0
+}
+
+func (x *OpenRunbookRuntime_Request) GetProviderCacheHandle() int64 {
+	if x != nil {
+		return x.ProviderCacheHandle
+	}
+	return 0
+}
+
+type OpenRunbookRuntime_Response struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	RunbookRuntimeHandle int64                  `protobuf:"varint,1,opt,name=runbook_runtime_handle,json=runbookRuntimeHandle,proto3" json:"runbook_runtime_handle,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *OpenRunbookRuntime_Response) Reset() {
+	*x = OpenRunbookRuntime_Response{}
+	mi := &file_runbooks_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpenRunbookRuntime_Response) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpenRunbookRuntime_Response) ProtoMessage() {}
+
+func (x *OpenRunbookRuntime_Response) ProtoReflect() protoreflect.Message {
+	mi := &file_runbooks_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpenRunbookRuntime_Response.ProtoReflect.Descriptor instead.
+func (*OpenRunbookRuntime_Response) Descriptor() ([]byte, []int) {
+	return file_runbooks_proto_rawDescGZIP(), []int{3, 1}
+}
+
+func (x *OpenRunbookRuntime_Response) GetRunbookRuntimeHandle() int64 {
+	if x != nil {
+		return x.RunbookRuntimeHandle
+	}
+	return 0
+}
+
+type CloseRunbookRuntime_Request struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	RunbookRuntimeHandle int64                  `protobuf:"varint,1,opt,name=runbook_runtime_handle,json=runbookRuntimeHandle,proto3" json:"runbook_runtime_handle,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *CloseRunbookRuntime_Request) Reset() {
+	*x = CloseRunbookRuntime_Request{}
+	mi := &file_runbooks_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloseRunbookRuntime_Request) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloseRunbookRuntime_Request) ProtoMessage() {}
+
+func (x *CloseRunbookRuntime_Request) ProtoReflect() protoreflect.Message {
+	mi := &file_runbooks_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloseRunbookRuntime_Request.ProtoReflect.Descriptor instead.
+func (*CloseRunbookRuntime_Request) Descriptor() ([]byte, []int) {
+	return file_runbooks_proto_rawDescGZIP(), []int{4, 0}
+}
+
+func (x *CloseRunbookRuntime_Request) GetRunbookRuntimeHandle() int64 {
+	if x != nil {
+		return x.RunbookRuntimeHandle
+	}
+	return 0
+}
+
+type CloseRunbookRuntime_Response struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CloseRunbookRuntime_Response) Reset() {
+	*x = CloseRunbookRuntime_Response{}
+	mi := &file_runbooks_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloseRunbookRuntime_Response) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloseRunbookRuntime_Response) ProtoMessage() {}
+
+func (x *CloseRunbookRuntime_Response) ProtoReflect() protoreflect.Message {
+	mi := &file_runbooks_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloseRunbookRuntime_Response.ProtoReflect.Descriptor instead.
+func (*CloseRunbookRuntime_Response) Descriptor() ([]byte, []int) {
+	return file_runbooks_proto_rawDescGZIP(), []int{4, 1}
+}
+
 type CloseRunbookConfiguration_Request struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	RunbookConfigHandle int64                  `protobuf:"varint,1,opt,name=runbook_config_handle,json=runbookConfigHandle,proto3" json:"runbook_config_handle,omitempty"`
@@ -611,7 +859,7 @@ type CloseRunbookConfiguration_Request struct {
 
 func (x *CloseRunbookConfiguration_Request) Reset() {
 	*x = CloseRunbookConfiguration_Request{}
-	mi := &file_runbooks_proto_msgTypes[11]
+	mi := &file_runbooks_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -623,7 +871,7 @@ func (x *CloseRunbookConfiguration_Request) String() string {
 func (*CloseRunbookConfiguration_Request) ProtoMessage() {}
 
 func (x *CloseRunbookConfiguration_Request) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[11]
+	mi := &file_runbooks_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -636,7 +884,7 @@ func (x *CloseRunbookConfiguration_Request) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CloseRunbookConfiguration_Request.ProtoReflect.Descriptor instead.
 func (*CloseRunbookConfiguration_Request) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{3, 0}
+	return file_runbooks_proto_rawDescGZIP(), []int{5, 0}
 }
 
 func (x *CloseRunbookConfiguration_Request) GetRunbookConfigHandle() int64 {
@@ -654,7 +902,7 @@ type CloseRunbookConfiguration_Response struct {
 
 func (x *CloseRunbookConfiguration_Response) Reset() {
 	*x = CloseRunbookConfiguration_Response{}
-	mi := &file_runbooks_proto_msgTypes[12]
+	mi := &file_runbooks_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -666,7 +914,7 @@ func (x *CloseRunbookConfiguration_Response) String() string {
 func (*CloseRunbookConfiguration_Response) ProtoMessage() {}
 
 func (x *CloseRunbookConfiguration_Response) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[12]
+	mi := &file_runbooks_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -679,7 +927,7 @@ func (x *CloseRunbookConfiguration_Response) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use CloseRunbookConfiguration_Response.ProtoReflect.Descriptor instead.
 func (*CloseRunbookConfiguration_Response) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{3, 1}
+	return file_runbooks_proto_rawDescGZIP(), []int{5, 1}
 }
 
 type ValidateRunbookConfiguration_Request struct {
@@ -691,7 +939,7 @@ type ValidateRunbookConfiguration_Request struct {
 
 func (x *ValidateRunbookConfiguration_Request) Reset() {
 	*x = ValidateRunbookConfiguration_Request{}
-	mi := &file_runbooks_proto_msgTypes[13]
+	mi := &file_runbooks_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -703,7 +951,7 @@ func (x *ValidateRunbookConfiguration_Request) String() string {
 func (*ValidateRunbookConfiguration_Request) ProtoMessage() {}
 
 func (x *ValidateRunbookConfiguration_Request) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[13]
+	mi := &file_runbooks_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -716,7 +964,7 @@ func (x *ValidateRunbookConfiguration_Request) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use ValidateRunbookConfiguration_Request.ProtoReflect.Descriptor instead.
 func (*ValidateRunbookConfiguration_Request) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{4, 0}
+	return file_runbooks_proto_rawDescGZIP(), []int{6, 0}
 }
 
 func (x *ValidateRunbookConfiguration_Request) GetRunbookConfigHandle() int64 {
@@ -735,7 +983,7 @@ type ValidateRunbookConfiguration_Response struct {
 
 func (x *ValidateRunbookConfiguration_Response) Reset() {
 	*x = ValidateRunbookConfiguration_Response{}
-	mi := &file_runbooks_proto_msgTypes[14]
+	mi := &file_runbooks_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -747,7 +995,7 @@ func (x *ValidateRunbookConfiguration_Response) String() string {
 func (*ValidateRunbookConfiguration_Response) ProtoMessage() {}
 
 func (x *ValidateRunbookConfiguration_Response) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[14]
+	mi := &file_runbooks_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -760,7 +1008,7 @@ func (x *ValidateRunbookConfiguration_Response) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use ValidateRunbookConfiguration_Response.ProtoReflect.Descriptor instead.
 func (*ValidateRunbookConfiguration_Response) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{4, 1}
+	return file_runbooks_proto_rawDescGZIP(), []int{6, 1}
 }
 
 func (x *ValidateRunbookConfiguration_Response) GetDiagnostics() []*terraform1.Diagnostic {
@@ -779,7 +1027,7 @@ type FindRunbookConfigurationSteps_Request struct {
 
 func (x *FindRunbookConfigurationSteps_Request) Reset() {
 	*x = FindRunbookConfigurationSteps_Request{}
-	mi := &file_runbooks_proto_msgTypes[15]
+	mi := &file_runbooks_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -791,7 +1039,7 @@ func (x *FindRunbookConfigurationSteps_Request) String() string {
 func (*FindRunbookConfigurationSteps_Request) ProtoMessage() {}
 
 func (x *FindRunbookConfigurationSteps_Request) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[15]
+	mi := &file_runbooks_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -804,7 +1052,7 @@ func (x *FindRunbookConfigurationSteps_Request) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use FindRunbookConfigurationSteps_Request.ProtoReflect.Descriptor instead.
 func (*FindRunbookConfigurationSteps_Request) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{5, 0}
+	return file_runbooks_proto_rawDescGZIP(), []int{7, 0}
 }
 
 func (x *FindRunbookConfigurationSteps_Request) GetRunbookConfigHandle() int64 {
@@ -823,7 +1071,7 @@ type FindRunbookConfigurationSteps_Response struct {
 
 func (x *FindRunbookConfigurationSteps_Response) Reset() {
 	*x = FindRunbookConfigurationSteps_Response{}
-	mi := &file_runbooks_proto_msgTypes[16]
+	mi := &file_runbooks_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -835,7 +1083,7 @@ func (x *FindRunbookConfigurationSteps_Response) String() string {
 func (*FindRunbookConfigurationSteps_Response) ProtoMessage() {}
 
 func (x *FindRunbookConfigurationSteps_Response) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[16]
+	mi := &file_runbooks_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -848,7 +1096,7 @@ func (x *FindRunbookConfigurationSteps_Response) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use FindRunbookConfigurationSteps_Response.ProtoReflect.Descriptor instead.
 func (*FindRunbookConfigurationSteps_Response) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{5, 1}
+	return file_runbooks_proto_rawDescGZIP(), []int{7, 1}
 }
 
 func (x *FindRunbookConfigurationSteps_Response) GetConfig() *FindRunbookConfigurationSteps_RunbookConfig {
@@ -871,7 +1119,7 @@ type FindRunbookConfigurationSteps_RunbookConfig struct {
 
 func (x *FindRunbookConfigurationSteps_RunbookConfig) Reset() {
 	*x = FindRunbookConfigurationSteps_RunbookConfig{}
-	mi := &file_runbooks_proto_msgTypes[17]
+	mi := &file_runbooks_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -883,7 +1131,7 @@ func (x *FindRunbookConfigurationSteps_RunbookConfig) String() string {
 func (*FindRunbookConfigurationSteps_RunbookConfig) ProtoMessage() {}
 
 func (x *FindRunbookConfigurationSteps_RunbookConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[17]
+	mi := &file_runbooks_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -896,7 +1144,7 @@ func (x *FindRunbookConfigurationSteps_RunbookConfig) ProtoReflect() protoreflec
 
 // Deprecated: Use FindRunbookConfigurationSteps_RunbookConfig.ProtoReflect.Descriptor instead.
 func (*FindRunbookConfigurationSteps_RunbookConfig) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{5, 2}
+	return file_runbooks_proto_rawDescGZIP(), []int{7, 2}
 }
 
 func (x *FindRunbookConfigurationSteps_RunbookConfig) GetSourceAddr() string {
@@ -943,7 +1191,7 @@ type FindRunbookConfigurationSteps_ProviderConfig struct {
 
 func (x *FindRunbookConfigurationSteps_ProviderConfig) Reset() {
 	*x = FindRunbookConfigurationSteps_ProviderConfig{}
-	mi := &file_runbooks_proto_msgTypes[18]
+	mi := &file_runbooks_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -955,7 +1203,7 @@ func (x *FindRunbookConfigurationSteps_ProviderConfig) String() string {
 func (*FindRunbookConfigurationSteps_ProviderConfig) ProtoMessage() {}
 
 func (x *FindRunbookConfigurationSteps_ProviderConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[18]
+	mi := &file_runbooks_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -968,7 +1216,7 @@ func (x *FindRunbookConfigurationSteps_ProviderConfig) ProtoReflect() protorefle
 
 // Deprecated: Use FindRunbookConfigurationSteps_ProviderConfig.ProtoReflect.Descriptor instead.
 func (*FindRunbookConfigurationSteps_ProviderConfig) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{5, 3}
+	return file_runbooks_proto_rawDescGZIP(), []int{7, 3}
 }
 
 func (x *FindRunbookConfigurationSteps_ProviderConfig) GetType() string {
@@ -994,7 +1242,7 @@ type FindRunbookConfigurationSteps_Step struct {
 
 func (x *FindRunbookConfigurationSteps_Step) Reset() {
 	*x = FindRunbookConfigurationSteps_Step{}
-	mi := &file_runbooks_proto_msgTypes[19]
+	mi := &file_runbooks_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1006,7 +1254,7 @@ func (x *FindRunbookConfigurationSteps_Step) String() string {
 func (*FindRunbookConfigurationSteps_Step) ProtoMessage() {}
 
 func (x *FindRunbookConfigurationSteps_Step) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[19]
+	mi := &file_runbooks_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1019,7 +1267,7 @@ func (x *FindRunbookConfigurationSteps_Step) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use FindRunbookConfigurationSteps_Step.ProtoReflect.Descriptor instead.
 func (*FindRunbookConfigurationSteps_Step) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{5, 4}
+	return file_runbooks_proto_rawDescGZIP(), []int{7, 4}
 }
 
 func (x *FindRunbookConfigurationSteps_Step) GetHasConfig() bool {
@@ -1088,7 +1336,7 @@ type FindRunbookConfigurationSteps_Variable struct {
 
 func (x *FindRunbookConfigurationSteps_Variable) Reset() {
 	*x = FindRunbookConfigurationSteps_Variable{}
-	mi := &file_runbooks_proto_msgTypes[20]
+	mi := &file_runbooks_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1100,7 +1348,7 @@ func (x *FindRunbookConfigurationSteps_Variable) String() string {
 func (*FindRunbookConfigurationSteps_Variable) ProtoMessage() {}
 
 func (x *FindRunbookConfigurationSteps_Variable) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[20]
+	mi := &file_runbooks_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1113,7 +1361,7 @@ func (x *FindRunbookConfigurationSteps_Variable) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use FindRunbookConfigurationSteps_Variable.ProtoReflect.Descriptor instead.
 func (*FindRunbookConfigurationSteps_Variable) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{5, 5}
+	return file_runbooks_proto_rawDescGZIP(), []int{7, 5}
 }
 
 func (x *FindRunbookConfigurationSteps_Variable) GetName() string {
@@ -1139,7 +1387,7 @@ type FindRunbookConfigurationSteps_Condition struct {
 
 func (x *FindRunbookConfigurationSteps_Condition) Reset() {
 	*x = FindRunbookConfigurationSteps_Condition{}
-	mi := &file_runbooks_proto_msgTypes[21]
+	mi := &file_runbooks_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1151,7 +1399,7 @@ func (x *FindRunbookConfigurationSteps_Condition) String() string {
 func (*FindRunbookConfigurationSteps_Condition) ProtoMessage() {}
 
 func (x *FindRunbookConfigurationSteps_Condition) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[21]
+	mi := &file_runbooks_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1164,7 +1412,7 @@ func (x *FindRunbookConfigurationSteps_Condition) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use FindRunbookConfigurationSteps_Condition.ProtoReflect.Descriptor instead.
 func (*FindRunbookConfigurationSteps_Condition) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{5, 6}
+	return file_runbooks_proto_rawDescGZIP(), []int{7, 6}
 }
 
 func (x *FindRunbookConfigurationSteps_Condition) GetOnFail() FindRunbookConfigurationSteps_Condition_OnFail {
@@ -1185,7 +1433,7 @@ type PlanRunbookStep_PlannedAction struct {
 
 func (x *PlanRunbookStep_PlannedAction) Reset() {
 	*x = PlanRunbookStep_PlannedAction{}
-	mi := &file_runbooks_proto_msgTypes[23]
+	mi := &file_runbooks_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1197,7 +1445,7 @@ func (x *PlanRunbookStep_PlannedAction) String() string {
 func (*PlanRunbookStep_PlannedAction) ProtoMessage() {}
 
 func (x *PlanRunbookStep_PlannedAction) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[23]
+	mi := &file_runbooks_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1210,7 +1458,7 @@ func (x *PlanRunbookStep_PlannedAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanRunbookStep_PlannedAction.ProtoReflect.Descriptor instead.
 func (*PlanRunbookStep_PlannedAction) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{6, 0}
+	return file_runbooks_proto_rawDescGZIP(), []int{8, 0}
 }
 
 func (x *PlanRunbookStep_PlannedAction) GetAddress() string {
@@ -1234,6 +1482,58 @@ func (x *PlanRunbookStep_PlannedAction) GetActionName() string {
 	return ""
 }
 
+type PlanRunbookStep_PlannedQuery struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Address       string                 `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	ResultCount   int64                  `protobuf:"varint,2,opt,name=result_count,json=resultCount,proto3" json:"result_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlanRunbookStep_PlannedQuery) Reset() {
+	*x = PlanRunbookStep_PlannedQuery{}
+	mi := &file_runbooks_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlanRunbookStep_PlannedQuery) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlanRunbookStep_PlannedQuery) ProtoMessage() {}
+
+func (x *PlanRunbookStep_PlannedQuery) ProtoReflect() protoreflect.Message {
+	mi := &file_runbooks_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlanRunbookStep_PlannedQuery.ProtoReflect.Descriptor instead.
+func (*PlanRunbookStep_PlannedQuery) Descriptor() ([]byte, []int) {
+	return file_runbooks_proto_rawDescGZIP(), []int{8, 1}
+}
+
+func (x *PlanRunbookStep_PlannedQuery) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *PlanRunbookStep_PlannedQuery) GetResultCount() int64 {
+	if x != nil {
+		return x.ResultCount
+	}
+	return 0
+}
+
 type PlanRunbookStep_LoweredFile struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
@@ -1244,7 +1544,7 @@ type PlanRunbookStep_LoweredFile struct {
 
 func (x *PlanRunbookStep_LoweredFile) Reset() {
 	*x = PlanRunbookStep_LoweredFile{}
-	mi := &file_runbooks_proto_msgTypes[24]
+	mi := &file_runbooks_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1256,7 +1556,7 @@ func (x *PlanRunbookStep_LoweredFile) String() string {
 func (*PlanRunbookStep_LoweredFile) ProtoMessage() {}
 
 func (x *PlanRunbookStep_LoweredFile) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[24]
+	mi := &file_runbooks_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1269,7 +1569,7 @@ func (x *PlanRunbookStep_LoweredFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanRunbookStep_LoweredFile.ProtoReflect.Descriptor instead.
 func (*PlanRunbookStep_LoweredFile) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{6, 1}
+	return file_runbooks_proto_rawDescGZIP(), []int{8, 2}
 }
 
 func (x *PlanRunbookStep_LoweredFile) GetPath() string {
@@ -1287,17 +1587,18 @@ func (x *PlanRunbookStep_LoweredFile) GetContent() []byte {
 }
 
 type PlanRunbookStep_Request struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	RunbookConfigHandle int64                  `protobuf:"varint,1,opt,name=runbook_config_handle,json=runbookConfigHandle,proto3" json:"runbook_config_handle,omitempty"`
-	StepName            string                 `protobuf:"bytes,2,opt,name=step_name,json=stepName,proto3" json:"step_name,omitempty"`
-	Scope               *EvalScope             `protobuf:"bytes,3,opt,name=scope,proto3" json:"scope,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	RunbookConfigHandle  int64                  `protobuf:"varint,1,opt,name=runbook_config_handle,json=runbookConfigHandle,proto3" json:"runbook_config_handle,omitempty"`
+	RunbookRuntimeHandle int64                  `protobuf:"varint,2,opt,name=runbook_runtime_handle,json=runbookRuntimeHandle,proto3" json:"runbook_runtime_handle,omitempty"`
+	StepName             string                 `protobuf:"bytes,3,opt,name=step_name,json=stepName,proto3" json:"step_name,omitempty"`
+	Scope                *EvalScope             `protobuf:"bytes,4,opt,name=scope,proto3" json:"scope,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *PlanRunbookStep_Request) Reset() {
 	*x = PlanRunbookStep_Request{}
-	mi := &file_runbooks_proto_msgTypes[25]
+	mi := &file_runbooks_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1309,7 +1610,7 @@ func (x *PlanRunbookStep_Request) String() string {
 func (*PlanRunbookStep_Request) ProtoMessage() {}
 
 func (x *PlanRunbookStep_Request) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[25]
+	mi := &file_runbooks_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1322,12 +1623,19 @@ func (x *PlanRunbookStep_Request) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanRunbookStep_Request.ProtoReflect.Descriptor instead.
 func (*PlanRunbookStep_Request) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{6, 2}
+	return file_runbooks_proto_rawDescGZIP(), []int{8, 3}
 }
 
 func (x *PlanRunbookStep_Request) GetRunbookConfigHandle() int64 {
 	if x != nil {
 		return x.RunbookConfigHandle
+	}
+	return 0
+}
+
+func (x *PlanRunbookStep_Request) GetRunbookRuntimeHandle() int64 {
+	if x != nil {
+		return x.RunbookRuntimeHandle
 	}
 	return 0
 }
@@ -1353,13 +1661,14 @@ type PlanRunbookStep_Response struct {
 	Diagnostics    []*terraform1.Diagnostic         `protobuf:"bytes,3,rep,name=diagnostics,proto3" json:"diagnostics,omitempty"`
 	PlannedActions []*PlanRunbookStep_PlannedAction `protobuf:"bytes,4,rep,name=planned_actions,json=plannedActions,proto3" json:"planned_actions,omitempty"`
 	LoweredFiles   []*PlanRunbookStep_LoweredFile   `protobuf:"bytes,5,rep,name=lowered_files,json=loweredFiles,proto3" json:"lowered_files,omitempty"`
+	PlannedQueries []*PlanRunbookStep_PlannedQuery  `protobuf:"bytes,6,rep,name=planned_queries,json=plannedQueries,proto3" json:"planned_queries,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PlanRunbookStep_Response) Reset() {
 	*x = PlanRunbookStep_Response{}
-	mi := &file_runbooks_proto_msgTypes[26]
+	mi := &file_runbooks_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1371,7 +1680,7 @@ func (x *PlanRunbookStep_Response) String() string {
 func (*PlanRunbookStep_Response) ProtoMessage() {}
 
 func (x *PlanRunbookStep_Response) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[26]
+	mi := &file_runbooks_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1384,7 +1693,7 @@ func (x *PlanRunbookStep_Response) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanRunbookStep_Response.ProtoReflect.Descriptor instead.
 func (*PlanRunbookStep_Response) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{6, 3}
+	return file_runbooks_proto_rawDescGZIP(), []int{8, 4}
 }
 
 func (x *PlanRunbookStep_Response) GetStatus() StepStatus {
@@ -1422,19 +1731,27 @@ func (x *PlanRunbookStep_Response) GetLoweredFiles() []*PlanRunbookStep_LoweredF
 	return nil
 }
 
+func (x *PlanRunbookStep_Response) GetPlannedQueries() []*PlanRunbookStep_PlannedQuery {
+	if x != nil {
+		return x.PlannedQueries
+	}
+	return nil
+}
+
 type ExecuteRunbookStep_Request struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	RunbookConfigHandle int64                  `protobuf:"varint,1,opt,name=runbook_config_handle,json=runbookConfigHandle,proto3" json:"runbook_config_handle,omitempty"`
-	StepName            string                 `protobuf:"bytes,2,opt,name=step_name,json=stepName,proto3" json:"step_name,omitempty"`
-	PreExecuteScope     *EvalScope             `protobuf:"bytes,3,opt,name=pre_execute_scope,json=preExecuteScope,proto3" json:"pre_execute_scope,omitempty"`
-	PostExecuteScope    *EvalScope             `protobuf:"bytes,4,opt,name=post_execute_scope,json=postExecuteScope,proto3" json:"post_execute_scope,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	RunbookConfigHandle  int64                  `protobuf:"varint,1,opt,name=runbook_config_handle,json=runbookConfigHandle,proto3" json:"runbook_config_handle,omitempty"`
+	RunbookRuntimeHandle int64                  `protobuf:"varint,2,opt,name=runbook_runtime_handle,json=runbookRuntimeHandle,proto3" json:"runbook_runtime_handle,omitempty"`
+	StepName             string                 `protobuf:"bytes,3,opt,name=step_name,json=stepName,proto3" json:"step_name,omitempty"`
+	PreExecuteScope      *EvalScope             `protobuf:"bytes,4,opt,name=pre_execute_scope,json=preExecuteScope,proto3" json:"pre_execute_scope,omitempty"`
+	PostExecuteScope     *EvalScope             `protobuf:"bytes,5,opt,name=post_execute_scope,json=postExecuteScope,proto3" json:"post_execute_scope,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ExecuteRunbookStep_Request) Reset() {
 	*x = ExecuteRunbookStep_Request{}
-	mi := &file_runbooks_proto_msgTypes[27]
+	mi := &file_runbooks_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1446,7 +1763,7 @@ func (x *ExecuteRunbookStep_Request) String() string {
 func (*ExecuteRunbookStep_Request) ProtoMessage() {}
 
 func (x *ExecuteRunbookStep_Request) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[27]
+	mi := &file_runbooks_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1459,12 +1776,19 @@ func (x *ExecuteRunbookStep_Request) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteRunbookStep_Request.ProtoReflect.Descriptor instead.
 func (*ExecuteRunbookStep_Request) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{7, 0}
+	return file_runbooks_proto_rawDescGZIP(), []int{9, 0}
 }
 
 func (x *ExecuteRunbookStep_Request) GetRunbookConfigHandle() int64 {
 	if x != nil {
 		return x.RunbookConfigHandle
+	}
+	return 0
+}
+
+func (x *ExecuteRunbookStep_Request) GetRunbookRuntimeHandle() int64 {
+	if x != nil {
+		return x.RunbookRuntimeHandle
 	}
 	return 0
 }
@@ -1501,7 +1825,7 @@ type ExecuteRunbookStep_Response struct {
 
 func (x *ExecuteRunbookStep_Response) Reset() {
 	*x = ExecuteRunbookStep_Response{}
-	mi := &file_runbooks_proto_msgTypes[28]
+	mi := &file_runbooks_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1513,7 +1837,7 @@ func (x *ExecuteRunbookStep_Response) String() string {
 func (*ExecuteRunbookStep_Response) ProtoMessage() {}
 
 func (x *ExecuteRunbookStep_Response) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[28]
+	mi := &file_runbooks_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1526,7 +1850,7 @@ func (x *ExecuteRunbookStep_Response) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteRunbookStep_Response.ProtoReflect.Descriptor instead.
 func (*ExecuteRunbookStep_Response) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{7, 1}
+	return file_runbooks_proto_rawDescGZIP(), []int{9, 1}
 }
 
 func (x *ExecuteRunbookStep_Response) GetStatus() StepStatus {
@@ -1560,7 +1884,7 @@ type GetRunnableRunbookSteps_Request struct {
 
 func (x *GetRunnableRunbookSteps_Request) Reset() {
 	*x = GetRunnableRunbookSteps_Request{}
-	mi := &file_runbooks_proto_msgTypes[29]
+	mi := &file_runbooks_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1572,7 +1896,7 @@ func (x *GetRunnableRunbookSteps_Request) String() string {
 func (*GetRunnableRunbookSteps_Request) ProtoMessage() {}
 
 func (x *GetRunnableRunbookSteps_Request) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[29]
+	mi := &file_runbooks_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1585,7 +1909,7 @@ func (x *GetRunnableRunbookSteps_Request) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunnableRunbookSteps_Request.ProtoReflect.Descriptor instead.
 func (*GetRunnableRunbookSteps_Request) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{8, 0}
+	return file_runbooks_proto_rawDescGZIP(), []int{10, 0}
 }
 
 func (x *GetRunnableRunbookSteps_Request) GetRunbookConfigHandle() int64 {
@@ -1612,7 +1936,7 @@ type GetRunnableRunbookSteps_Response struct {
 
 func (x *GetRunnableRunbookSteps_Response) Reset() {
 	*x = GetRunnableRunbookSteps_Response{}
-	mi := &file_runbooks_proto_msgTypes[30]
+	mi := &file_runbooks_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1624,7 +1948,7 @@ func (x *GetRunnableRunbookSteps_Response) String() string {
 func (*GetRunnableRunbookSteps_Response) ProtoMessage() {}
 
 func (x *GetRunnableRunbookSteps_Response) ProtoReflect() protoreflect.Message {
-	mi := &file_runbooks_proto_msgTypes[30]
+	mi := &file_runbooks_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1637,7 +1961,7 @@ func (x *GetRunnableRunbookSteps_Response) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunnableRunbookSteps_Response.ProtoReflect.Descriptor instead.
 func (*GetRunnableRunbookSteps_Response) Descriptor() ([]byte, []int) {
-	return file_runbooks_proto_rawDescGZIP(), []int{8, 1}
+	return file_runbooks_proto_rawDescGZIP(), []int{10, 1}
 }
 
 func (x *GetRunnableRunbookSteps_Response) GetStepNames() []string {
@@ -1673,7 +1997,18 @@ const file_runbooks_proto_rawDesc = "" +
 	"configPath\x1ax\n" +
 	"\bResponse\x122\n" +
 	"\x15runbook_config_handle\x18\x01 \x01(\x03R\x13runbookConfigHandle\x128\n" +
-	"\vdiagnostics\x18\x02 \x03(\v2\x16.terraform1.DiagnosticR\vdiagnostics\"f\n" +
+	"\vdiagnostics\x18\x02 \x03(\v2\x16.terraform1.DiagnosticR\vdiagnostics\"\xcd\x01\n" +
+	"\x12OpenRunbookRuntime\x1au\n" +
+	"\aRequest\x126\n" +
+	"\x17dependency_locks_handle\x18\x01 \x01(\x03R\x15dependencyLocksHandle\x122\n" +
+	"\x15provider_cache_handle\x18\x02 \x01(\x03R\x13providerCacheHandle\x1a@\n" +
+	"\bResponse\x124\n" +
+	"\x16runbook_runtime_handle\x18\x01 \x01(\x03R\x14runbookRuntimeHandle\"b\n" +
+	"\x13CloseRunbookRuntime\x1a?\n" +
+	"\aRequest\x124\n" +
+	"\x16runbook_runtime_handle\x18\x01 \x01(\x03R\x14runbookRuntimeHandle\x1a\n" +
+	"\n" +
+	"\bResponse\"f\n" +
 	"\x19CloseRunbookConfiguration\x1a=\n" +
 	"\aRequest\x122\n" +
 	"\x15runbook_config_handle\x18\x01 \x01(\x03R\x13runbookConfigHandle\x1a\n" +
@@ -1723,33 +2058,39 @@ const file_runbooks_proto_rawDesc = "" +
 	"\x06OnFail\x12\x13\n" +
 	"\x0fON_FAIL_INVALID\x10\x00\x12\x11\n" +
 	"\rON_FAIL_ERROR\x10\x01\x12\x10\n" +
-	"\fON_FAIL_SKIP\x10\x02\"\x9a\x05\n" +
+	"\fON_FAIL_SKIP\x10\x02\"\xf9\x06\n" +
 	"\x0fPlanRunbookStep\x1ak\n" +
 	"\rPlannedAction\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x1f\n" +
 	"\vaction_type\x18\x02 \x01(\tR\n" +
 	"actionType\x12\x1f\n" +
 	"\vaction_name\x18\x03 \x01(\tR\n" +
-	"actionName\x1a;\n" +
+	"actionName\x1aK\n" +
+	"\fPlannedQuery\x12\x18\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\x12!\n" +
+	"\fresult_count\x18\x02 \x01(\x03R\vresultCount\x1a;\n" +
 	"\vLoweredFile\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
-	"\acontent\x18\x02 \x01(\fR\acontent\x1a\x90\x01\n" +
+	"\acontent\x18\x02 \x01(\fR\acontent\x1a\xc6\x01\n" +
 	"\aRequest\x122\n" +
-	"\x15runbook_config_handle\x18\x01 \x01(\x03R\x13runbookConfigHandle\x12\x1b\n" +
-	"\tstep_name\x18\x02 \x01(\tR\bstepName\x124\n" +
-	"\x05scope\x18\x03 \x01(\v2\x1e.terraform1.runbooks.EvalScopeR\x05scope\x1a\xc9\x02\n" +
+	"\x15runbook_config_handle\x18\x01 \x01(\x03R\x13runbookConfigHandle\x124\n" +
+	"\x16runbook_runtime_handle\x18\x02 \x01(\x03R\x14runbookRuntimeHandle\x12\x1b\n" +
+	"\tstep_name\x18\x03 \x01(\tR\bstepName\x124\n" +
+	"\x05scope\x18\x04 \x01(\v2\x1e.terraform1.runbooks.EvalScopeR\x05scope\x1a\xa5\x03\n" +
 	"\bResponse\x127\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1f.terraform1.runbooks.StepStatusR\x06status\x12\x16\n" +
 	"\x06detail\x18\x02 \x01(\tR\x06detail\x128\n" +
 	"\vdiagnostics\x18\x03 \x03(\v2\x16.terraform1.DiagnosticR\vdiagnostics\x12[\n" +
 	"\x0fplanned_actions\x18\x04 \x03(\v22.terraform1.runbooks.PlanRunbookStep.PlannedActionR\x0eplannedActions\x12U\n" +
-	"\rlowered_files\x18\x05 \x03(\v20.terraform1.runbooks.PlanRunbookStep.LoweredFileR\floweredFiles\"\xa3\x03\n" +
-	"\x12ExecuteRunbookStep\x1a\xf4\x01\n" +
+	"\rlowered_files\x18\x05 \x03(\v20.terraform1.runbooks.PlanRunbookStep.LoweredFileR\floweredFiles\x12Z\n" +
+	"\x0fplanned_queries\x18\x06 \x03(\v21.terraform1.runbooks.PlanRunbookStep.PlannedQueryR\x0eplannedQueries\"\xd9\x03\n" +
+	"\x12ExecuteRunbookStep\x1a\xaa\x02\n" +
 	"\aRequest\x122\n" +
-	"\x15runbook_config_handle\x18\x01 \x01(\x03R\x13runbookConfigHandle\x12\x1b\n" +
-	"\tstep_name\x18\x02 \x01(\tR\bstepName\x12J\n" +
-	"\x11pre_execute_scope\x18\x03 \x01(\v2\x1e.terraform1.runbooks.EvalScopeR\x0fpreExecuteScope\x12L\n" +
-	"\x12post_execute_scope\x18\x04 \x01(\v2\x1e.terraform1.runbooks.EvalScopeR\x10postExecuteScope\x1a\x95\x01\n" +
+	"\x15runbook_config_handle\x18\x01 \x01(\x03R\x13runbookConfigHandle\x124\n" +
+	"\x16runbook_runtime_handle\x18\x02 \x01(\x03R\x14runbookRuntimeHandle\x12\x1b\n" +
+	"\tstep_name\x18\x03 \x01(\tR\bstepName\x12J\n" +
+	"\x11pre_execute_scope\x18\x04 \x01(\v2\x1e.terraform1.runbooks.EvalScopeR\x0fpreExecuteScope\x12L\n" +
+	"\x12post_execute_scope\x18\x05 \x01(\v2\x1e.terraform1.runbooks.EvalScopeR\x10postExecuteScope\x1a\x95\x01\n" +
 	"\bResponse\x127\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1f.terraform1.runbooks.StepStatusR\x06status\x12\x16\n" +
 	"\x06detail\x18\x02 \x01(\tR\x06detail\x128\n" +
@@ -1768,10 +2109,12 @@ const file_runbooks_proto_rawDesc = "" +
 	"\x11STEP_STATUS_READY\x10\x01\x12\x17\n" +
 	"\x13STEP_STATUS_SKIPPED\x10\x02\x12\x16\n" +
 	"\x12STEP_STATUS_FAILED\x10\x03\x12\x19\n" +
-	"\x15STEP_STATUS_SUCCEEDED\x10\x042\xca\a\n" +
+	"\x15STEP_STATUS_SUCCEEDED\x10\x042\xbf\t\n" +
 	"\bRunbooks\x12\x89\x01\n" +
-	"\x18OpenRunbookConfiguration\x125.terraform1.runbooks.OpenRunbookConfiguration.Request\x1a6.terraform1.runbooks.OpenRunbookConfiguration.Response\x12\x8c\x01\n" +
-	"\x19CloseRunbookConfiguration\x126.terraform1.runbooks.CloseRunbookConfiguration.Request\x1a7.terraform1.runbooks.CloseRunbookConfiguration.Response\x12\x95\x01\n" +
+	"\x18OpenRunbookConfiguration\x125.terraform1.runbooks.OpenRunbookConfiguration.Request\x1a6.terraform1.runbooks.OpenRunbookConfiguration.Response\x12w\n" +
+	"\x12OpenRunbookRuntime\x12/.terraform1.runbooks.OpenRunbookRuntime.Request\x1a0.terraform1.runbooks.OpenRunbookRuntime.Response\x12\x8c\x01\n" +
+	"\x19CloseRunbookConfiguration\x126.terraform1.runbooks.CloseRunbookConfiguration.Request\x1a7.terraform1.runbooks.CloseRunbookConfiguration.Response\x12z\n" +
+	"\x13CloseRunbookRuntime\x120.terraform1.runbooks.CloseRunbookRuntime.Request\x1a1.terraform1.runbooks.CloseRunbookRuntime.Response\x12\x95\x01\n" +
 	"\x1cValidateRunbookConfiguration\x129.terraform1.runbooks.ValidateRunbookConfiguration.Request\x1a:.terraform1.runbooks.ValidateRunbookConfiguration.Response\x12\x98\x01\n" +
 	"\x1dFindRunbookConfigurationSteps\x12:.terraform1.runbooks.FindRunbookConfigurationSteps.Request\x1a;.terraform1.runbooks.FindRunbookConfigurationSteps.Response\x12n\n" +
 	"\x0fPlanRunbookStep\x12,.terraform1.runbooks.PlanRunbookStep.Request\x1a-.terraform1.runbooks.PlanRunbookStep.Response\x12w\n" +
@@ -1791,42 +2134,49 @@ func file_runbooks_proto_rawDescGZIP() []byte {
 }
 
 var file_runbooks_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_runbooks_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_runbooks_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_runbooks_proto_goTypes = []any{
 	(StepStatus)(0), // 0: terraform1.runbooks.StepStatus
 	(FindRunbookConfigurationSteps_Condition_OnFail)(0), // 1: terraform1.runbooks.FindRunbookConfigurationSteps.Condition.OnFail
 	(*DynamicValue)(nil),                                 // 2: terraform1.runbooks.DynamicValue
 	(*EvalScope)(nil),                                    // 3: terraform1.runbooks.EvalScope
 	(*OpenRunbookConfiguration)(nil),                     // 4: terraform1.runbooks.OpenRunbookConfiguration
-	(*CloseRunbookConfiguration)(nil),                    // 5: terraform1.runbooks.CloseRunbookConfiguration
-	(*ValidateRunbookConfiguration)(nil),                 // 6: terraform1.runbooks.ValidateRunbookConfiguration
-	(*FindRunbookConfigurationSteps)(nil),                // 7: terraform1.runbooks.FindRunbookConfigurationSteps
-	(*PlanRunbookStep)(nil),                              // 8: terraform1.runbooks.PlanRunbookStep
-	(*ExecuteRunbookStep)(nil),                           // 9: terraform1.runbooks.ExecuteRunbookStep
-	(*GetRunnableRunbookSteps)(nil),                      // 10: terraform1.runbooks.GetRunnableRunbookSteps
-	(*OpenRunbookConfiguration_Request)(nil),             // 11: terraform1.runbooks.OpenRunbookConfiguration.Request
-	(*OpenRunbookConfiguration_Response)(nil),            // 12: terraform1.runbooks.OpenRunbookConfiguration.Response
-	(*CloseRunbookConfiguration_Request)(nil),            // 13: terraform1.runbooks.CloseRunbookConfiguration.Request
-	(*CloseRunbookConfiguration_Response)(nil),           // 14: terraform1.runbooks.CloseRunbookConfiguration.Response
-	(*ValidateRunbookConfiguration_Request)(nil),         // 15: terraform1.runbooks.ValidateRunbookConfiguration.Request
-	(*ValidateRunbookConfiguration_Response)(nil),        // 16: terraform1.runbooks.ValidateRunbookConfiguration.Response
-	(*FindRunbookConfigurationSteps_Request)(nil),        // 17: terraform1.runbooks.FindRunbookConfigurationSteps.Request
-	(*FindRunbookConfigurationSteps_Response)(nil),       // 18: terraform1.runbooks.FindRunbookConfigurationSteps.Response
-	(*FindRunbookConfigurationSteps_RunbookConfig)(nil),  // 19: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig
-	(*FindRunbookConfigurationSteps_ProviderConfig)(nil), // 20: terraform1.runbooks.FindRunbookConfigurationSteps.ProviderConfig
-	(*FindRunbookConfigurationSteps_Step)(nil),           // 21: terraform1.runbooks.FindRunbookConfigurationSteps.Step
-	(*FindRunbookConfigurationSteps_Variable)(nil),       // 22: terraform1.runbooks.FindRunbookConfigurationSteps.Variable
-	(*FindRunbookConfigurationSteps_Condition)(nil),      // 23: terraform1.runbooks.FindRunbookConfigurationSteps.Condition
-	nil,                                      // 24: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry
-	(*PlanRunbookStep_PlannedAction)(nil),    // 25: terraform1.runbooks.PlanRunbookStep.PlannedAction
-	(*PlanRunbookStep_LoweredFile)(nil),      // 26: terraform1.runbooks.PlanRunbookStep.LoweredFile
-	(*PlanRunbookStep_Request)(nil),          // 27: terraform1.runbooks.PlanRunbookStep.Request
-	(*PlanRunbookStep_Response)(nil),         // 28: terraform1.runbooks.PlanRunbookStep.Response
-	(*ExecuteRunbookStep_Request)(nil),       // 29: terraform1.runbooks.ExecuteRunbookStep.Request
-	(*ExecuteRunbookStep_Response)(nil),      // 30: terraform1.runbooks.ExecuteRunbookStep.Response
-	(*GetRunnableRunbookSteps_Request)(nil),  // 31: terraform1.runbooks.GetRunnableRunbookSteps.Request
-	(*GetRunnableRunbookSteps_Response)(nil), // 32: terraform1.runbooks.GetRunnableRunbookSteps.Response
-	(*terraform1.Diagnostic)(nil),            // 33: terraform1.Diagnostic
+	(*OpenRunbookRuntime)(nil),                           // 5: terraform1.runbooks.OpenRunbookRuntime
+	(*CloseRunbookRuntime)(nil),                          // 6: terraform1.runbooks.CloseRunbookRuntime
+	(*CloseRunbookConfiguration)(nil),                    // 7: terraform1.runbooks.CloseRunbookConfiguration
+	(*ValidateRunbookConfiguration)(nil),                 // 8: terraform1.runbooks.ValidateRunbookConfiguration
+	(*FindRunbookConfigurationSteps)(nil),                // 9: terraform1.runbooks.FindRunbookConfigurationSteps
+	(*PlanRunbookStep)(nil),                              // 10: terraform1.runbooks.PlanRunbookStep
+	(*ExecuteRunbookStep)(nil),                           // 11: terraform1.runbooks.ExecuteRunbookStep
+	(*GetRunnableRunbookSteps)(nil),                      // 12: terraform1.runbooks.GetRunnableRunbookSteps
+	(*OpenRunbookConfiguration_Request)(nil),             // 13: terraform1.runbooks.OpenRunbookConfiguration.Request
+	(*OpenRunbookConfiguration_Response)(nil),            // 14: terraform1.runbooks.OpenRunbookConfiguration.Response
+	(*OpenRunbookRuntime_Request)(nil),                   // 15: terraform1.runbooks.OpenRunbookRuntime.Request
+	(*OpenRunbookRuntime_Response)(nil),                  // 16: terraform1.runbooks.OpenRunbookRuntime.Response
+	(*CloseRunbookRuntime_Request)(nil),                  // 17: terraform1.runbooks.CloseRunbookRuntime.Request
+	(*CloseRunbookRuntime_Response)(nil),                 // 18: terraform1.runbooks.CloseRunbookRuntime.Response
+	(*CloseRunbookConfiguration_Request)(nil),            // 19: terraform1.runbooks.CloseRunbookConfiguration.Request
+	(*CloseRunbookConfiguration_Response)(nil),           // 20: terraform1.runbooks.CloseRunbookConfiguration.Response
+	(*ValidateRunbookConfiguration_Request)(nil),         // 21: terraform1.runbooks.ValidateRunbookConfiguration.Request
+	(*ValidateRunbookConfiguration_Response)(nil),        // 22: terraform1.runbooks.ValidateRunbookConfiguration.Response
+	(*FindRunbookConfigurationSteps_Request)(nil),        // 23: terraform1.runbooks.FindRunbookConfigurationSteps.Request
+	(*FindRunbookConfigurationSteps_Response)(nil),       // 24: terraform1.runbooks.FindRunbookConfigurationSteps.Response
+	(*FindRunbookConfigurationSteps_RunbookConfig)(nil),  // 25: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig
+	(*FindRunbookConfigurationSteps_ProviderConfig)(nil), // 26: terraform1.runbooks.FindRunbookConfigurationSteps.ProviderConfig
+	(*FindRunbookConfigurationSteps_Step)(nil),           // 27: terraform1.runbooks.FindRunbookConfigurationSteps.Step
+	(*FindRunbookConfigurationSteps_Variable)(nil),       // 28: terraform1.runbooks.FindRunbookConfigurationSteps.Variable
+	(*FindRunbookConfigurationSteps_Condition)(nil),      // 29: terraform1.runbooks.FindRunbookConfigurationSteps.Condition
+	nil,                                      // 30: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry
+	(*PlanRunbookStep_PlannedAction)(nil),    // 31: terraform1.runbooks.PlanRunbookStep.PlannedAction
+	(*PlanRunbookStep_PlannedQuery)(nil),     // 32: terraform1.runbooks.PlanRunbookStep.PlannedQuery
+	(*PlanRunbookStep_LoweredFile)(nil),      // 33: terraform1.runbooks.PlanRunbookStep.LoweredFile
+	(*PlanRunbookStep_Request)(nil),          // 34: terraform1.runbooks.PlanRunbookStep.Request
+	(*PlanRunbookStep_Response)(nil),         // 35: terraform1.runbooks.PlanRunbookStep.Response
+	(*ExecuteRunbookStep_Request)(nil),       // 36: terraform1.runbooks.ExecuteRunbookStep.Request
+	(*ExecuteRunbookStep_Response)(nil),      // 37: terraform1.runbooks.ExecuteRunbookStep.Response
+	(*GetRunnableRunbookSteps_Request)(nil),  // 38: terraform1.runbooks.GetRunnableRunbookSteps.Request
+	(*GetRunnableRunbookSteps_Response)(nil), // 39: terraform1.runbooks.GetRunnableRunbookSteps.Response
+	(*terraform1.Diagnostic)(nil),            // 40: terraform1.Diagnostic
 }
 var file_runbooks_proto_depIdxs = []int32{
 	2,  // 0: terraform1.runbooks.EvalScope.variables:type_name -> terraform1.runbooks.DynamicValue
@@ -1834,45 +2184,50 @@ var file_runbooks_proto_depIdxs = []int32{
 	2,  // 2: terraform1.runbooks.EvalScope.actions:type_name -> terraform1.runbooks.DynamicValue
 	2,  // 3: terraform1.runbooks.EvalScope.steps:type_name -> terraform1.runbooks.DynamicValue
 	2,  // 4: terraform1.runbooks.EvalScope.locals:type_name -> terraform1.runbooks.DynamicValue
-	33, // 5: terraform1.runbooks.OpenRunbookConfiguration.Response.diagnostics:type_name -> terraform1.Diagnostic
-	33, // 6: terraform1.runbooks.ValidateRunbookConfiguration.Response.diagnostics:type_name -> terraform1.Diagnostic
-	19, // 7: terraform1.runbooks.FindRunbookConfigurationSteps.Response.config:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig
-	20, // 8: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.providers:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.ProviderConfig
-	24, // 9: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.steps:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry
-	22, // 10: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.variables:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Variable
-	23, // 11: terraform1.runbooks.FindRunbookConfigurationSteps.Step.preconditions:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition
-	23, // 12: terraform1.runbooks.FindRunbookConfigurationSteps.Step.postconditions:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition
+	40, // 5: terraform1.runbooks.OpenRunbookConfiguration.Response.diagnostics:type_name -> terraform1.Diagnostic
+	40, // 6: terraform1.runbooks.ValidateRunbookConfiguration.Response.diagnostics:type_name -> terraform1.Diagnostic
+	25, // 7: terraform1.runbooks.FindRunbookConfigurationSteps.Response.config:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig
+	26, // 8: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.providers:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.ProviderConfig
+	30, // 9: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.steps:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry
+	28, // 10: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.variables:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Variable
+	29, // 11: terraform1.runbooks.FindRunbookConfigurationSteps.Step.preconditions:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition
+	29, // 12: terraform1.runbooks.FindRunbookConfigurationSteps.Step.postconditions:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition
 	1,  // 13: terraform1.runbooks.FindRunbookConfigurationSteps.Condition.on_fail:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition.OnFail
-	21, // 14: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry.value:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Step
+	27, // 14: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry.value:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Step
 	3,  // 15: terraform1.runbooks.PlanRunbookStep.Request.scope:type_name -> terraform1.runbooks.EvalScope
 	0,  // 16: terraform1.runbooks.PlanRunbookStep.Response.status:type_name -> terraform1.runbooks.StepStatus
-	33, // 17: terraform1.runbooks.PlanRunbookStep.Response.diagnostics:type_name -> terraform1.Diagnostic
-	25, // 18: terraform1.runbooks.PlanRunbookStep.Response.planned_actions:type_name -> terraform1.runbooks.PlanRunbookStep.PlannedAction
-	26, // 19: terraform1.runbooks.PlanRunbookStep.Response.lowered_files:type_name -> terraform1.runbooks.PlanRunbookStep.LoweredFile
-	3,  // 20: terraform1.runbooks.ExecuteRunbookStep.Request.pre_execute_scope:type_name -> terraform1.runbooks.EvalScope
-	3,  // 21: terraform1.runbooks.ExecuteRunbookStep.Request.post_execute_scope:type_name -> terraform1.runbooks.EvalScope
-	0,  // 22: terraform1.runbooks.ExecuteRunbookStep.Response.status:type_name -> terraform1.runbooks.StepStatus
-	33, // 23: terraform1.runbooks.ExecuteRunbookStep.Response.diagnostics:type_name -> terraform1.Diagnostic
-	33, // 24: terraform1.runbooks.GetRunnableRunbookSteps.Response.diagnostics:type_name -> terraform1.Diagnostic
-	11, // 25: terraform1.runbooks.Runbooks.OpenRunbookConfiguration:input_type -> terraform1.runbooks.OpenRunbookConfiguration.Request
-	13, // 26: terraform1.runbooks.Runbooks.CloseRunbookConfiguration:input_type -> terraform1.runbooks.CloseRunbookConfiguration.Request
-	15, // 27: terraform1.runbooks.Runbooks.ValidateRunbookConfiguration:input_type -> terraform1.runbooks.ValidateRunbookConfiguration.Request
-	17, // 28: terraform1.runbooks.Runbooks.FindRunbookConfigurationSteps:input_type -> terraform1.runbooks.FindRunbookConfigurationSteps.Request
-	27, // 29: terraform1.runbooks.Runbooks.PlanRunbookStep:input_type -> terraform1.runbooks.PlanRunbookStep.Request
-	29, // 30: terraform1.runbooks.Runbooks.ExecuteRunbookStep:input_type -> terraform1.runbooks.ExecuteRunbookStep.Request
-	31, // 31: terraform1.runbooks.Runbooks.GetRunnableRunbookSteps:input_type -> terraform1.runbooks.GetRunnableRunbookSteps.Request
-	12, // 32: terraform1.runbooks.Runbooks.OpenRunbookConfiguration:output_type -> terraform1.runbooks.OpenRunbookConfiguration.Response
-	14, // 33: terraform1.runbooks.Runbooks.CloseRunbookConfiguration:output_type -> terraform1.runbooks.CloseRunbookConfiguration.Response
-	16, // 34: terraform1.runbooks.Runbooks.ValidateRunbookConfiguration:output_type -> terraform1.runbooks.ValidateRunbookConfiguration.Response
-	18, // 35: terraform1.runbooks.Runbooks.FindRunbookConfigurationSteps:output_type -> terraform1.runbooks.FindRunbookConfigurationSteps.Response
-	28, // 36: terraform1.runbooks.Runbooks.PlanRunbookStep:output_type -> terraform1.runbooks.PlanRunbookStep.Response
-	30, // 37: terraform1.runbooks.Runbooks.ExecuteRunbookStep:output_type -> terraform1.runbooks.ExecuteRunbookStep.Response
-	32, // 38: terraform1.runbooks.Runbooks.GetRunnableRunbookSteps:output_type -> terraform1.runbooks.GetRunnableRunbookSteps.Response
-	32, // [32:39] is the sub-list for method output_type
-	25, // [25:32] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	40, // 17: terraform1.runbooks.PlanRunbookStep.Response.diagnostics:type_name -> terraform1.Diagnostic
+	31, // 18: terraform1.runbooks.PlanRunbookStep.Response.planned_actions:type_name -> terraform1.runbooks.PlanRunbookStep.PlannedAction
+	33, // 19: terraform1.runbooks.PlanRunbookStep.Response.lowered_files:type_name -> terraform1.runbooks.PlanRunbookStep.LoweredFile
+	32, // 20: terraform1.runbooks.PlanRunbookStep.Response.planned_queries:type_name -> terraform1.runbooks.PlanRunbookStep.PlannedQuery
+	3,  // 21: terraform1.runbooks.ExecuteRunbookStep.Request.pre_execute_scope:type_name -> terraform1.runbooks.EvalScope
+	3,  // 22: terraform1.runbooks.ExecuteRunbookStep.Request.post_execute_scope:type_name -> terraform1.runbooks.EvalScope
+	0,  // 23: terraform1.runbooks.ExecuteRunbookStep.Response.status:type_name -> terraform1.runbooks.StepStatus
+	40, // 24: terraform1.runbooks.ExecuteRunbookStep.Response.diagnostics:type_name -> terraform1.Diagnostic
+	40, // 25: terraform1.runbooks.GetRunnableRunbookSteps.Response.diagnostics:type_name -> terraform1.Diagnostic
+	13, // 26: terraform1.runbooks.Runbooks.OpenRunbookConfiguration:input_type -> terraform1.runbooks.OpenRunbookConfiguration.Request
+	15, // 27: terraform1.runbooks.Runbooks.OpenRunbookRuntime:input_type -> terraform1.runbooks.OpenRunbookRuntime.Request
+	19, // 28: terraform1.runbooks.Runbooks.CloseRunbookConfiguration:input_type -> terraform1.runbooks.CloseRunbookConfiguration.Request
+	17, // 29: terraform1.runbooks.Runbooks.CloseRunbookRuntime:input_type -> terraform1.runbooks.CloseRunbookRuntime.Request
+	21, // 30: terraform1.runbooks.Runbooks.ValidateRunbookConfiguration:input_type -> terraform1.runbooks.ValidateRunbookConfiguration.Request
+	23, // 31: terraform1.runbooks.Runbooks.FindRunbookConfigurationSteps:input_type -> terraform1.runbooks.FindRunbookConfigurationSteps.Request
+	34, // 32: terraform1.runbooks.Runbooks.PlanRunbookStep:input_type -> terraform1.runbooks.PlanRunbookStep.Request
+	36, // 33: terraform1.runbooks.Runbooks.ExecuteRunbookStep:input_type -> terraform1.runbooks.ExecuteRunbookStep.Request
+	38, // 34: terraform1.runbooks.Runbooks.GetRunnableRunbookSteps:input_type -> terraform1.runbooks.GetRunnableRunbookSteps.Request
+	14, // 35: terraform1.runbooks.Runbooks.OpenRunbookConfiguration:output_type -> terraform1.runbooks.OpenRunbookConfiguration.Response
+	16, // 36: terraform1.runbooks.Runbooks.OpenRunbookRuntime:output_type -> terraform1.runbooks.OpenRunbookRuntime.Response
+	20, // 37: terraform1.runbooks.Runbooks.CloseRunbookConfiguration:output_type -> terraform1.runbooks.CloseRunbookConfiguration.Response
+	18, // 38: terraform1.runbooks.Runbooks.CloseRunbookRuntime:output_type -> terraform1.runbooks.CloseRunbookRuntime.Response
+	22, // 39: terraform1.runbooks.Runbooks.ValidateRunbookConfiguration:output_type -> terraform1.runbooks.ValidateRunbookConfiguration.Response
+	24, // 40: terraform1.runbooks.Runbooks.FindRunbookConfigurationSteps:output_type -> terraform1.runbooks.FindRunbookConfigurationSteps.Response
+	35, // 41: terraform1.runbooks.Runbooks.PlanRunbookStep:output_type -> terraform1.runbooks.PlanRunbookStep.Response
+	37, // 42: terraform1.runbooks.Runbooks.ExecuteRunbookStep:output_type -> terraform1.runbooks.ExecuteRunbookStep.Response
+	39, // 43: terraform1.runbooks.Runbooks.GetRunnableRunbookSteps:output_type -> terraform1.runbooks.GetRunnableRunbookSteps.Response
+	35, // [35:44] is the sub-list for method output_type
+	26, // [26:35] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_runbooks_proto_init() }
@@ -1886,7 +2241,7 @@ func file_runbooks_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_runbooks_proto_rawDesc), len(file_runbooks_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   31,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

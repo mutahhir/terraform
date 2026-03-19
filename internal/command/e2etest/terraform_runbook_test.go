@@ -14,14 +14,11 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
-	commandtesting "github.com/hashicorp/terraform/internal/command/testing"
-	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/e2e"
 	"github.com/hashicorp/terraform/internal/grpcwrap"
 	tfplugin "github.com/hashicorp/terraform/internal/plugin6"
-	"github.com/hashicorp/terraform/internal/providers"
+	simple "github.com/hashicorp/terraform/internal/provider-simple-v6"
 	proto "github.com/hashicorp/terraform/internal/tfplugin6"
-	"github.com/zclconf/go-cty/cty"
 )
 
 func TestRunbookPlan(t *testing.T) {
@@ -36,23 +33,9 @@ func TestRunbookPlan(t *testing.T) {
 	fixturePath := filepath.Join("testdata", "runbook-provider")
 	tf := e2e.NewBinary(t, terraformBin, fixturePath)
 
-	provider := commandtesting.NewProvider(nil)
-	provider.Provider.PlanActionFn = func(req providers.PlanActionRequest) providers.PlanActionResponse {
-		return providers.PlanActionResponse{}
-	}
-	provider.Provider.GetProviderSchemaResponse.Actions = map[string]providers.ActionSchema{
-		"action_example": {
-			ConfigSchema: &configschema.Block{
-				Attributes: map[string]*configschema.Attribute{
-					"attr": {Type: cty.String, Optional: true},
-				},
-			},
-		},
-	}
-
 	reattachCh := make(chan *plugin.ReattachConfig)
 	closeCh := make(chan struct{})
-	provider6 := &providerServer{ProviderServer: grpcwrap.Provider6(provider.Provider)}
+	provider6 := &providerServer{ProviderServer: grpcwrap.Provider6(simple.Provider())}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -101,8 +84,14 @@ func TestRunbookPlan(t *testing.T) {
 	if !strings.Contains(stdout, "actions: 1") {
 		t.Fatalf("missing action count in output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "will invoke: action.action_example.target") {
+	if !strings.Contains(stdout, "queries: 1") {
+		t.Fatalf("missing query count in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "will invoke: action.simple_action.target") {
 		t.Fatalf("missing planned action address in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "will list: list.simple_resource.inventory") {
+		t.Fatalf("missing planned query address in output:\n%s", stdout)
 	}
 
 	cancel()

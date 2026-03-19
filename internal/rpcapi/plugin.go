@@ -89,7 +89,7 @@ func serverHandshake(s *grpc.Server, opts *serviceOpts) func(context.Context, *s
 		dependenciesStub.ActivateRPCServer(newDependenciesServer(handles, services))
 		stacksStub.ActivateRPCServer(newStacksServer(stopper, handles, services, opts))
 		packagesStub.ActivateRPCServer(newPackagesServer(services))
-		runbooksStub.ActivateRPCServer(newRunbooksServer(handles))
+		runbooksStub.ActivateRPCServer(newRunbooksServer(handles, services))
 
 		// If the client requested any extra capabililties that we're going
 		// to honor then we should announce them in this result.

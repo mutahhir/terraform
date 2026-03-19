@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
 
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
@@ -26,25 +27,35 @@ type Config struct {
 type File struct {
 	Path      string
 	Runbook   *Runbook
+	Providers map[string]*ProviderConfig
 	Variables map[string]*Variable
 	Steps     map[string]*Step
 }
 
 type Runbook struct {
-	TerraformVersion string
-	Providers        []*ProviderConfig
-	Variables        map[string]*Variable
-	DeclRange        tfdiags.SourceRange
+	TerraformVersion  string
+	RequiredProviders []*RequiredProvider
+	Variables         map[string]*Variable
+	DeclRange         tfdiags.SourceRange
 }
 
 type ProviderConfig struct {
 	Type      string
+	Alias     string
+	Src       []byte
+	DeclRange tfdiags.SourceRange
+}
+
+type RequiredProvider struct {
+	Name      string
+	Source    string
 	DeclRange tfdiags.SourceRange
 }
 
 type Variable struct {
 	Name      string
 	Default   hcl.Expression
+	Src       []byte
 	DeclRange tfdiags.SourceRange
 }
 
@@ -237,6 +248,7 @@ func DecodeFileBody(src []byte, body hcl.Body, path string) (*File, tfdiags.Diag
 
 	ret := &File{
 		Path:      path,
+		Providers: make(map[string]*ProviderConfig),
 		Variables: make(map[string]*Variable),
 		Steps:     make(map[string]*Step),
 	}
@@ -264,7 +276,7 @@ func DecodeFileBody(src []byte, body hcl.Body, path string) (*File, tfdiags.Diag
 			diags = diags.Append(moreDiags)
 			ret.Runbook = rb
 		case "variable":
-			variable, moreDiags := decodeVariableBlock(block)
+			variable, moreDiags := decodeVariableBlock(src, block, syntaxBlocks)
 			diags = diags.Append(moreDiags)
 			if variable == nil {
 				continue
@@ -279,6 +291,23 @@ func DecodeFileBody(src []byte, body hcl.Body, path string) (*File, tfdiags.Diag
 				continue
 			}
 			ret.Variables[variable.Name] = variable
+		case "provider":
+			provider, moreDiags := decodeProviderBlock(src, block, syntaxBlocks)
+			diags = diags.Append(moreDiags)
+			if provider == nil {
+				continue
+			}
+			key := providerConfigKey(provider.Type, provider.Alias)
+			if existing, exists := ret.Providers[key]; exists {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate provider block",
+					Detail:   fmt.Sprintf("A provider configuration for %q was already declared at %s.", key, existing.DeclRange.StartString()),
+					Subject:  block.DefRange.Ptr(),
+				})
+				continue
+			}
+			ret.Providers[key] = provider
 		case "step":
 			step, moreDiags := decodeStepBlock(src, block, syntaxBlocks)
 			diags = diags.Append(moreDiags)
@@ -320,23 +349,80 @@ func decodeRunbookBlock(block *hcl.Block) (*Runbook, tfdiags.Diagnostics) {
 	}
 
 	for _, nested := range content.Blocks {
-		if nested.Type != "provider" {
-			continue
+		if nested.Type == "required_providers" {
+			requiredProviders, moreDiags := decodeRequiredProvidersBlock(nested)
+			diags = diags.Append(moreDiags)
+			ret.RequiredProviders = append(ret.RequiredProviders, requiredProviders...)
 		}
-		provider := &ProviderConfig{
-			Type:      nested.Labels[0],
-			DeclRange: tfdiags.SourceRangeFromHCL(nested.DefRange),
-		}
-		ret.Providers = append(ret.Providers, provider)
 	}
 
 	return ret, diags
 }
 
-func decodeVariableBlock(block *hcl.Block) (*Variable, tfdiags.Diagnostics) {
+func decodeRequiredProvidersBlock(block *hcl.Block) ([]*RequiredProvider, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
+	attrs, hclDiags := block.Body.JustAttributes()
+	diags = diags.Append(hclDiags)
+	if hclDiags.HasErrors() {
+		return nil, diags
+	}
+
+	ret := make([]*RequiredProvider, 0, len(attrs))
+	for name, attr := range attrs {
+		entries, moreDiags := hcl.ExprMap(attr.Expr)
+		diags = diags.Append(moreDiags)
+		if moreDiags.HasErrors() {
+			continue
+		}
+		req := &RequiredProvider{Name: name, DeclRange: tfdiags.SourceRangeFromHCL(attr.Range)}
+		for _, kv := range entries {
+			key, keyDiags := kv.Key.Value(nil)
+			diags = diags.Append(keyDiags)
+			if keyDiags.HasErrors() || key.Type() != cty.String {
+				continue
+			}
+			if key.AsString() != "source" {
+				continue
+			}
+			var source string
+			moreDiags := gohcl.DecodeExpression(kv.Value, nil, &source)
+			diags = diags.Append(moreDiags)
+			req.Source = source
+		}
+		ret = append(ret, req)
+	}
+	return ret, diags
+}
+
+func decodeProviderBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[string]*hclsyntax.Block) (*ProviderConfig, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	syntaxBlock := lookupSyntaxBlock(syntaxBlocks, block)
+	ret := &ProviderConfig{
+		Type:      block.Labels[0],
+		DeclRange: tfdiags.SourceRangeFromHCL(block.DefRange),
+	}
+	if len(block.Labels) > 1 {
+		ret.Alias = block.Labels[1]
+	}
+	if src != nil {
+		ret.Src = sourceSlice(src, syntaxBlockRange(block, syntaxBlock))
+	}
+	return ret, diags
+}
+
+func providerConfigKey(name, alias string) string {
+	if alias == "" {
+		return name
+	}
+	return name + "." + alias
+}
+
+func decodeVariableBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[string]*hclsyntax.Block) (*Variable, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	syntaxBlock := lookupSyntaxBlock(syntaxBlocks, block)
 	ret := &Variable{
 		Name:      block.Labels[0],
+		Src:       sourceSlice(src, syntaxBlockRange(block, syntaxBlock)),
 		DeclRange: tfdiags.SourceRangeFromHCL(block.DefRange),
 	}
 	if !hclsyntax.ValidIdentifier(ret.Name) {
@@ -361,6 +447,11 @@ func decodeVariableBlock(block *hcl.Block) (*Variable, tfdiags.Diagnostics) {
 
 func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[string]*hclsyntax.Block) (*Step, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
+	stepSyntaxBlock := lookupSyntaxBlock(syntaxBlocks, block)
+	var nestedSyntaxBlocks map[string]map[string]*hclsyntax.Block
+	if stepSyntaxBlock != nil {
+		nestedSyntaxBlocks = indexSyntaxBlocks(stepSyntaxBlock.Body.Blocks)
+	}
 
 	ret := &Step{
 		Name:      block.Labels[0],
@@ -381,7 +472,7 @@ func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[s
 	diags = diags.Append(hclDiags)
 
 	for _, nested := range content.Blocks {
-		syntaxBlock := lookupSyntaxBlock(syntaxBlocks, nested)
+		syntaxBlock := lookupSyntaxBlock(nestedSyntaxBlocks, nested)
 		switch nested.Type {
 		case "config":
 			ret.HasConfig = true
@@ -621,7 +712,7 @@ func syntaxBlockKey(typ string, labels []string) string {
 
 func syntaxBlockRange(block *hcl.Block, syntaxBlock *hclsyntax.Block) hcl.Range {
 	if syntaxBlock != nil {
-		return hcl.RangeBetween(syntaxBlock.TypeRange, syntaxBlock.CloseBraceRange)
+		return syntaxBlock.Range()
 	}
 	return block.DefRange
 }
@@ -716,6 +807,7 @@ func validFilenameSuffix(filename string) string {
 var rootSchema = &hcl.BodySchema{
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "runbook"},
+		{Type: "provider", LabelNames: []string{"type"}},
 		{Type: "variable", LabelNames: []string{"name"}},
 		{Type: "step", LabelNames: []string{"name"}},
 	},
@@ -726,12 +818,21 @@ var runbookSchema = &hcl.BodySchema{
 		{Name: "terraform_version"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
-		{Type: "provider", LabelNames: []string{"type"}},
+		{Type: "required_providers"},
 	},
 }
 
 var variableSchema = &hcl.BodySchema{
-	Attributes: []hcl.AttributeSchema{{Name: "default"}},
+	Attributes: []hcl.AttributeSchema{
+		{Name: "type"},
+		{Name: "description"},
+		{Name: "default"},
+		{Name: "sensitive"},
+		{Name: "nullable"},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "validation"},
+	},
 }
 
 var stepSchema = &hcl.BodySchema{
