@@ -27,10 +27,18 @@ type LoweredStepBundle struct {
 }
 
 func LowerStep(cfg *Config, step *Step) (*LoweredStepBundle, tfdiags.Diagnostics) {
-	return LowerStepInstance(cfg, step, cty.NilVal, cty.NilVal)
+	return LowerStepWithScope(cfg, step, EvalScope{})
+}
+
+func LowerStepWithScope(cfg *Config, step *Step, scope EvalScope) (*LoweredStepBundle, tfdiags.Diagnostics) {
+	return LowerStepInstanceWithScope(cfg, step, scope)
 }
 
 func LowerStepInstance(cfg *Config, step *Step, each cty.Value, count cty.Value) (*LoweredStepBundle, tfdiags.Diagnostics) {
+	return LowerStepInstanceWithScope(cfg, step, EvalScope{Each: each, Count: count})
+}
+
+func LowerStepInstanceWithScope(cfg *Config, step *Step, scope EvalScope) (*LoweredStepBundle, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if cfg == nil || step == nil {
 		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Cannot lower step", "Runbook configuration or step is missing."))
@@ -42,7 +50,7 @@ func LowerStepInstance(cfg *Config, step *Step, each cty.Value, count cty.Value)
 	}
 
 	files := make(map[string][]byte)
-	mainSrc, mainDiags := buildMainTF(cfg, step, each, count)
+	mainSrc, mainDiags := buildMainTF(cfg, step, scope)
 	diags = diags.Append(mainDiags)
 	if len(bytes.TrimSpace(mainSrc)) > 0 {
 		files["main.tf"] = mainSrc
@@ -69,10 +77,11 @@ func LowerStepInstance(cfg *Config, step *Step, each cty.Value, count cty.Value)
 	return &LoweredStepBundle{StepName: step.Name, Dir: dir, Files: files}, diags
 }
 
-func buildMainTF(cfg *Config, step *Step, each cty.Value, count cty.Value) ([]byte, tfdiags.Diagnostics) {
+func buildMainTF(cfg *Config, step *Step, scope EvalScope) ([]byte, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	mainFile := hclwrite.NewEmptyFile()
 	rootBody := mainFile.Body()
+	lowerScope := NewLowerScope(scope)
 	if cfg.Runbook != nil {
 		settingsDiags := appendTerraformSettings(rootBody, cfg)
 		diags = diags.Append(settingsDiags)
@@ -80,7 +89,7 @@ func buildMainTF(cfg *Config, step *Step, each cty.Value, count cty.Value) ([]by
 		diags = diags.Append(variableDiags)
 		providerDiags := appendProviderBlocks(rootBody, cfg)
 		diags = diags.Append(providerDiags)
-		actionDiags := appendRootActionBlocks(rootBody, cfg)
+		actionDiags := appendRootActionBlocks(rootBody, cfg, lowerScope)
 		diags = diags.Append(actionDiags)
 	}
 	for _, action := range step.Actions {
@@ -88,12 +97,13 @@ func buildMainTF(cfg *Config, step *Step, each cty.Value, count cty.Value) ([]by
 			continue
 		}
 		src := action.Src
-		src = rewriteRepetitionReferences(src, each, count)
+		src = rewriteRepetitionReferences(src, scope.Each, scope.Count)
 		parsed, parseDiags := hclwrite.ParseConfig(src, action.DeclRange.Filename, hcl.InitialPos)
 		if parseDiags.HasErrors() || parsed == nil {
 			diags = diags.Append(parseDiags)
 			continue
 		}
+		diags = diags.Append(lowerScope.RewriteBodyExpressions(parsed.Body()))
 		rootBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		rootBody.AppendNewline()
 	}
@@ -102,19 +112,22 @@ func buildMainTF(cfg *Config, step *Step, each cty.Value, count cty.Value) ([]by
 			continue
 		}
 		src := dataSource.Src
-		src = rewriteRepetitionReferences(src, each, count)
+		src = rewriteRepetitionReferences(src, scope.Each, scope.Count)
 		parsed, parseDiags := hclwrite.ParseConfig(src, dataSource.DeclRange.Filename, hcl.InitialPos)
 		if parseDiags.HasErrors() || parsed == nil {
 			diags = diags.Append(parseDiags)
 			continue
 		}
+		diags = diags.Append(lowerScope.RewriteBodyExpressions(parsed.Body()))
 		rootBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		rootBody.AppendNewline()
 	}
-	outputDiags := appendStepOutputBlocks(rootBody, step, each, count)
+	outputDiags := appendStepOutputBlocks(rootBody, step, lowerScope)
 	diags = diags.Append(outputDiags)
-	conditionDiags := appendConditionOutputBlocks(rootBody, step, each, count)
+	conditionDiags := appendConditionOutputBlocks(rootBody, step, lowerScope)
 	diags = diags.Append(conditionDiags)
+	syntheticVarDiags := lowerScope.AppendVariableBlocks(rootBody)
+	diags = diags.Append(syntheticVarDiags)
 	return hclwrite.Format(mainFile.Bytes()), diags
 }
 
@@ -174,7 +187,7 @@ func appendTerraformSettings(body *hclwrite.Body, cfg *Config) tfdiags.Diagnosti
 	return diags
 }
 
-func appendRootActionBlocks(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics {
+func appendRootActionBlocks(body *hclwrite.Body, cfg *Config, lowerScope *LowerScope) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if cfg == nil {
 		return diags
@@ -207,13 +220,16 @@ func appendRootActionBlocks(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostic
 			diags = diags.Append(parseDiags)
 			continue
 		}
+		if lowerScope != nil {
+			diags = diags.Append(lowerScope.RewriteBodyExpressions(parsed.Body()))
+		}
 		body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		body.AppendNewline()
 	}
 	return diags
 }
 
-func appendStepOutputBlocks(body *hclwrite.Body, step *Step, each cty.Value, count cty.Value) tfdiags.Diagnostics {
+func appendStepOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerScope) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if step == nil || len(step.Outputs) == 0 {
 		return diags
@@ -229,7 +245,9 @@ func appendStepOutputBlocks(body *hclwrite.Body, step *Step, each cty.Value, cou
 			continue
 		}
 		valueSrc := bytes.TrimSpace(output.ValueSrc)
-		valueSrc = bytes.TrimSpace(rewriteRepetitionReferences(valueSrc, each, count))
+		rewrittenSrc, rewriteDiags := lowerScope.RewriteExpr(output.Value, valueSrc)
+		diags = diags.Append(rewriteDiags)
+		valueSrc = bytes.TrimSpace(rewriteRepetitionReferences(rewrittenSrc, lowerScope.scope.Each, lowerScope.scope.Count))
 		blockSrc := fmt.Sprintf("output %q {\n  value = %s\n}\n", name, string(valueSrc))
 		parsed, parseDiags := hclwrite.ParseConfig([]byte(blockSrc), output.DeclRange.Filename, hcl.InitialPos)
 		if parseDiags.HasErrors() || parsed == nil {
@@ -242,7 +260,7 @@ func appendStepOutputBlocks(body *hclwrite.Body, step *Step, each cty.Value, cou
 	return diags
 }
 
-func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, each cty.Value, count cty.Value) tfdiags.Diagnostics {
+func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerScope) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if step == nil {
 		return diags
@@ -254,7 +272,9 @@ func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, each cty.Value
 			}
 			if len(bytes.TrimSpace(cond.ConditionSrc)) > 0 {
 				conditionSrc := bytes.TrimSpace(cond.ConditionSrc)
-				conditionSrc = bytes.TrimSpace(rewriteRepetitionReferences(conditionSrc, each, count))
+				rewrittenSrc, rewriteDiags := lowerScope.RewriteExpr(cond.Condition, conditionSrc)
+				diags = diags.Append(rewriteDiags)
+				conditionSrc = bytes.TrimSpace(rewriteRepetitionReferences(rewrittenSrc, lowerScope.scope.Each, lowerScope.scope.Count))
 				blockSrc := fmt.Sprintf("output %q {\n  value = %s\n}\n", fmt.Sprintf("__runbook_%s_%d_condition", kind, i), string(conditionSrc))
 				parsed, parseDiags := hclwrite.ParseConfig([]byte(blockSrc), cond.DeclRange.Filename, hcl.InitialPos)
 				if parseDiags.HasErrors() || parsed == nil {
@@ -266,7 +286,9 @@ func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, each cty.Value
 			}
 			if len(bytes.TrimSpace(cond.ErrorMessageSrc)) > 0 {
 				errorSrc := bytes.TrimSpace(cond.ErrorMessageSrc)
-				errorSrc = bytes.TrimSpace(rewriteRepetitionReferences(errorSrc, each, count))
+				rewrittenSrc, rewriteDiags := lowerScope.RewriteExpr(cond.ErrorMessage, errorSrc)
+				diags = diags.Append(rewriteDiags)
+				errorSrc = bytes.TrimSpace(rewriteRepetitionReferences(rewrittenSrc, lowerScope.scope.Each, lowerScope.scope.Count))
 				blockSrc := fmt.Sprintf("output %q {\n  value = %s\n}\n", fmt.Sprintf("__runbook_%s_%d_error_message", kind, i), string(errorSrc))
 				parsed, parseDiags := hclwrite.ParseConfig([]byte(blockSrc), cond.DeclRange.Filename, hcl.InitialPos)
 				if parseDiags.HasErrors() || parsed == nil {

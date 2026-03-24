@@ -11,7 +11,6 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/addrs"
-	"github.com/hashicorp/terraform/internal/lang"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookeval"
@@ -92,7 +91,13 @@ func Build(cfg *runbookconfig.Config, configPath, workspace string, stepOrder []
 					if expandedStep.CountIndex != nil {
 						countVal = countScopeForExpandedStep(&expandedStep)
 					}
-					if loweredInstance, lowerDiags := runbookconfig.LowerStepInstance(cfg, step, eachVal, countVal); lowerDiags.HasErrors() {
+					if loweredInstance, lowerDiags := runbookconfig.LowerStepInstanceWithScope(cfg, step, runbookconfig.EvalScope{
+						Variables: varScope,
+						Steps:     stepResults.ScopeValue(),
+						Workspace: workspaceScope,
+						Each:      eachVal,
+						Count:     countVal,
+					}); lowerDiags.HasErrors() {
 						return nil, diags.Append(lowerDiags), nil
 					} else if loweredInstance != nil {
 						loweredBundle = loweredInstance.Files
@@ -370,17 +375,16 @@ func evaluateOutputsWithListScope(step *runbookconfig.Step, varScope cty.Value, 
 		return cty.EmptyObjectVal
 	}
 	vals := map[string]cty.Value{}
-	ctx := &hcl.EvalContext{Variables: map[string]cty.Value{
-		"var":       normalizeScopeValue(varScope),
-		"steps":     normalizeScopeValue(stepsScope),
-		"workspace": normalizeScopeValue(workspaceScope),
-		"list":      normalizeScopeValue(listScope),
-	}, Functions: lang.TestingFunctions()}
 	for name, output := range step.Outputs {
 		if output == nil || output.Value == nil {
 			continue
 		}
-		val, diags := output.Value.Value(ctx)
+		val, diags := runbookconfig.EvalExpr(output.Value, runbookconfig.EvalScope{
+			Variables: varScope,
+			Steps:     stepsScope,
+			Workspace: workspaceScope,
+			List:      listScope,
+		}, cty.DynamicPseudoType)
 		if diags.HasErrors() {
 			continue
 		}

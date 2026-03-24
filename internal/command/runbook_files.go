@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookplanfile"
 	"github.com/hashicorp/terraform/internal/tfdiags"
+	"github.com/mitchellh/colorstring"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -120,77 +121,82 @@ func persistedExpandedStep(baseName, instanceName, forEachKey string, instanceCo
 	}
 }
 
-func formatPlanSummary(manifest *runbookplanfile.Plan) string {
+func formatPlanSummary(color *colorstring.Colorize, manifest *runbookplanfile.Plan) string {
 	if manifest == nil {
 		return ""
 	}
+	if color == nil {
+		color = &colorstring.Colorize{Disable: true}
+	}
 	var b strings.Builder
-	b.WriteString("Runbook Execution Plan\n\n")
-	b.WriteString("Terraform will perform the following runbook steps:\n\n")
+	b.WriteString(color.Color("[bold]Runbook Execution Plan[reset]\n\n"))
+	b.WriteString(color.Color("[cyan]Terraform will perform the following runbook steps:[reset]\n\n"))
 
 	executableCount := 0
 	skippedCount := 0
 	for i, step := range manifest.Steps {
-		b.WriteString(fmt.Sprintf("  # Step %d: %s\n", i+1, step.Name))
+		b.WriteString(color.Color(fmt.Sprintf("[bold][cyan]# Step %d: %s[reset]\n", i+1, step.Name)))
 		if step.BaseName != "" && step.InstanceCount > 0 {
-			b.WriteString(fmt.Sprintf("  instance = %q\n", step.ForEachKey))
-			b.WriteString(fmt.Sprintf("  expanded_from = %q\n", step.BaseName))
-			b.WriteString(fmt.Sprintf("  total_instances = %d\n", step.InstanceCount))
+			b.WriteString(fmt.Sprintf("    instance        = %q\n", step.ForEachKey))
+			b.WriteString(fmt.Sprintf("    expanded_from   = %q\n", step.BaseName))
+			b.WriteString(fmt.Sprintf("    total_instances = %d\n", step.InstanceCount))
 		}
 		if len(step.After) > 0 {
-			b.WriteString(fmt.Sprintf("  after = [%s]\n", strings.Join(step.After, ", ")))
+			b.WriteString(fmt.Sprintf("    after           = [%s]\n", strings.Join(step.After, ", ")))
 		}
 		if step.KnownSkipped {
 			skippedCount++
-			b.WriteString("  status = \"skipped\"\n")
+			b.WriteString(color.Color("    status          = [yellow]\"skipped\"[reset]\n"))
 			if step.SkipReason != "" {
-				b.WriteString(fmt.Sprintf("  reason = %q\n", step.SkipReason))
+				b.WriteString(fmt.Sprintf("    reason          = %q\n", step.SkipReason))
 			}
 		} else {
 			executableCount++
-			b.WriteString("  status = \"planned\"\n")
+			b.WriteString(color.Color("    status          = [green]\"planned\"[reset]\n"))
 		}
 		if len(step.PlannedActions) > 0 {
-			b.WriteString("  actions = [\n")
+			b.WriteString("    actions = [\n")
 			for _, action := range step.PlannedActions {
-				b.WriteString(fmt.Sprintf("    %q,\n", action))
+				b.WriteString(fmt.Sprintf("      %q,\n", action))
 			}
-			b.WriteString("  ]\n")
+			b.WriteString("    ]\n")
 		}
 		if len(step.PlannedQueries) > 0 {
-			b.WriteString("  queries = [\n")
+			b.WriteString("    queries = [\n")
 			for _, query := range step.PlannedQueries {
-				b.WriteString(fmt.Sprintf("    %q,\n", query))
+				b.WriteString(fmt.Sprintf("      %q,\n", query))
 			}
-			b.WriteString("  ]\n")
+			b.WriteString("    ]\n")
 		}
 		if len(step.PlannedData) > 0 {
-			b.WriteString("  data_reads = [\n")
+			b.WriteString("    data_reads = [\n")
 			for _, data := range step.PlannedData {
-				b.WriteString(fmt.Sprintf("    %q,\n", data))
+				b.WriteString(fmt.Sprintf("      %q,\n", data))
 			}
-			b.WriteString("  ]\n")
+			b.WriteString("    ]\n")
 		}
 		if len(step.Outputs) > 0 {
-			b.WriteString("  outputs = [\n")
+			b.WriteString("    outputs = [\n")
 			for _, output := range step.Outputs {
-				b.WriteString(fmt.Sprintf("    %q,\n", output))
+				b.WriteString(fmt.Sprintf("      %q,\n", output))
 			}
-			b.WriteString("  ]\n")
+			b.WriteString("    ]\n")
 		}
 		if i < len(manifest.Steps)-1 {
 			b.WriteString("\n")
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("Plan: %d to execute, %d to skip.\n", executableCount, skippedCount))
-	b.WriteString(fmt.Sprintf("Order: %s", strings.Join(manifest.StepOrder, " -> ")))
+	b.WriteString(color.Color(fmt.Sprintf("[bold][green]Plan:[reset] %d to execute, %d to skip.\n", executableCount, skippedCount)))
 	return b.String()
 }
 
-func formatStepOutputs(stepName string, outputs cty.Value) string {
+func formatStepOutputs(color *colorstring.Colorize, stepName string, outputs cty.Value) string {
 	if outputs == cty.NilVal || !outputs.IsKnown() || outputs.IsNull() || !outputs.Type().IsObjectType() {
 		return ""
+	}
+	if color == nil {
+		color = &colorstring.Colorize{Disable: true}
 	}
 	vals := outputs.AsValueMap()
 	if len(vals) == 0 {
@@ -203,7 +209,7 @@ func formatStepOutputs(stepName string, outputs cty.Value) string {
 	sort.Strings(keys)
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Outputs for %s:\n", stepName))
+	b.WriteString(color.Color(fmt.Sprintf("[bold]Outputs for %s:[reset]\n", stepName)))
 	for _, name := range keys {
 		b.WriteString(fmt.Sprintf("  %s = %s\n", name, tfdiags.CompactValueStr(vals[name])))
 	}

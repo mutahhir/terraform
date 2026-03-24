@@ -95,7 +95,7 @@ func planStep(cfg *Config, step *Step, scope EvalScope) StepPlan {
 		plan.Evaluation.Detail = fmt.Sprintf("will invoke %s", strings.Join(actionAddrs, ", "))
 	}
 
-	lowered, diags := LowerStep(cfg, step)
+	lowered, diags := LowerStepWithScope(cfg, step, scope)
 	plan.Lowered = lowered
 	plan.Evaluation.Diags = plan.Evaluation.Diags.Append(diags)
 

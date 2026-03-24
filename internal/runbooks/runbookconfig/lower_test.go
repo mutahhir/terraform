@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zclconf/go-cty/cty"
+
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
@@ -220,5 +222,85 @@ step "example" {
 	}
 	if !strings.Contains(mainSrc, `value = data.simple_resource.current.value`) {
 		t.Fatalf("lowered main.tf did not preserve references to step data source:\n%s", mainSrc)
+	}
+}
+
+func TestLowerStepWithScopeRewritesRunbookReferences(t *testing.T) {
+	rootDir := t.TempDir()
+
+	cfg, diags := ParseFileSource([]byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    simple = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "simple" {}
+
+step "example" {
+  data "simple_resource" "current" {
+    value = "hello"
+  }
+
+  precondition {
+    condition     = workspace.output.enabled && steps.bootstrap.ready
+    error_message = "bootstrap must run first"
+  }
+
+  action "simple_action" "target" {
+    config {
+      value = workspace.output.enabled ? data.simple_resource.current.value : steps.bootstrap.message
+    }
+  }
+
+  output "result" {
+    value = workspace.output.enabled && data.simple_resource.current.value == steps.bootstrap.message
+  }
+}
+`), filepath.Join(rootDir, "main.tfrun.hcl"))
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	config := &Config{
+		RootPath: rootDir,
+		Files:    map[string]*File{cfg.Path: cfg},
+		Runbook:  cfg.Runbook,
+	}
+
+	bundle, diags := LowerStepWithScope(config, cfg.Steps["example"], EvalScope{
+		Workspace: cty.ObjectVal(map[string]cty.Value{
+			"output": cty.ObjectVal(map[string]cty.Value{
+				"enabled": cty.True,
+			}),
+		}),
+		Steps: cty.ObjectVal(map[string]cty.Value{
+			"bootstrap": cty.ObjectVal(map[string]cty.Value{
+				"ready":   cty.True,
+				"message": cty.StringVal("hello"),
+			}),
+		}),
+	})
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	mainSrc := string(bundle.Files["main.tf"])
+	if strings.Contains(mainSrc, `= workspace.output.enabled`) || strings.Contains(mainSrc, `= steps.bootstrap.ready`) || strings.Contains(mainSrc, `= steps.bootstrap.message`) {
+		t.Fatalf("lowered main.tf still contains runbook-only references:\n%s", mainSrc)
+	}
+	if !strings.Contains(mainSrc, `var.__runbook_workspace.output.enabled`) {
+		t.Fatalf("lowered main.tf did not rewrite workspace output reference:\n%s", mainSrc)
+	}
+	if !strings.Contains(mainSrc, `var.__runbook_steps.bootstrap.ready`) {
+		t.Fatalf("lowered main.tf did not rewrite step reference:\n%s", mainSrc)
+	}
+	if strings.Contains(mainSrc, `value = workspace.output.enabled`) || strings.Contains(mainSrc, `value = steps.bootstrap.ready`) {
+		t.Fatalf("lowered main.tf still contains unrewritten runbook expressions:\n%s", mainSrc)
+	}
+	if !strings.Contains(mainSrc, `data.simple_resource.current.value`) {
+		t.Fatalf("lowered main.tf should preserve terraform-native data references:\n%s", mainSrc)
+	}
+	if !strings.Contains(mainSrc, `variable "__runbook_workspace"`) || !strings.Contains(mainSrc, `variable "__runbook_steps"`) {
+		t.Fatalf("lowered main.tf did not emit synthetic runbook variables:\n%s", mainSrc)
 	}
 }

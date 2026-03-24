@@ -157,9 +157,10 @@ func (c *RunbookCommand) runInit() int {
 		return 1
 	}
 
-	c.Ui.Output("Runbook initialized.")
-	c.Ui.Output(fmt.Sprintf("State: %s", statePath))
-	c.Ui.Output(fmt.Sprintf("Steps: %s", strings.Join(ordered, " -> ")))
+	c.Ui.Output(c.Colorize().Color("[bold][green]Runbook initialized.[reset]"))
+	c.Ui.Output("")
+	c.Ui.Output(fmt.Sprintf("State file: %s", statePath))
+	c.Ui.Output(fmt.Sprintf("Validated steps: %d", len(ordered)))
 	return 0
 }
 
@@ -303,7 +304,7 @@ func (c *RunbookCommand) runPlan() int {
 		return 1
 	}
 
-	for _, line := range strings.Split(formatPlanSummary(manifest), "\n") {
+	for _, line := range strings.Split(formatPlanSummary(c.Colorize(), manifest), "\n") {
 		if line == "" {
 			c.Ui.Output("")
 			continue
@@ -311,7 +312,7 @@ func (c *RunbookCommand) runPlan() int {
 		c.Ui.Output(line)
 	}
 	c.Ui.Output("")
-	c.Ui.Output(fmt.Sprintf("Saved the runbook plan to: %s", planPath))
+	c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][green]Saved runbook plan:[reset] %s", planPath)))
 	return 0
 }
 
@@ -373,9 +374,9 @@ func (c *RunbookCommand) runExecute() int {
 		c.Ui.Error(workspaceDiags.Err().Error())
 		return 1
 	}
-	c.Ui.Output("Runbook Apply")
+	c.Ui.Output(c.Colorize().Color("[bold]Runbook Apply[reset]"))
 	c.Ui.Output("")
-	c.Ui.Output("Applying saved runbook plan in dependency order:")
+	c.Ui.Output(c.Colorize().Color("[cyan]Applying saved runbook plan in dependency order:[reset]"))
 	c.Ui.Output("")
 	for _, stepName := range manifest.StepOrder {
 		manifestStep := persistedRunbookStep(manifest, stepName)
@@ -395,26 +396,32 @@ func (c *RunbookCommand) runExecute() int {
 			return 1
 		}
 		if manifestStep != nil && manifestStep.ForEachExpression != "" {
-			if loweredBundle, lowerDiags := runbookconfig.LowerStepInstance(rawCfg, step, eachScopeForManifestStep(manifestStep), countScopeForManifestStep(manifestStep)); lowerDiags.HasErrors() {
+			if loweredBundle, lowerDiags := runbookconfig.LowerStepInstanceWithScope(rawCfg, step, runbookconfig.EvalScope{
+				Variables: buildRunbookVariableScope(rawCfg),
+				Steps:     stepResults.ScopeValue(),
+				Workspace: mergedWorkspaceScope(baseWorkspaceScope, currentState),
+				Each:      eachScopeForManifestStep(manifestStep),
+				Count:     countScopeForManifestStep(manifestStep),
+			}); lowerDiags.HasErrors() {
 				c.Ui.Error(lowerDiags.Err().Error())
 				return 1
 			} else if loweredBundle != nil {
 				loweredFiles = loweredBundle.Files
 			}
 		}
-		planFiles := stripRunbookNamespaceOutputs(loweredFiles)
+		planFiles := loweredFiles
 		if len(loweredFiles) == 0 {
-			c.Ui.Output(fmt.Sprintf("  # %s", stepName))
-			c.Ui.Output("  status = \"skipped\"")
-			c.Ui.Output("  reason = \"no lowered Terraform bundle saved in plan\"")
+			c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][cyan]# %s[reset]", stepName)))
+			c.Ui.Output(c.Colorize().Color("status = [yellow]\"skipped\"[reset]"))
+			c.Ui.Output("reason = \"no lowered Terraform bundle saved in plan\"")
 			c.Ui.Output("")
 			continue
 		}
 		if manifestStep != nil && manifestStep.KnownSkipped {
-			c.Ui.Output(fmt.Sprintf("  # %s", stepName))
-			c.Ui.Output("  status = \"skipped\"")
+			c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][cyan]# %s[reset]", stepName)))
+			c.Ui.Output(c.Colorize().Color("status = [yellow]\"skipped\"[reset]"))
 			if manifestStep.SkipReason != "" {
-				c.Ui.Output(fmt.Sprintf("  reason = %q", manifestStep.SkipReason))
+				c.Ui.Output(fmt.Sprintf("reason = %q", manifestStep.SkipReason))
 			}
 			c.Ui.Output("")
 			continue
@@ -429,10 +436,10 @@ func (c *RunbookCommand) runExecute() int {
 		}
 		preEval := runbookconfig.EvaluateStepForPlan(step, preScope)
 		if preEval.Status == runbookconfig.StepStatusSkipped {
-			c.Ui.Output(fmt.Sprintf("  # %s", stepName))
-			c.Ui.Output("  status = \"skipped\"")
+			c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][cyan]# %s[reset]", stepName)))
+			c.Ui.Output(c.Colorize().Color("status = [yellow]\"skipped\"[reset]"))
 			if preEval.Detail != "" {
-				c.Ui.Output(fmt.Sprintf("  reason = %q", preEval.Detail))
+				c.Ui.Output(fmt.Sprintf("reason = %q", preEval.Detail))
 			}
 			c.Ui.Output("")
 			continue
@@ -490,11 +497,11 @@ func (c *RunbookCommand) runExecute() int {
 			stepOutputs = mergeStepOutputs(evaluateStepOutputsFromSource(step, preScope), stepOutputs)
 		}
 		stepResults.Set(stepInstanceAddrFromManifestStep(manifestStep), stepOutputs)
-		c.Ui.Output(fmt.Sprintf("  # %s", stepName))
-		c.Ui.Output("  status = \"complete\"")
-		if formatted := formatStepOutputs(stepName, stepOutputs); formatted != "" {
+		c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][cyan]# %s[reset]", stepName)))
+		c.Ui.Output(c.Colorize().Color("status = [green]\"complete\"[reset]"))
+		if formatted := formatStepOutputs(c.Colorize(), stepName, stepOutputs); formatted != "" {
 			for _, line := range strings.Split(formatted, "\n") {
-				c.Ui.Output("  " + line)
+				c.Ui.Output(line)
 			}
 		}
 		c.Ui.Output("")
@@ -505,7 +512,7 @@ func (c *RunbookCommand) runExecute() int {
 		return 1
 	}
 
-	c.Ui.Output("Runbook apply complete.")
+	c.Ui.Output(c.Colorize().Color("[bold][green]Runbook apply complete.[reset]"))
 	return 0
 }
 
@@ -1048,14 +1055,7 @@ func stripSyntheticConditionOutputs(files map[string][]byte) map[string][]byte {
 		if len(labels) != 1 || !strings.HasPrefix(labels[0], "__runbook_") {
 			continue
 		}
-		attr := block.Body().GetAttribute("value")
-		if attr == nil {
-			continue
-		}
-		exprSrc := string(attr.Expr().BuildTokens(nil).Bytes())
-		if strings.Contains(exprSrc, "workspace.output.") || strings.Contains(exprSrc, "steps.") {
-			body.RemoveBlock(block)
-		}
+		body.RemoveBlock(block)
 	}
 	updated := make(map[string][]byte, len(files))
 	for name, src := range files {
@@ -1082,37 +1082,6 @@ func stripExecuteUnsafeFiles(files map[string][]byte) map[string][]byte {
 	delete(updated, "main.tfquery.hcl")
 	updated["main.tf"] = stripSyntheticConditionOutputs(updated)["main.tf"]
 	updated = stripListBackedOutputs(updated)
-	return updated
-}
-
-func stripRunbookNamespaceOutputs(files map[string][]byte) map[string][]byte {
-	mainSrc, ok := files["main.tf"]
-	if !ok {
-		return files
-	}
-	parsed, diags := hclwrite.ParseConfig(mainSrc, "main.tf", hcl.InitialPos)
-	if diags.HasErrors() || parsed == nil {
-		return files
-	}
-	body := parsed.Body()
-	for _, block := range body.Blocks() {
-		if block.Type() != "output" {
-			continue
-		}
-		attr := block.Body().GetAttribute("value")
-		if attr == nil {
-			continue
-		}
-		exprSrc := string(attr.Expr().BuildTokens(nil).Bytes())
-		if strings.Contains(exprSrc, "steps.") || strings.Contains(exprSrc, "workspace.output.") || strings.Contains(exprSrc, "actions.") {
-			body.RemoveBlock(block)
-		}
-	}
-	updated := make(map[string][]byte, len(files))
-	for name, src := range files {
-		updated[name] = src
-	}
-	updated["main.tf"] = hclwrite.Format(parsed.Bytes())
 	return updated
 }
 

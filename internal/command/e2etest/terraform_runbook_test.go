@@ -104,6 +104,9 @@ func TestRunbookPlan(t *testing.T) {
 	if !strings.Contains(stdout, "Runbook initialized.") {
 		t.Fatalf("missing runbook init confirmation:\n%s", stdout)
 	}
+	if strings.Contains(stdout, "Steps: ") || strings.Contains(stdout, " -> ") {
+		t.Fatalf("init should not print planning-style step order:\n%s", stdout)
+	}
 	if _, err := os.Stat(tf.Path(".terraform", "runbook-state.json")); err != nil {
 		t.Fatalf("expected runbook state file to exist: %s", err)
 	}
@@ -128,10 +131,10 @@ func TestRunbookPlan(t *testing.T) {
 	if !strings.Contains(stdout, "data_reads = [") || !strings.Contains(stdout, "data.simple_resource.current") {
 		t.Fatalf("missing planned data address in output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "Plan: 1 to execute, 0 to skip.") || !strings.Contains(stdout, "Order: invoke_resource") {
+	if !strings.Contains(stdout, "Plan:") || !strings.Contains(stdout, "1 to execute, 0 to skip.") {
 		t.Fatalf("missing runbook plan footer summary:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "Saved the runbook plan to:") {
+	if !strings.Contains(stdout, "Saved runbook plan:") {
 		t.Fatalf("missing saved runbook plan message:\n%s", stdout)
 	}
 	if _, err := os.Stat(tf.Path(".terraform", "runbook.tfrunplan")); err != nil {
@@ -145,7 +148,7 @@ func TestRunbookPlan(t *testing.T) {
 	if !strings.Contains(stdout, "Runbook Apply") {
 		t.Fatalf("missing runbook execute header:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "# invoke_resource") || !strings.Contains(stdout, "status = \"complete\"") {
+	if !strings.Contains(stdout, "# invoke_resource") || !strings.Contains(stdout, "Runbook apply complete.") {
 		t.Fatalf("missing runbook execute step completion:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "Runbook apply complete.") {
@@ -216,8 +219,8 @@ func TestRunbookExecuteMultiStep(t *testing.T) {
 	if !strings.Contains(stdout, "# Step 1: bootstrap") || !strings.Contains(stdout, "# Step 2: dependent") {
 		t.Fatalf("missing multi-step plan output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "Order: bootstrap -> dependent") {
-		t.Fatalf("missing dependency order in plan output:\n%s", stdout)
+	if !strings.Contains(stdout, "after           = [bootstrap]") {
+		t.Fatalf("missing dependency metadata in plan output:\n%s", stdout)
 	}
 
 	stdout, stderr, err = tf.Run("runbook", "execute")
@@ -299,7 +302,7 @@ func TestRunbookPlanForEachStepExpansion(t *testing.T) {
 	if !strings.Contains(stdout, "# Step 2: inspect_role[") {
 		t.Fatalf("missing expanded inspect_role instance output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "expanded_from = \"inspect_role\"") {
+	if !strings.Contains(stdout, "expanded_from   = \"inspect_role\"") {
 		t.Fatalf("missing expanded step metadata:\n%s", stdout)
 	}
 
