@@ -17,6 +17,16 @@ variable "provider_value" {
 provider "simple" {}
 
 step "invoke_resource" {
+  precondition {
+    condition     = workspace.output.enabled
+    error_message = "workspace output must enable this step"
+    on_fail       = "skip"
+  }
+
+  data "simple_resource" "current" {
+    value = var.provider_value
+  }
+
   list "simple_resource" "inventory" {
     provider = simple
 
@@ -30,7 +40,7 @@ step "invoke_resource" {
 
   action "simple_action" "target" {
     config {
-      value = var.provider_value
+      value = data.simple_resource.current.value
     }
   }
 

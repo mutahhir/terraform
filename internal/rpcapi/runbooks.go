@@ -5,6 +5,7 @@ package rpcapi
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/hashicorp/terraform-svchost/disco"
 	"github.com/hashicorp/terraform/internal/addrs"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookplan"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -136,12 +138,19 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 		tfPlan, lowerDiags := s.validateAndPlanLoweredStepDir(plan.Lowered.Dir, runtime)
 		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(lowerDiags)
 		if tfPlan != nil && tfPlan.Changes != nil {
+			plannedOutputs := make(map[string]cty.Value)
+			schemas, schemaDiags := s.schemasForRunbookPlan(plan.Lowered.Dir, runtime)
+			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(schemaDiags)
 			for _, q := range tfPlan.Changes.Queries {
 				count := int64(0)
+				data := cty.NilVal
 				if q != nil {
-					if ty, err := q.Results.ImpliedType(); err == nil {
-						if val, err := q.Results.Decode(ty); err == nil && val != cty.NilVal && val.Type().HasAttribute("data") {
-							data := val.GetAttr("data")
+					schema := schemaForPlannedQuery(schemas, q)
+					if schema != nil {
+						if decoded, err := q.Decode(*schema); err == nil && decoded.Results.Value != cty.NilVal && decoded.Results.Value.Type().HasAttribute("data") {
+							decodedData := decoded.Results.Value.GetAttr("data")
+							decodedData, _ = decodedData.UnmarkDeep()
+							data = decodedData
 							if data.IsKnown() && !data.IsNull() && (data.Type().IsTupleType() || data.Type().IsListType()) {
 								count = int64(data.LengthInt())
 							}
@@ -151,6 +160,7 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 				plan.Queries = append(plan.Queries, runbookconfig.PlannedQuery{
 					Address: q.Addr.String(),
 					Count:   int(count),
+					Data:    data,
 				})
 			}
 			for _, action := range tfPlan.Changes.ActionInvocations {
@@ -163,6 +173,27 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 					ActionName: action.Addr.Action.Action.Name,
 				})
 			}
+			for _, output := range tfPlan.Changes.Outputs {
+				if output == nil {
+					continue
+				}
+				decoded, err := output.Decode()
+				if err != nil {
+					plan.Evaluation.Diags = plan.Evaluation.Diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to decode lowered step output", err.Error()))
+					continue
+				}
+				plannedOutputs[decoded.Addr.OutputValue.Name] = decoded.Change.After
+			}
+			for name, output := range runbookplan.StepOutputsFromQueries(step, plan.Queries, scope.Variables, scope.Steps, scope.Workspace).AsValueMap() {
+				if step != nil && step.Name == "discover_roles" {
+					fmt.Printf("DEBUG rpc query-derived output %s=%s\n", name, tfdiags.CompactValueStr(output))
+				}
+				if existing, ok := plannedOutputs[name]; ok && existing.IsKnown() && !existing.IsNull() {
+					continue
+				}
+				plannedOutputs[name] = output
+			}
+			applyTerraformDrivenStepResults(plan, step, plannedOutputs)
 		}
 	}
 	plannedActions := make([]*runbooks.PlanRunbookStep_PlannedAction, 0, len(plan.Actions))
@@ -178,7 +209,12 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 		plannedQueries = append(plannedQueries, &runbooks.PlanRunbookStep_PlannedQuery{
 			Address:     query.Address,
 			ResultCount: int64(query.Count),
+			Data:        dynamicValueToProto(query.Data),
 		})
+	}
+	plannedOutputs := make(map[string]*runbooks.DynamicValue)
+	for name, output := range plannedOutputsFromStepPlan(plan, step) {
+		plannedOutputs[name] = dynamicValueToProto(output)
 	}
 	loweredFiles := make([]*runbooks.PlanRunbookStep_LoweredFile, 0)
 	if plan.Lowered != nil {
@@ -193,6 +229,7 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 		PlannedActions: plannedActions,
 		LoweredFiles:   loweredFiles,
 		PlannedQueries: plannedQueries,
+		PlannedOutputs: plannedOutputs,
 	}, nil
 }
 
@@ -345,6 +382,8 @@ func evalScopeFromProto(protoScope *runbooks.EvalScope) (runbookconfig.EvalScope
 	diags = diags.Append(moreDiags)
 	locals, moreDiags := dynamicValueFromProto(protoScope.Locals)
 	diags = diags.Append(moreDiags)
+	workspace, moreDiags := dynamicValueFromProto(protoScope.Workspace)
+	diags = diags.Append(moreDiags)
 
 	return runbookconfig.EvalScope{
 		Variables: variables,
@@ -352,6 +391,7 @@ func evalScopeFromProto(protoScope *runbooks.EvalScope) (runbookconfig.EvalScope
 		Actions:   actions,
 		Steps:     steps,
 		Locals:    locals,
+		Workspace: workspace,
 	}, diags
 }
 
@@ -366,6 +406,76 @@ func dynamicValueFromProto(protoVal *runbooks.DynamicValue) (cty.Value, tfdiags.
 		return cty.DynamicVal, diags.Append(status.Errorf(codes.InvalidArgument, "invalid dynamic value encoding: %s", err))
 	}
 	return v, diags
+}
+
+func dynamicValueToProto(v cty.Value) *runbooks.DynamicValue {
+	if v == cty.NilVal {
+		return nil
+	}
+	encoded, err := ctymsgpack.Marshal(v, cty.DynamicPseudoType)
+	if err != nil {
+		return nil
+	}
+	return &runbooks.DynamicValue{Msgpack: encoded}
+}
+
+func plannedOutputsFromStepPlan(plan runbookconfig.StepPlan, step *runbookconfig.Step) map[string]cty.Value {
+	ret := make(map[string]cty.Value)
+	if step == nil {
+		return ret
+	}
+	for _, query := range plan.Queries {
+		if len(step.Outputs) == 1 && query.Data != cty.NilVal {
+			for name := range step.Outputs {
+				ret[name] = query.Data
+			}
+		}
+	}
+	for name := range step.Outputs {
+		if _, ok := ret[name]; !ok {
+			ret[name] = cty.NullVal(cty.DynamicPseudoType)
+		}
+	}
+	return ret
+}
+
+func applyTerraformDrivenStepResults(plan runbookconfig.StepPlan, step *runbookconfig.Step, outputs map[string]cty.Value) {
+	if step == nil || len(outputs) == 0 {
+		return
+	}
+	applyTerraformDrivenConditions(&plan.Evaluation, step.Preconditions, "precondition", outputs, true)
+	applyTerraformDrivenConditions(&plan.Evaluation, step.Postconditions, "postcondition", outputs, false)
+}
+
+func applyTerraformDrivenConditions(eval *runbookconfig.StepEvaluation, conds []*runbookconfig.Condition, kind string, outputs map[string]cty.Value, allowSkip bool) {
+	if eval == nil || len(conds) == 0 {
+		return
+	}
+	for i, cond := range conds {
+		if cond == nil {
+			continue
+		}
+		result, ok := outputs[fmt.Sprintf("__runbook_%s_%d_condition", kind, i)]
+		if !ok || !result.IsKnown() || result.IsNull() || result.Type() != cty.Bool {
+			continue
+		}
+		if result.True() {
+			continue
+		}
+		message := "A step condition returned false."
+		if msg, ok := outputs[fmt.Sprintf("__runbook_%s_%d_error_message", kind, i)]; ok && msg.IsKnown() && !msg.IsNull() && msg.Type() == cty.String {
+			message = msg.AsString()
+		}
+		eval.Diags = tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(tfdiags.Error, "Runbook condition failed", message))
+		if allowSkip && cond.OnFail == runbookconfig.ConditionOnFailSkip {
+			eval.Status = runbookconfig.StepStatusSkipped
+			eval.Detail = "step skipped by precondition"
+		} else {
+			eval.Status = runbookconfig.StepStatusFailed
+			eval.Detail = "step condition failed"
+		}
+		return
+	}
 }
 
 func stepStatusToProto(status runbookconfig.StepStatus) runbooks.StepStatus {
@@ -435,6 +545,64 @@ func (s *runbooksServer) validateAndPlanLoweredStepDir(dir string, runtime *runb
 	}
 	diags = diags.Append(planDiags)
 	return plan, diags
+}
+
+func (s *runbooksServer) schemasForRunbookPlan(dir string, runtime *runbookRuntime) (*terraform.Schemas, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	loader, err := configload.NewLoader(&configload.Config{
+		ModulesDir:        dir + "/.terraform/modules",
+		IncludeQueryFiles: true,
+	})
+	if err != nil {
+		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize lowered step loader", err.Error()))
+	}
+	rootMod, hclDiags := loader.LoadRootModule(dir)
+	diags = diags.Append(hclDiags)
+	if rootMod == nil || hclDiags.HasErrors() {
+		return nil, diags
+	}
+	inputValues := make(terraform.InputValues)
+	for name := range rootMod.Variables {
+		inputValues[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
+	}
+	config, buildDiags := terraform.BuildConfigWithGraph(rootMod, loader.ModuleWalker(), inputValues, configs.MockDataLoaderFunc(loader.LoadExternalMockData))
+	diags = diags.Append(buildDiags)
+	if config == nil {
+		return nil, diags
+	}
+	providerFactories := map[addrs.Provider]providers.Factory{}
+	if s != nil && s.providerCacheOverride != nil {
+		providerFactories = s.providerCacheOverride
+	} else if runtime != nil {
+		var err error
+		providerFactories, err = providerFactoriesForLocks(runtime.Locks, runtime.ProviderCache)
+		if err != nil {
+			return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize runbook providers", err.Error()))
+		}
+	}
+	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1, Providers: providerFactories})
+	diags = diags.Append(ctxDiags)
+	if ctxDiags.HasErrors() {
+		return nil, diags
+	}
+	ret, schemaDiags := tfCtx.Schemas(config, states.NewState())
+	diags = diags.Append(schemaDiags)
+	return ret, diags
+}
+
+func schemaForPlannedQuery(schemas *terraform.Schemas, q *plans.QueryInstanceSrc) *providers.Schema {
+	if schemas == nil || q == nil {
+		return nil
+	}
+	providerSchema, ok := schemas.Providers[q.ProviderAddr.Provider]
+	if !ok {
+		return nil
+	}
+	schema, ok := providerSchema.ListResourceTypes[q.Addr.Resource.Resource.Type]
+	if !ok {
+		return nil
+	}
+	return &schema
 }
 
 func (s *runbooksServer) lookupRunbookRuntime(runtimeHandle int64) (*runbookRuntime, error) {

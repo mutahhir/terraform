@@ -25,6 +25,14 @@ func Validate(cfg *Config) tfdiags.Diagnostics {
 
 	for _, file := range cfg.Files {
 		for _, step := range file.Steps {
+			if step.ForEach != nil && step.ExecCount == 0 {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid for_each step",
+					Detail:   fmt.Sprintf("Step %q uses for_each but has no execute block. Expanded steps must have execute behavior.", step.Name),
+					Subject:  step.DeclRange.ToHCL().Ptr(),
+				})
+			}
 			if len(step.Preconditions) > 0 && step.ExecCount == 0 {
 				diags = diags.Append(&hcl.Diagnostic{
 					Severity: hcl.DiagError,

@@ -27,6 +27,10 @@ type LoweredStepBundle struct {
 }
 
 func LowerStep(cfg *Config, step *Step) (*LoweredStepBundle, tfdiags.Diagnostics) {
+	return LowerStepInstance(cfg, step, cty.NilVal)
+}
+
+func LowerStepInstance(cfg *Config, step *Step, each cty.Value) (*LoweredStepBundle, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if cfg == nil || step == nil {
 		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Cannot lower step", "Runbook configuration or step is missing."))
@@ -38,7 +42,7 @@ func LowerStep(cfg *Config, step *Step) (*LoweredStepBundle, tfdiags.Diagnostics
 	}
 
 	files := make(map[string][]byte)
-	mainSrc, mainDiags := buildMainTF(cfg, step)
+	mainSrc, mainDiags := buildMainTF(cfg, step, each)
 	diags = diags.Append(mainDiags)
 	if len(bytes.TrimSpace(mainSrc)) > 0 {
 		files["main.tf"] = mainSrc
@@ -65,7 +69,7 @@ func LowerStep(cfg *Config, step *Step) (*LoweredStepBundle, tfdiags.Diagnostics
 	return &LoweredStepBundle{StepName: step.Name, Dir: dir, Files: files}, diags
 }
 
-func buildMainTF(cfg *Config, step *Step) ([]byte, tfdiags.Diagnostics) {
+func buildMainTF(cfg *Config, step *Step, each cty.Value) ([]byte, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	mainFile := hclwrite.NewEmptyFile()
 	rootBody := mainFile.Body()
@@ -76,12 +80,18 @@ func buildMainTF(cfg *Config, step *Step) ([]byte, tfdiags.Diagnostics) {
 		diags = diags.Append(variableDiags)
 		providerDiags := appendProviderBlocks(rootBody, cfg)
 		diags = diags.Append(providerDiags)
+		actionDiags := appendRootActionBlocks(rootBody, cfg)
+		diags = diags.Append(actionDiags)
 	}
 	for _, action := range step.Actions {
 		if action == nil || len(bytes.TrimSpace(action.Src)) == 0 {
 			continue
 		}
-		parsed, parseDiags := hclwrite.ParseConfig(action.Src, action.DeclRange.Filename, hcl.InitialPos)
+		src := action.Src
+		if each != cty.NilVal {
+			src = rewriteEachReferences(src, each)
+		}
+		parsed, parseDiags := hclwrite.ParseConfig(src, action.DeclRange.Filename, hcl.InitialPos)
 		if parseDiags.HasErrors() || parsed == nil {
 			diags = diags.Append(parseDiags)
 			continue
@@ -89,6 +99,26 @@ func buildMainTF(cfg *Config, step *Step) ([]byte, tfdiags.Diagnostics) {
 		rootBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		rootBody.AppendNewline()
 	}
+	for _, dataSource := range step.DataSources {
+		if dataSource == nil || len(bytes.TrimSpace(dataSource.Src)) == 0 {
+			continue
+		}
+		src := dataSource.Src
+		if each != cty.NilVal {
+			src = rewriteEachReferences(src, each)
+		}
+		parsed, parseDiags := hclwrite.ParseConfig(src, dataSource.DeclRange.Filename, hcl.InitialPos)
+		if parseDiags.HasErrors() || parsed == nil {
+			diags = diags.Append(parseDiags)
+			continue
+		}
+		rootBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+		rootBody.AppendNewline()
+	}
+	outputDiags := appendStepOutputBlocks(rootBody, step, each)
+	diags = diags.Append(outputDiags)
+	conditionDiags := appendConditionOutputBlocks(rootBody, step, each)
+	diags = diags.Append(conditionDiags)
 	return hclwrite.Format(mainFile.Bytes()), diags
 }
 
@@ -146,6 +176,143 @@ func appendTerraformSettings(body *hclwrite.Body, cfg *Config) tfdiags.Diagnosti
 		terraformBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 	}
 	return diags
+}
+
+func appendRootActionBlocks(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if cfg == nil {
+		return diags
+	}
+	actionsByRef, workspaceDiags := WorkspaceActions(cfg)
+	diags = diags.Append(workspaceDiags)
+	for ref, action := range cfg.Actions {
+		if action != nil {
+			actionsByRef[ref] = action
+		}
+	}
+	actions := make([]*Action, 0, len(actionsByRef))
+	for _, action := range actionsByRef {
+		if action != nil {
+			actions = append(actions, action)
+		}
+	}
+	sort.Slice(actions, func(i, j int) bool {
+		if actions[i].Type != actions[j].Type {
+			return actions[i].Type < actions[j].Type
+		}
+		return actions[i].Name < actions[j].Name
+	})
+	for _, action := range actions {
+		if len(bytes.TrimSpace(action.Src)) == 0 {
+			continue
+		}
+		parsed, parseDiags := hclwrite.ParseConfig(action.Src, action.DeclRange.Filename, hcl.InitialPos)
+		if parseDiags.HasErrors() || parsed == nil {
+			diags = diags.Append(parseDiags)
+			continue
+		}
+		body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+		body.AppendNewline()
+	}
+	return diags
+}
+
+func appendStepOutputBlocks(body *hclwrite.Body, step *Step, each cty.Value) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if step == nil || len(step.Outputs) == 0 {
+		return diags
+	}
+	outputNames := make([]string, 0, len(step.Outputs))
+	for name := range step.Outputs {
+		outputNames = append(outputNames, name)
+	}
+	sort.Strings(outputNames)
+	for _, name := range outputNames {
+		output := step.Outputs[name]
+		if output == nil || len(bytes.TrimSpace(output.ValueSrc)) == 0 {
+			continue
+		}
+		valueSrc := bytes.TrimSpace(output.ValueSrc)
+		if each != cty.NilVal {
+			valueSrc = bytes.TrimSpace(rewriteEachReferences(valueSrc, each))
+		}
+		blockSrc := fmt.Sprintf("output %q {\n  value = %s\n}\n", name, string(valueSrc))
+		parsed, parseDiags := hclwrite.ParseConfig([]byte(blockSrc), output.DeclRange.Filename, hcl.InitialPos)
+		if parseDiags.HasErrors() || parsed == nil {
+			diags = diags.Append(parseDiags)
+			continue
+		}
+		body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+		body.AppendNewline()
+	}
+	return diags
+}
+
+func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, each cty.Value) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if step == nil {
+		return diags
+	}
+	append := func(kind string, conds []*Condition) {
+		for i, cond := range conds {
+			if cond == nil {
+				continue
+			}
+			if len(bytes.TrimSpace(cond.ConditionSrc)) > 0 {
+				conditionSrc := bytes.TrimSpace(cond.ConditionSrc)
+				if each != cty.NilVal {
+					conditionSrc = bytes.TrimSpace(rewriteEachReferences(conditionSrc, each))
+				}
+				blockSrc := fmt.Sprintf("output %q {\n  value = %s\n}\n", fmt.Sprintf("__runbook_%s_%d_condition", kind, i), string(conditionSrc))
+				parsed, parseDiags := hclwrite.ParseConfig([]byte(blockSrc), cond.DeclRange.Filename, hcl.InitialPos)
+				if parseDiags.HasErrors() || parsed == nil {
+					diags = diags.Append(parseDiags)
+				} else {
+					body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+					body.AppendNewline()
+				}
+			}
+			if len(bytes.TrimSpace(cond.ErrorMessageSrc)) > 0 {
+				errorSrc := bytes.TrimSpace(cond.ErrorMessageSrc)
+				if each != cty.NilVal {
+					errorSrc = bytes.TrimSpace(rewriteEachReferences(errorSrc, each))
+				}
+				blockSrc := fmt.Sprintf("output %q {\n  value = %s\n}\n", fmt.Sprintf("__runbook_%s_%d_error_message", kind, i), string(errorSrc))
+				parsed, parseDiags := hclwrite.ParseConfig([]byte(blockSrc), cond.DeclRange.Filename, hcl.InitialPos)
+				if parseDiags.HasErrors() || parsed == nil {
+					diags = diags.Append(parseDiags)
+				} else {
+					body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+					body.AppendNewline()
+				}
+				body.AppendNewline()
+			}
+		}
+	}
+	append("precondition", step.Preconditions)
+	append("postcondition", step.Postconditions)
+	return diags
+}
+
+func rewriteEachReferences(src []byte, each cty.Value) []byte {
+	if each == cty.NilVal || !each.Type().IsObjectType() {
+		return src
+	}
+	ret := string(src)
+	if each.Type().HasAttribute("key") {
+		ret = strings.ReplaceAll(ret, "each.key", hclQuotedLiteral(each.GetAttr("key")))
+	}
+	if each.Type().HasAttribute("value") {
+		ret = strings.ReplaceAll(ret, "each.value", hclQuotedLiteral(each.GetAttr("value")))
+	}
+	return []byte(ret)
+}
+
+func hclQuotedLiteral(v cty.Value) string {
+	if !v.IsKnown() || v.IsNull() || v.Type() != cty.String {
+		return "null"
+	}
+	return fmt.Sprintf("%q", v.AsString())
 }
 
 func appendProviderBlocks(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics {

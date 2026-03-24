@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform/internal/tfdiags"
+	"github.com/zclconf/go-cty/cty"
 )
 
 type PlannedAction struct {
@@ -19,6 +20,7 @@ type PlannedAction struct {
 type PlannedQuery struct {
 	Address string
 	Count   int
+	Data    cty.Value
 }
 
 type StepPlan struct {
@@ -43,7 +45,20 @@ func planStep(cfg *Config, step *Step, scope EvalScope) StepPlan {
 		return plan
 	}
 
-	actionsByRef := make(map[string]*Action, len(step.Actions))
+	actionsByRef := make(map[string]*Action)
+	if cfg != nil {
+		workspaceActions, _ := WorkspaceActions(cfg)
+		for ref, action := range workspaceActions {
+			if action != nil {
+				actionsByRef[ref] = action
+			}
+		}
+		for ref, action := range cfg.Actions {
+			if action != nil {
+				actionsByRef[ref] = action
+			}
+		}
+	}
 	for _, action := range step.Actions {
 		if action == nil {
 			continue
@@ -61,12 +76,12 @@ func planStep(cfg *Config, step *Step, scope EvalScope) StepPlan {
 			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(tfdiags.Sourceless(
 				tfdiags.Error,
 				"Unknown action reference",
-				fmt.Sprintf("Execute block references %q, but no matching action block exists in this step.", invoke.ActionRef),
+				fmt.Sprintf("Execute block references %q, but no matching action block exists in the runbook or this step.", invoke.ActionRef),
 			))
 			continue
 		}
 		plan.Actions = append(plan.Actions, PlannedAction{
-			Address:    action.Reference(),
+			Address:    invoke.ActionRef,
 			ActionType: action.Type,
 			ActionName: action.Name,
 		})

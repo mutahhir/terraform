@@ -14,6 +14,7 @@ import (
 
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/dependencies"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/packages"
+	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/setup"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/stacks"
 )
@@ -124,6 +125,11 @@ func (c *Client) Dependencies() dependencies.DependenciesClient {
 // Packages returns a client for the Packages service of the RPC API.
 func (c *Client) Packages() packages.PackagesClient {
 	return packages.NewPackagesClient(c.conn)
+}
+
+// Runbooks returns a client for the Runbooks service of the RPC API.
+func (c *Client) Runbooks() runbooks.RunbooksClient {
+	return runbooks.NewRunbooksClient(c.conn)
 }
 
 // Stacks returns a client for the Stacks service of the RPC API.

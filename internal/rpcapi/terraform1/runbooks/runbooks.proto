@@ -42,6 +42,8 @@ message EvalScope {
   DynamicValue steps = 4;
   // Step local values available as local.<name>
   DynamicValue locals = 5;
+  // Workspace-scoped values available as workspace.<name>
+  DynamicValue workspace = 6;
 }
 
 enum StepStatus {
@@ -154,6 +156,7 @@ message PlanRunbookStep {
   message PlannedQuery {
     string address = 1;
     int64 result_count = 2;
+    DynamicValue data = 3;
   }
 
   message LoweredFile {
@@ -175,6 +178,7 @@ message PlanRunbookStep {
     repeated PlannedAction planned_actions = 4;
     repeated LoweredFile lowered_files = 5;
     repeated PlannedQuery planned_queries = 6;
+    map<string, DynamicValue> planned_outputs = 7;
   }
 }
 

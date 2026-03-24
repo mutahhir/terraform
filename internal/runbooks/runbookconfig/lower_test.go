@@ -175,3 +175,50 @@ step "example" {
 		t.Fatalf("lowered main.tf did not preserve variable validation message:\n%s", mainSrc)
 	}
 }
+
+func TestLowerStepPreservesStepDataBlocks(t *testing.T) {
+	rootDir := t.TempDir()
+
+	cfg, diags := ParseFileSource([]byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    simple = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "simple" {}
+
+step "example" {
+  data "simple_resource" "current" {
+    value = "hello"
+  }
+
+  action "simple_action" "target" {
+    config {
+      value = data.simple_resource.current.value
+    }
+  }
+}
+`), filepath.Join(rootDir, "main.tfrun.hcl"))
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	config := &Config{
+		RootPath: rootDir,
+		Files:    map[string]*File{cfg.Path: cfg},
+		Runbook:  cfg.Runbook,
+	}
+
+	bundle, diags := LowerStep(config, cfg.Steps["example"])
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	mainSrc := string(bundle.Files["main.tf"])
+	if !strings.Contains(mainSrc, `data "simple_resource" "current"`) {
+		t.Fatalf("lowered main.tf did not preserve step data block:\n%s", mainSrc)
+	}
+	if !strings.Contains(mainSrc, `value = data.simple_resource.current.value`) {
+		t.Fatalf("lowered main.tf did not preserve references to step data source:\n%s", mainSrc)
+	}
+}

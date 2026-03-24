@@ -7,18 +7,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/spf13/afero"
 	"github.com/zclconf/go-cty/cty"
 
+	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type Config struct {
 	RootPath  string
+	Actions   map[string]*Action
 	Files     map[string]*File
 	Variables map[string]*Variable
 	Runbook   *Runbook
@@ -29,6 +33,7 @@ type File struct {
 	Runbook   *Runbook
 	Providers map[string]*ProviderConfig
 	Variables map[string]*Variable
+	Actions   map[string]*Action
 	Steps     map[string]*Step
 }
 
@@ -61,11 +66,15 @@ type Variable struct {
 
 type Step struct {
 	Name           string
+	ForEach        hcl.Expression
+	ForEachSrc     []byte
 	HasConfig      bool
 	ActionCount    int
+	DataCount      int
 	ListCount      int
 	ExecCount      int
 	Actions        []*Action
+	DataSources    []*DataSource
 	Lists          []*List
 	ExecuteInvokes []*ExecuteActionInvoke
 	Locals         map[string]hcl.Expression
@@ -103,18 +112,36 @@ type List struct {
 	DeclRange tfdiags.SourceRange
 }
 
+type DataSource struct {
+	Type      string
+	Name      string
+	Config    hcl.Body
+	Src       []byte
+	DeclRange tfdiags.SourceRange
+}
+
+func (d *DataSource) Reference() string {
+	if d == nil {
+		return ""
+	}
+	return fmt.Sprintf("data.%s.%s", d.Type, d.Name)
+}
+
 type Output struct {
 	Name      string
 	Value     hcl.Expression
+	ValueSrc  []byte
 	DeclRange tfdiags.SourceRange
 }
 
 type Condition struct {
-	Kind         ConditionKind
-	Condition    hcl.Expression
-	ErrorMessage hcl.Expression
-	OnFail       ConditionOnFail
-	DeclRange    tfdiags.SourceRange
+	Kind            ConditionKind
+	Condition       hcl.Expression
+	ConditionSrc    []byte
+	ErrorMessage    hcl.Expression
+	ErrorMessageSrc []byte
+	OnFail          ConditionOnFail
+	DeclRange       tfdiags.SourceRange
 }
 
 type ConditionKind string
@@ -152,6 +179,7 @@ func LoadConfigDir(rootPath string) (*Config, tfdiags.Diagnostics) {
 
 	ret := &Config{
 		RootPath:  rootPath,
+		Actions:   make(map[string]*Action),
 		Files:     make(map[string]*File),
 		Variables: make(map[string]*Variable),
 	}
@@ -202,6 +230,96 @@ func LoadConfigDir(rootPath string) (*Config, tfdiags.Diagnostics) {
 			ret.Variables[name] = variable
 		}
 
+		for ref, action := range file.Actions {
+			if existing, exists := ret.Actions[ref]; exists {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate action block",
+					Detail:   fmt.Sprintf("An action %q was already declared at %s.", ref, existing.DeclRange.StartString()),
+					Subject:  action.DeclRange.ToHCL().Ptr(),
+				})
+				continue
+			}
+			ret.Actions[ref] = action
+		}
+
+		ret.Files[file.Path] = file
+	}
+
+	if ret.Runbook == nil {
+		diags = diags.Append(tfdiags.Sourceless(
+			tfdiags.Error,
+			"Missing runbook block",
+			"Runbook configuration must declare exactly one runbook block.",
+		))
+	}
+
+	return ret, diags
+}
+
+func LoadConfigSources(rootPath string, sources map[string][]byte) (*Config, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+
+	ret := &Config{
+		RootPath:  rootPath,
+		Actions:   make(map[string]*Action),
+		Files:     make(map[string]*File),
+		Variables: make(map[string]*Variable),
+	}
+
+	paths := make([]string, 0, len(sources))
+	for name := range sources {
+		paths = append(paths, name)
+	}
+	sort.Strings(paths)
+
+	for _, name := range paths {
+		src := sources[name]
+		path := filepath.Join(rootPath, filepath.FromSlash(name))
+
+		file, moreDiags := ParseFileSource(src, path)
+		diags = diags.Append(moreDiags)
+		if file == nil {
+			continue
+		}
+
+		if ret.Runbook != nil && file.Runbook != nil {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate runbook block",
+				Detail:   fmt.Sprintf("A runbook block was already declared at %s.", ret.Runbook.DeclRange.StartString()),
+				Subject:  file.Runbook.DeclRange.ToHCL().Ptr(),
+			})
+		} else if file.Runbook != nil {
+			ret.Runbook = file.Runbook
+		}
+
+		for name, variable := range file.Variables {
+			if existing, exists := ret.Variables[name]; exists {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate variable block",
+					Detail:   fmt.Sprintf("A variable named %q was already declared at %s.", name, existing.DeclRange.StartString()),
+					Subject:  variable.DeclRange.ToHCL().Ptr(),
+				})
+				continue
+			}
+			ret.Variables[name] = variable
+		}
+
+		for ref, action := range file.Actions {
+			if existing, exists := ret.Actions[ref]; exists {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate action block",
+					Detail:   fmt.Sprintf("An action %q was already declared at %s.", ref, existing.DeclRange.StartString()),
+					Subject:  action.DeclRange.ToHCL().Ptr(),
+				})
+				continue
+			}
+			ret.Actions[ref] = action
+		}
+
 		ret.Files[file.Path] = file
 	}
 
@@ -250,6 +368,7 @@ func DecodeFileBody(src []byte, body hcl.Body, path string) (*File, tfdiags.Diag
 		Path:      path,
 		Providers: make(map[string]*ProviderConfig),
 		Variables: make(map[string]*Variable),
+		Actions:   make(map[string]*Action),
 		Steps:     make(map[string]*Step),
 	}
 
@@ -324,6 +443,22 @@ func DecodeFileBody(src []byte, body hcl.Body, path string) (*File, tfdiags.Diag
 				continue
 			}
 			ret.Steps[step.Name] = step
+		case "action":
+			action, moreDiags := decodeActionBlock(src, block, syntaxBlocks)
+			diags = diags.Append(moreDiags)
+			if action == nil {
+				continue
+			}
+			if existing, exists := ret.Actions[action.Reference()]; exists {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate action block",
+					Detail:   fmt.Sprintf("An action %q was already declared at %s.", action.Reference(), existing.DeclRange.StartString()),
+					Subject:  block.DefRange.Ptr(),
+				})
+				continue
+			}
+			ret.Actions[action.Reference()] = action
 		}
 	}
 
@@ -410,11 +545,99 @@ func decodeProviderBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]m
 	return ret, diags
 }
 
+func decodeActionBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[string]*hclsyntax.Block) (*Action, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	syntaxBlock := lookupSyntaxBlock(syntaxBlocks, block)
+	ret := &Action{
+		Type:      block.Labels[0],
+		Name:      block.Labels[1],
+		DeclRange: tfdiags.SourceRangeFromHCL(block.DefRange),
+	}
+	if src != nil {
+		ret.Src = sourceSlice(src, syntaxBlockRange(block, syntaxBlock))
+	}
+	return ret, diags
+}
+
 func providerConfigKey(name, alias string) string {
 	if alias == "" {
 		return name
 	}
 	return name + "." + alias
+}
+
+func WorkspaceActions(cfg *Config) (map[string]*Action, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	ret := make(map[string]*Action)
+	if cfg == nil || cfg.RootPath == "" {
+		return ret, diags
+	}
+	workspaceActionSrc := make(map[string][]byte)
+	entries, err := os.ReadDir(cfg.RootPath)
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if !(strings.HasSuffix(name, ".tf") || strings.HasSuffix(name, ".tfquery.hcl")) {
+				continue
+			}
+			path := filepath.Join(cfg.RootPath, name)
+			src, readErr := os.ReadFile(path)
+			if readErr != nil {
+				continue
+			}
+			hclFile, parseDiags := hclsyntax.ParseConfig(src, path, hcl.InitialPos)
+			diags = diags.Append(parseDiags)
+			if parseDiags.HasErrors() {
+				continue
+			}
+			syntaxBody, ok := hclFile.Body.(*hclsyntax.Body)
+			if !ok {
+				continue
+			}
+			syntaxBlocks := indexSyntaxBlocks(syntaxBody.Blocks)
+			for _, syntaxBlock := range syntaxBody.Blocks {
+				block := &hcl.Block{
+					Type:        syntaxBlock.Type,
+					Labels:      syntaxBlock.Labels,
+					Body:        syntaxBlock.Body,
+					DefRange:    syntaxBlock.DefRange(),
+					TypeRange:   syntaxBlock.TypeRange,
+					LabelRanges: syntaxBlock.LabelRanges,
+				}
+				if block.Type != "action" {
+					continue
+				}
+				syntaxBlock := lookupSyntaxBlock(syntaxBlocks, block)
+				ref := fmt.Sprintf("workspace.action.%s.%s", block.Labels[0], block.Labels[1])
+				workspaceActionSrc[ref] = sourceSlice(src, syntaxBlockRange(block, syntaxBlock))
+			}
+		}
+	}
+	parser := configs.NewParser(afero.NewOsFs())
+	mod, hclDiags := parser.LoadConfigDir(cfg.RootPath)
+	diags = diags.Append(hclDiags)
+	if mod == nil || hclDiags.HasErrors() {
+		return ret, diags
+	}
+	for _, action := range mod.Actions {
+		if action == nil {
+			continue
+		}
+		ref := fmt.Sprintf("workspace.action.%s.%s", action.Type, action.Name)
+		ret[ref] = &Action{
+			Type:      action.Type,
+			Name:      action.Name,
+			Config:    action.Config,
+			DeclRange: tfdiags.SourceRangeFromHCL(action.DeclRange),
+		}
+		if src := workspaceActionSrc[ref]; len(src) > 0 {
+			ret[ref].Src = src
+		}
+	}
+	return ret, diags
 }
 
 func decodeVariableBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[string]*hclsyntax.Block) (*Variable, tfdiags.Diagnostics) {
@@ -470,6 +693,10 @@ func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[s
 
 	content, hclDiags := block.Body.Content(stepSchema)
 	diags = diags.Append(hclDiags)
+	if attr, exists := content.Attributes["for_each"]; exists {
+		ret.ForEach = attr.Expr
+		ret.ForEachSrc = sourceSlice(src, attr.Expr.Range())
+	}
 
 	for _, nested := range content.Blocks {
 		syntaxBlock := lookupSyntaxBlock(nestedSyntaxBlocks, nested)
@@ -496,13 +723,20 @@ func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[s
 			if list != nil {
 				ret.Lists = append(ret.Lists, list)
 			}
+		case "data":
+			ret.DataCount++
+			dataSource, moreDiags := decodeRunbookDataBlock(src, nested, syntaxBlock)
+			diags = diags.Append(moreDiags)
+			if dataSource != nil {
+				ret.DataSources = append(ret.DataSources, dataSource)
+			}
 		case "execute":
 			ret.ExecCount++
 			invokes, moreDiags := decodeExecuteBlock(nested)
 			diags = diags.Append(moreDiags)
 			ret.ExecuteInvokes = append(ret.ExecuteInvokes, invokes...)
 		case "output":
-			output, moreDiags := decodeOutputBlock(nested)
+			output, moreDiags := decodeOutputBlock(src, nested)
 			diags = diags.Append(moreDiags)
 			if output == nil {
 				continue
@@ -518,13 +752,13 @@ func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[s
 			}
 			ret.Outputs[output.Name] = output
 		case "precondition":
-			cond, moreDiags := decodeConditionBlock(nested, PreconditionCondition)
+			cond, moreDiags := decodeConditionBlock(src, nested, PreconditionCondition)
 			diags = diags.Append(moreDiags)
 			if cond != nil {
 				ret.Preconditions = append(ret.Preconditions, cond)
 			}
 		case "postcondition":
-			cond, moreDiags := decodeConditionBlock(nested, PostconditionCondition)
+			cond, moreDiags := decodeConditionBlock(src, nested, PostconditionCondition)
 			diags = diags.Append(moreDiags)
 			if cond != nil {
 				ret.Postconditions = append(ret.Postconditions, cond)
@@ -535,7 +769,7 @@ func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[s
 	return ret, diags
 }
 
-func decodeConditionBlock(block *hcl.Block, kind ConditionKind) (*Condition, tfdiags.Diagnostics) {
+func decodeConditionBlock(src []byte, block *hcl.Block, kind ConditionKind) (*Condition, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	content, hclDiags := block.Body.Content(conditionSchema)
@@ -552,6 +786,7 @@ func decodeConditionBlock(block *hcl.Block, kind ConditionKind) (*Condition, tfd
 
 	if attr, exists := content.Attributes["condition"]; exists {
 		cond.Condition = attr.Expr
+		cond.ConditionSrc = sourceSlice(src, attr.Expr.Range())
 		if len(cond.Condition.Variables()) == 0 {
 			diags = diags.Append(&hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -564,6 +799,7 @@ func decodeConditionBlock(block *hcl.Block, kind ConditionKind) (*Condition, tfd
 
 	if attr, exists := content.Attributes["error_message"]; exists {
 		cond.ErrorMessage = attr.Expr
+		cond.ErrorMessageSrc = sourceSlice(src, attr.Expr.Range())
 	}
 
 	if attr, exists := content.Attributes["on_fail"]; exists {
@@ -595,7 +831,7 @@ func decodeConditionBlock(block *hcl.Block, kind ConditionKind) (*Condition, tfd
 	return cond, diags
 }
 
-func decodeOutputBlock(block *hcl.Block) (*Output, tfdiags.Diagnostics) {
+func decodeOutputBlock(src []byte, block *hcl.Block) (*Output, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	ret := &Output{
 		Name:      block.Labels[0],
@@ -615,6 +851,7 @@ func decodeOutputBlock(block *hcl.Block) (*Output, tfdiags.Diagnostics) {
 		return ret, diags
 	}
 	ret.Value = content.Attributes["value"].Expr
+	ret.ValueSrc = sourceSlice(src, content.Attributes["value"].Expr.Range())
 	return ret, diags
 }
 
@@ -668,6 +905,28 @@ func decodeRunbookListBlock(src []byte, block *hcl.Block, syntaxBlock *hclsyntax
 			Severity: hcl.DiagError,
 			Summary:  "Invalid list name",
 			Detail:   "List names must be valid identifiers.",
+			Subject:  &block.LabelRanges[1],
+		})
+	}
+	return ret, diags
+}
+
+func decodeRunbookDataBlock(src []byte, block *hcl.Block, syntaxBlock *hclsyntax.Block) (*DataSource, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	ret := &DataSource{
+		Type:      block.Labels[0],
+		Name:      block.Labels[1],
+		Config:    block.Body,
+		DeclRange: tfdiags.SourceRangeFromHCL(block.DefRange),
+	}
+	if src != nil {
+		ret.Src = sourceSlice(src, syntaxBlockRange(block, syntaxBlock))
+	}
+	if !hclsyntax.ValidIdentifier(ret.Name) {
+		return nil, diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid data name",
+			Detail:   "Data names must be valid identifiers.",
 			Subject:  &block.LabelRanges[1],
 		})
 	}
@@ -752,43 +1011,58 @@ func decodeExecuteActionInvokeBlock(block *hcl.Block) (*ExecuteActionInvoke, tfd
 	if travDiags.HasErrors() {
 		return nil, diags
 	}
-	if len(traversal) != 3 {
+	if len(traversal) != 3 && len(traversal) != 4 {
 		return nil, diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid action reference",
-			Detail:   "The action argument must refer to an action in the form action.<type>.<name>.",
+			Detail:   "The action argument must refer to an action in the form action.<type>.<name> or workspace.action.<type>.<name>.",
 			Subject:  attr.Expr.Range().Ptr(),
 		})
 	}
 	root, ok := traversal[0].(hcl.TraverseRoot)
-	if !ok || root.Name != "action" {
+	if !ok || (root.Name != "action" && root.Name != "workspace") {
 		return nil, diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid action reference",
-			Detail:   "The action argument must refer to an action in the form action.<type>.<name>.",
+			Detail:   "The action argument must refer to an action in the form action.<type>.<name> or workspace.action.<type>.<name>.",
 			Subject:  attr.Expr.Range().Ptr(),
 		})
 	}
-	typeStep, ok := traversal[1].(hcl.TraverseAttr)
+	baseIdx := 1
+	prefix := "action"
+	if root.Name == "workspace" {
+		workspaceStep, ok := traversal[1].(hcl.TraverseAttr)
+		if !ok || workspaceStep.Name != "action" {
+			return nil, diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid action reference",
+				Detail:   "The action argument must refer to an action in the form action.<type>.<name> or workspace.action.<type>.<name>.",
+				Subject:  attr.Expr.Range().Ptr(),
+			})
+		}
+		baseIdx = 2
+		prefix = "workspace.action"
+	}
+	typeStep, ok := traversal[baseIdx].(hcl.TraverseAttr)
 	if !ok {
 		return nil, diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid action reference",
-			Detail:   "The action argument must refer to an action in the form action.<type>.<name>.",
+			Detail:   "The action argument must refer to an action in the form action.<type>.<name> or workspace.action.<type>.<name>.",
 			Subject:  attr.Expr.Range().Ptr(),
 		})
 	}
-	nameStep, ok := traversal[2].(hcl.TraverseAttr)
+	nameStep, ok := traversal[baseIdx+1].(hcl.TraverseAttr)
 	if !ok {
 		return nil, diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid action reference",
-			Detail:   "The action argument must refer to an action in the form action.<type>.<name>.",
+			Detail:   "The action argument must refer to an action in the form action.<type>.<name> or workspace.action.<type>.<name>.",
 			Subject:  attr.Expr.Range().Ptr(),
 		})
 	}
 	return &ExecuteActionInvoke{
-		ActionRef: fmt.Sprintf("action.%s.%s", typeStep.Name, nameStep.Name),
+		ActionRef: fmt.Sprintf("%s.%s.%s", prefix, typeStep.Name, nameStep.Name),
 		DeclRange: tfdiags.SourceRangeFromHCL(block.DefRange),
 	}, diags
 }
@@ -809,6 +1083,7 @@ var rootSchema = &hcl.BodySchema{
 		{Type: "runbook"},
 		{Type: "provider", LabelNames: []string{"type"}},
 		{Type: "variable", LabelNames: []string{"name"}},
+		{Type: "action", LabelNames: []string{"type", "name"}},
 		{Type: "step", LabelNames: []string{"name"}},
 	},
 }
@@ -836,10 +1111,12 @@ var variableSchema = &hcl.BodySchema{
 }
 
 var stepSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{{Name: "for_each"}},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "config"},
 		{Type: "locals"},
 		{Type: "action", LabelNames: []string{"type", "name"}},
+		{Type: "data", LabelNames: []string{"type", "name"}},
 		{Type: "list", LabelNames: []string{"type", "name"}},
 		{Type: "execute"},
 		{Type: "output", LabelNames: []string{"name"}},

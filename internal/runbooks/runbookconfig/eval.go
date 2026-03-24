@@ -20,6 +20,8 @@ type EvalScope struct {
 	Actions   cty.Value
 	Steps     cty.Value
 	Locals    cty.Value
+	Each      cty.Value
+	Workspace cty.Value
 }
 
 type StepStatus string
@@ -124,11 +126,13 @@ func evaluateCondition(condition *Condition, scope EvalScope) (bool, tfdiags.Dia
 
 	ctx := &hcl.EvalContext{
 		Variables: map[string]cty.Value{
-			"var":     normalizeScopeValue(scope.Variables),
-			"list":    normalizeScopeValue(scope.List),
-			"actions": normalizeScopeValue(scope.Actions),
-			"steps":   normalizeScopeValue(scope.Steps),
-			"local":   normalizeScopeValue(scope.Locals),
+			"var":       normalizeScopeValue(scope.Variables),
+			"list":      normalizeScopeValue(scope.List),
+			"actions":   normalizeScopeValue(scope.Actions),
+			"steps":     normalizeScopeValue(scope.Steps),
+			"local":     normalizeScopeValue(scope.Locals),
+			"each":      normalizeScopeValue(scope.Each),
+			"workspace": normalizeScopeValue(scope.Workspace),
 		},
 		Functions: lang.TestingFunctions(),
 	}

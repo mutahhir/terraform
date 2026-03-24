@@ -281,12 +281,219 @@ step "first" {
 	if got, want := resp.GetPlannedQueries()[0].Address, `list.test_resource.inventory`; got != want {
 		t.Fatalf("wrong planned query address: got %q want %q", got, want)
 	}
+	if got := resp.GetPlannedQueries()[0].GetData(); got == nil || len(got.Msgpack) == 0 {
+		t.Fatalf("expected planned query data to be populated, got %#v", got)
+	}
 	if got, want := len(resp.LoweredFiles), 2; got != want {
 		t.Fatalf("wrong lowered file count: got %d want %d", got, want)
 	}
 	paths := []string{resp.LoweredFiles[0].Path, resp.LoweredFiles[1].Path}
 	if !(paths[0] == "main.tf" && paths[1] == "main.tfquery.hcl" || paths[0] == "main.tfquery.hcl" && paths[1] == "main.tf") {
 		t.Fatalf("wrong lowered file paths: got %v", paths)
+	}
+}
+
+func TestRunbooksPlanRunbookStepIncludesPlannedOutputsFromQuery(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(testRunbookProvider()),
+	}
+
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "first" {
+  list "test_resource" "inventory" {
+    provider = test
+
+    config {
+      filter = {
+        attr = "hello"
+      }
+    }
+
+    include_resource = true
+    limit            = 10
+  }
+
+  output "ids" {
+    value = [for item in list.test_resource.inventory.data : item.identity.id]
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle: openResp.RunbookConfigHandle,
+		StepName:            "first",
+		Scope:               &runbooks.EvalScope{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned := resp.GetPlannedOutputs()["ids"]
+	if planned == nil {
+		t.Fatal("expected planned output value for ids")
+	}
+	val, err := ctymsgpack.Unmarshal(planned.Msgpack, cty.DynamicPseudoType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := val.LengthInt(), 1; got != want {
+		t.Fatalf("wrong planned output length: got %d want %d", got, want)
+	}
+	item := val.Index(cty.NumberIntVal(0))
+	if item.Type().IsObjectType() && item.Type().HasAttribute("identity") {
+		item = item.GetAttr("identity").GetAttr("id")
+	}
+	if got, want := item.AsString(), "i-1"; got != want {
+		t.Fatalf("wrong planned output item: got %q want %q", got, want)
+	}
+}
+
+func TestRunbooksPlanRunbookStepResolvesRootAction(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+action "test_action" "root_target" {
+  config {
+    attr = "hello"
+  }
+}
+
+step "first" {
+  execute {
+    action_invoke {
+      action = action.test_action.root_target
+    }
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle: openResp.RunbookConfigHandle,
+		StepName:            "first",
+		Scope:               &runbooks.EvalScope{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(resp.PlannedActions), 1; got != want {
+		t.Fatalf("wrong planned action count: got %d want %d", got, want)
+	}
+	if got, want := resp.PlannedActions[0].Address, "action.test_action.root_target"; got != want {
+		t.Fatalf("wrong planned action address: got %q want %q", got, want)
+	}
+}
+
+func TestRunbooksPlanRunbookStepResolvesWorkspaceAction(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tf"), []byte(`terraform {
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+action "test_action" "workspace_target" {
+  config {
+    attr = "hello"
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "first" {
+  execute {
+    action_invoke {
+      action = workspace.action.test_action.workspace_target
+    }
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle: openResp.RunbookConfigHandle,
+		StepName:            "first",
+		Scope:               &runbooks.EvalScope{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(resp.PlannedActions), 1; got != want {
+		t.Fatalf("wrong planned action count: got %d want %d", got, want)
+	}
+	if got, want := resp.PlannedActions[0].Address, "workspace.action.test_action.workspace_target"; got != want {
+		t.Fatalf("wrong planned action address: got %q want %q", got, want)
 	}
 }
 
@@ -347,6 +554,54 @@ step "first" {
 
 	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_SKIPPED; got != want {
 		t.Fatalf("wrong plan status: got %v want %v", got, want)
+	}
+}
+
+func TestRunbooksPlanRunbookStepUsesWorkspaceOutputScope(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "first" {
+  precondition {
+    condition     = workspace.output.enabled
+    error_message = "workspace output must enable this step"
+    on_fail       = "skip"
+  }
+
+  execute {}
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle: openResp.RunbookConfigHandle,
+		StepName:            "first",
+		Scope: &runbooks.EvalScope{
+			Workspace: &runbooks.DynamicValue{Msgpack: mustMsgpackValue(t, cty.ObjectVal(map[string]cty.Value{
+				"output": cty.ObjectVal(map[string]cty.Value{
+					"enabled": cty.True,
+				}),
+			}))},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_READY; got != want {
+		t.Fatalf("wrong status: got %v want %v; diagnostics=%v", got, want, resp.Diagnostics)
 	}
 }
 
