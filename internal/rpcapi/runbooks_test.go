@@ -55,11 +55,11 @@ step "first" {
   execute {}
 
   output "status_code" {
-    value = actions.aws_lambda_invoke.foo.result.status_code
+    value = action.aws_lambda_invoke.foo.result.status_code
   }
 
   postcondition {
-    condition     = actions.aws_lambda_invoke.foo.result.status_code == 200
+    condition     = action.aws_lambda_invoke.foo.result.status_code == 200
     error_message = "invoke failed"
   }
 }
@@ -128,11 +128,11 @@ step "first" {
   execute {}
 
   output "status_code" {
-    value = actions.aws_lambda_invoke.foo.result.status_code
+    value = action.aws_lambda_invoke.foo.result.status_code
   }
 
   postcondition {
-    condition     = actions.aws_lambda_invoke.foo.result.status_code == 200
+    condition     = action.aws_lambda_invoke.foo.result.status_code == 200
     error_message = "invoke failed"
   }
 }
@@ -688,7 +688,7 @@ step "first" {
   execute {}
 
   postcondition {
-    condition     = actions.aws_lambda_invoke.foo.result.status_code == 200
+    condition     = action.aws_lambda_invoke.foo.result.status_code == 200
     error_message = "invoke failed"
   }
 }
