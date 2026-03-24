@@ -66,6 +66,8 @@ type Variable struct {
 
 type Step struct {
 	Name           string
+	Count          hcl.Expression
+	CountSrc       []byte
 	ForEach        hcl.Expression
 	ForEachSrc     []byte
 	HasConfig      bool
@@ -693,6 +695,10 @@ func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[s
 
 	content, hclDiags := block.Body.Content(stepSchema)
 	diags = diags.Append(hclDiags)
+	if attr, exists := content.Attributes["count"]; exists {
+		ret.Count = attr.Expr
+		ret.CountSrc = sourceSlice(src, attr.Expr.Range())
+	}
 	if attr, exists := content.Attributes["for_each"]; exists {
 		ret.ForEach = attr.Expr
 		ret.ForEachSrc = sourceSlice(src, attr.Expr.Range())
@@ -1111,7 +1117,7 @@ var variableSchema = &hcl.BodySchema{
 }
 
 var stepSchema = &hcl.BodySchema{
-	Attributes: []hcl.AttributeSchema{{Name: "for_each"}},
+	Attributes: []hcl.AttributeSchema{{Name: "count"}, {Name: "for_each"}},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "config"},
 		{Type: "locals"},

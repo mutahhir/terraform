@@ -130,6 +130,7 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 
 	cfg := s.handles.RunbookConfig(handle[*runbookconfig.Config](req.RunbookConfigHandle))
 	plan := runbookconfig.PlanStepWithConfig(cfg, step, scope)
+	plannedOutputVals := plannedOutputsFromStepPlan(plan, step)
 	if plan.Lowered != nil {
 		runtime, err := s.lookupRunbookRuntime(req.RunbookRuntimeHandle)
 		if err != nil {
@@ -138,7 +139,6 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 		tfPlan, lowerDiags := s.validateAndPlanLoweredStepDir(plan.Lowered.Dir, runtime)
 		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(lowerDiags)
 		if tfPlan != nil && tfPlan.Changes != nil {
-			plannedOutputs := make(map[string]cty.Value)
 			schemas, schemaDiags := s.schemasForRunbookPlan(plan.Lowered.Dir, runtime)
 			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(schemaDiags)
 			for _, q := range tfPlan.Changes.Queries {
@@ -182,18 +182,12 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 					plan.Evaluation.Diags = plan.Evaluation.Diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to decode lowered step output", err.Error()))
 					continue
 				}
-				plannedOutputs[decoded.Addr.OutputValue.Name] = decoded.Change.After
+				plannedOutputVals[decoded.Addr.OutputValue.Name] = decoded.Change.After
 			}
 			for name, output := range runbookplan.StepOutputsFromQueries(step, plan.Queries, scope.Variables, scope.Steps, scope.Workspace).AsValueMap() {
-				if step != nil && step.Name == "discover_roles" {
-					fmt.Printf("DEBUG rpc query-derived output %s=%s\n", name, tfdiags.CompactValueStr(output))
-				}
-				if existing, ok := plannedOutputs[name]; ok && existing.IsKnown() && !existing.IsNull() {
-					continue
-				}
-				plannedOutputs[name] = output
+				plannedOutputVals[name] = output
 			}
-			applyTerraformDrivenStepResults(plan, step, plannedOutputs)
+			applyTerraformDrivenStepResults(plan, step, plannedOutputVals)
 		}
 	}
 	plannedActions := make([]*runbooks.PlanRunbookStep_PlannedAction, 0, len(plan.Actions))
@@ -213,7 +207,7 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 		})
 	}
 	plannedOutputs := make(map[string]*runbooks.DynamicValue)
-	for name, output := range plannedOutputsFromStepPlan(plan, step) {
+	for name, output := range plannedOutputVals {
 		plannedOutputs[name] = dynamicValueToProto(output)
 	}
 	loweredFiles := make([]*runbooks.PlanRunbookStep_LoweredFile, 0)
@@ -384,6 +378,8 @@ func evalScopeFromProto(protoScope *runbooks.EvalScope) (runbookconfig.EvalScope
 	diags = diags.Append(moreDiags)
 	workspace, moreDiags := dynamicValueFromProto(protoScope.Workspace)
 	diags = diags.Append(moreDiags)
+	each, moreDiags := dynamicValueFromProto(protoScope.GetEach())
+	diags = diags.Append(moreDiags)
 
 	return runbookconfig.EvalScope{
 		Variables: variables,
@@ -391,6 +387,7 @@ func evalScopeFromProto(protoScope *runbooks.EvalScope) (runbookconfig.EvalScope
 		Actions:   actions,
 		Steps:     steps,
 		Locals:    locals,
+		Each:      each,
 		Workspace: workspace,
 	}, diags
 }

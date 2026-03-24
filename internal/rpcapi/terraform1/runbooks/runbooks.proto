@@ -42,6 +42,8 @@ message EvalScope {
   DynamicValue steps = 4;
   // Step local values available as local.<name>
   DynamicValue locals = 5;
+  // Instance-scoped values available as each.key / each.value
+  DynamicValue each = 7;
   // Workspace-scoped values available as workspace.<name>
   DynamicValue workspace = 6;
 }

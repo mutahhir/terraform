@@ -34,17 +34,22 @@ type Plan struct {
 }
 
 type Step struct {
-	Name           string   `json:"name"`
-	BaseName       string   `json:"base_name,omitempty"`
-	ForEachKey     string   `json:"for_each_key,omitempty"`
-	InstanceCount  int      `json:"instance_count,omitempty"`
-	After          []string `json:"after,omitempty"`
-	KnownSkipped   bool     `json:"known_skipped,omitempty"`
-	SkipReason     string   `json:"skip_reason,omitempty"`
-	PlannedActions []string `json:"planned_actions,omitempty"`
-	PlannedQueries []string `json:"planned_queries,omitempty"`
-	PlannedData    []string `json:"planned_data,omitempty"`
-	Outputs        []string `json:"outputs,omitempty"`
+	Name              string            `json:"name"`
+	BaseName          string            `json:"base_name"`
+	CountExpression   string            `json:"count_expression,omitempty"`
+	ForEachExpression string            `json:"for_each_expression,omitempty"`
+	CountIndex        *int              `json:"count_index,omitempty"`
+	ForEachKey        string            `json:"for_each_key,omitempty"`
+	ForEachValue      []byte            `json:"for_each_value,omitempty"`
+	PlannedOutputs    map[string][]byte `json:"planned_outputs,omitempty"`
+	InstanceCount     int               `json:"instance_count,omitempty"`
+	After             []string          `json:"after,omitempty"`
+	KnownSkipped      bool              `json:"known_skipped,omitempty"`
+	SkipReason        string            `json:"skip_reason,omitempty"`
+	PlannedActions    []string          `json:"planned_actions,omitempty"`
+	PlannedQueries    []string          `json:"planned_queries,omitempty"`
+	PlannedData       []string          `json:"planned_data,omitempty"`
+	Outputs           []string          `json:"outputs,omitempty"`
 }
 
 type CreateArgs struct {

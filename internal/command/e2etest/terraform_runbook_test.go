@@ -366,8 +366,142 @@ func TestRunbookExecuteForEachStepExpansion(t *testing.T) {
 	if !strings.Contains(stdout, "# inspect_role[") {
 		t.Fatalf("missing expanded inspect_role execute output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "role = \"object-with-3-attributes\"") {
+	if !strings.Contains(stdout, "role = \"static_id\"") {
 		t.Fatalf("missing instance output value:\n%s", stdout)
+	}
+
+	cancel()
+	<-closeCh
+}
+
+func TestRunbookPlanCountStepExpansion(t *testing.T) {
+	if !canRunGoBuild {
+		t.Skip("can't run without building a new provider executable")
+	}
+
+	t.Parallel()
+	os.Setenv(e2e.TestExperimentFlag, "true")
+	terraformBin := e2e.GoBuild("github.com/hashicorp/terraform", "terraform")
+
+	fixturePath := filepath.Join("testdata", "runbook-provider-count")
+	tf := e2e.NewBinary(t, terraformBin, fixturePath)
+
+	reattachCh := make(chan *plugin.ReattachConfig)
+	closeCh := make(chan struct{})
+	provider6 := &providerServer{ProviderServer: grpcwrap.Provider6(simple.Provider())}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go plugin.Serve(&plugin.ServeConfig{
+		Logger:     hclog.New(&hclog.LoggerOptions{Name: "plugintest", Level: hclog.Trace, Output: io.Discard}),
+		Test:       &plugin.ServeTestConfig{Context: ctx, ReattachConfigCh: reattachCh, CloseCh: closeCh},
+		GRPCServer: plugin.DefaultGRPCServer,
+		VersionedPlugins: map[int]plugin.PluginSet{
+			6: {
+				"provider": &tfplugin.GRPCProviderPlugin{GRPCProvider: func() proto.ProviderServer { return provider6 }},
+			},
+		},
+	})
+	config := <-reattachCh
+	reattachStr, err := json.Marshal(map[string]reattachConfig{
+		"hashicorp/test": {
+			Protocol:        string(config.Protocol),
+			ProtocolVersion: 6,
+			Pid:             config.Pid,
+			Test:            true,
+			Addr:            reattachConfigAddr{Network: config.Addr.Network(), String: config.Addr.String()},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tf.AddEnv("TF_REATTACH_PROVIDERS=" + string(reattachStr))
+
+	if _, stderr, err := tf.Run("init"); err != nil {
+		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
+	}
+	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
+		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
+	}
+	stdout, stderr, err := tf.Run("runbook", "plan")
+	if err != nil {
+		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stdout, `# Step 2: inspect_count[0]`) {
+		t.Fatalf("missing count step [0] output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `# Step 3: inspect_count[1]`) {
+		t.Fatalf("missing count step [1] output:\n%s", stdout)
+	}
+
+	cancel()
+	<-closeCh
+}
+
+func TestRunbookExecuteCountStepExpansion(t *testing.T) {
+	if !canRunGoBuild {
+		t.Skip("can't run without building a new provider executable")
+	}
+
+	t.Parallel()
+	os.Setenv(e2e.TestExperimentFlag, "true")
+	terraformBin := e2e.GoBuild("github.com/hashicorp/terraform", "terraform")
+
+	fixturePath := filepath.Join("testdata", "runbook-provider-count")
+	tf := e2e.NewBinary(t, terraformBin, fixturePath)
+
+	reattachCh := make(chan *plugin.ReattachConfig)
+	closeCh := make(chan struct{})
+	provider6 := &providerServer{ProviderServer: grpcwrap.Provider6(simple.Provider())}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go plugin.Serve(&plugin.ServeConfig{
+		Logger:     hclog.New(&hclog.LoggerOptions{Name: "plugintest", Level: hclog.Trace, Output: io.Discard}),
+		Test:       &plugin.ServeTestConfig{Context: ctx, ReattachConfigCh: reattachCh, CloseCh: closeCh},
+		GRPCServer: plugin.DefaultGRPCServer,
+		VersionedPlugins: map[int]plugin.PluginSet{
+			6: {
+				"provider": &tfplugin.GRPCProviderPlugin{GRPCProvider: func() proto.ProviderServer { return provider6 }},
+			},
+		},
+	})
+	config := <-reattachCh
+	reattachStr, err := json.Marshal(map[string]reattachConfig{
+		"hashicorp/test": {
+			Protocol:        string(config.Protocol),
+			ProtocolVersion: 6,
+			Pid:             config.Pid,
+			Test:            true,
+			Addr:            reattachConfigAddr{Network: config.Addr.Network(), String: config.Addr.String()},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tf.AddEnv("TF_REATTACH_PROVIDERS=" + string(reattachStr))
+
+	if _, stderr, err := tf.Run("init"); err != nil {
+		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
+	}
+	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
+		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
+	}
+	if _, stderr, err := tf.Run("runbook", "plan"); err != nil {
+		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
+	}
+	stdout, stderr, err := tf.Run("runbook", "execute")
+	if err != nil {
+		t.Fatalf("unexpected runbook execute error: %s\nstderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stdout, `# inspect_count[0]`) {
+		t.Fatalf("missing count step [0] execute output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `# inspect_count[1]`) {
+		t.Fatalf("missing count step [1] execute output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `idx = 0`) || !strings.Contains(stdout, `idx = 1`) {
+		t.Fatalf("missing count output values:\n%s", stdout)
 	}
 
 	cancel()

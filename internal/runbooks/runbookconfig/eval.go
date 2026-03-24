@@ -20,6 +20,7 @@ type EvalScope struct {
 	Actions   cty.Value
 	Steps     cty.Value
 	Locals    cty.Value
+	Count     cty.Value
 	Each      cty.Value
 	Workspace cty.Value
 }
@@ -131,6 +132,7 @@ func evaluateCondition(condition *Condition, scope EvalScope) (bool, tfdiags.Dia
 			"actions":   normalizeScopeValue(scope.Actions),
 			"steps":     normalizeScopeValue(scope.Steps),
 			"local":     normalizeScopeValue(scope.Locals),
+			"count":     normalizeScopeValue(scope.Count),
 			"each":      normalizeScopeValue(scope.Each),
 			"workspace": normalizeScopeValue(scope.Workspace),
 		},

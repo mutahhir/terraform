@@ -31,9 +31,9 @@ func TestRunbooksOpenCloseConfiguration(t *testing.T) {
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
   terraform_version = ">= 1.0.0"
-
-  provider "aws" {}
 }
+
+provider "aws" {}
 
 step "first" {
   precondition {
@@ -108,9 +108,9 @@ func TestRunbooksFindConfigurationSteps(t *testing.T) {
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
   terraform_version = ">= 1.0.0"
-
-  provider "aws" {}
 }
+
+provider "aws" {}
 
 step "first" {
   precondition {
@@ -168,7 +168,7 @@ variable "lambda_name" {
 	if got, want := stepsResp.Config.TerraformVersion, ">= 1.0.0"; got != want {
 		t.Fatalf("wrong terraform version: got %q want %q", got, want)
 	}
-	if got, want := len(stepsResp.Config.Providers), 1; got != want {
+	if got, want := len(stepsResp.Config.Providers), 0; got != want {
 		t.Fatalf("wrong provider count: got %d want %d", got, want)
 	}
 	if got, want := len(stepsResp.Config.Variables), 2; got != want {

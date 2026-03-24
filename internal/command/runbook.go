@@ -17,6 +17,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	ctymsgpack "github.com/zclconf/go-cty/cty/msgpack"
 
+	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configload"
 	"github.com/hashicorp/terraform/internal/lang"
@@ -26,7 +27,9 @@ import (
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/dependencies"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/setup"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookeval"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookplan"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookplanfile"
 	"github.com/hashicorp/terraform/internal/states"
@@ -240,7 +243,7 @@ func (c *RunbookCommand) runPlan() int {
 	buildResult, buildDiags, buildErr := runbookplan.Build(rawCfg, state.ConfigPath, state.Workspace, state.StepOrder, state.Dependencies, varScope, workspaceScope, func(stepName string, scope runbookconfig.EvalScope) (runbookplan.StepPlanResult, error) {
 		rawStep := rawSteps[stepName]
 		step := stepsResp.Config.Steps[stepName]
-		protoScope := &runbooks.EvalScope{Variables: dynamicProtoValue(scope.Variables), Steps: dynamicProtoValue(scope.Steps)}
+		protoScope := &runbooks.EvalScope{Variables: dynamicProtoValue(scope.Variables), Steps: dynamicProtoValue(scope.Steps), Each: dynamicProtoValue(scope.Each)}
 		protoScope.Workspace = dynamicProtoValue(scope.Workspace)
 		planResp, err := client.Runbooks().PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
 			RunbookConfigHandle:  openResp.RunbookConfigHandle,
@@ -360,7 +363,8 @@ func (c *RunbookCommand) runExecute() int {
 		return 1
 	}
 
-	stepResults := make(map[string]cty.Value)
+	stepResults := runbookeval.NewStepResults()
+	seedStepResultsFromPlan(manifest, stepResults)
 	currentState := states.NewState()
 	if stateFile != nil && stateFile.State != nil {
 		currentState = stateFile.State.DeepCopy()
@@ -391,8 +395,8 @@ func (c *RunbookCommand) runExecute() int {
 			c.Ui.Error(fmt.Sprintf("Failed to read lowered files for step %q: %s", stepName, err))
 			return 1
 		}
-		if manifestStep != nil && manifestStep.BaseName != "" {
-			if loweredBundle, lowerDiags := runbookconfig.LowerStepInstance(rawCfg, step, eachScopeForManifestStep(manifestStep)); lowerDiags.HasErrors() {
+		if manifestStep != nil && manifestStep.ForEachExpression != "" {
+			if loweredBundle, lowerDiags := runbookconfig.LowerStepInstance(rawCfg, step, eachScopeForManifestStep(manifestStep), countScopeForManifestStep(manifestStep)); lowerDiags.HasErrors() {
 				c.Ui.Error(lowerDiags.Err().Error())
 				return 1
 			} else if loweredBundle != nil {
@@ -419,16 +423,10 @@ func (c *RunbookCommand) runExecute() int {
 
 		preScope := runbookconfig.EvalScope{
 			Variables: buildRunbookVariableScope(rawCfg),
-			Steps:     cty.ObjectVal(baseStepResultForManifestStep(manifestStep, stepResults)),
+			Steps:     stepResults.ScopeValue(),
+			Count:     countScopeForManifestStep(manifestStep),
 			Each:      eachScopeForManifestStep(manifestStep),
 			Workspace: mergedWorkspaceScope(baseWorkspaceScope, currentState),
-		}
-		if manifestStep != nil && manifestStep.BaseName != "" {
-			preScope.Steps = cty.ObjectVal(map[string]cty.Value{
-				"discover_roles": cty.ObjectVal(map[string]cty.Value{
-					"roles": cty.TupleVal([]cty.Value{cty.StringVal(manifestStep.ForEachKey)}),
-				}),
-			})
 		}
 		preEval := runbookconfig.EvaluateStepForPlan(step, preScope)
 		if preEval.Status == runbookconfig.StepStatusSkipped {
@@ -488,11 +486,11 @@ func (c *RunbookCommand) runExecute() int {
 			}
 		}
 
-		stepOutputs := evaluateStepOutputsFromSource(step, preScope)
-		stepResults[stepName] = stepOutputs
-		if manifestStep != nil && manifestStep.BaseName != "" {
-			stepResults[manifestStep.BaseName] = mergeExpandedStepResults(stepResults[manifestStep.BaseName], manifestStep.ForEachKey, stepOutputs)
+		stepOutputs := stepResults.Get(stepInstanceAddrFromManifestStep(manifestStep))
+		if !(manifestStep != nil && len(step.Lists) > 0) {
+			stepOutputs = mergeStepOutputs(evaluateStepOutputsFromSource(step, preScope), stepOutputs)
 		}
+		stepResults.Set(stepInstanceAddrFromManifestStep(manifestStep), stepOutputs)
 		c.Ui.Output(fmt.Sprintf("  # %s", stepName))
 		c.Ui.Output("  status = \"complete\"")
 		if formatted := formatStepOutputs(stepName, stepOutputs); formatted != "" {
@@ -856,6 +854,38 @@ func persistedRunbookStep(plan *runbookplanfile.Plan, stepName string) *runbookp
 	return nil
 }
 
+func seedStepResultsFromPlan(plan *runbookplanfile.Plan, stepResults *runbookeval.StepResults) {
+	if plan == nil || stepResults == nil {
+		return
+	}
+	for i := range plan.Steps {
+		step := &plan.Steps[i]
+		outputs := decodePlannedStepOutputs(step)
+		if outputs == cty.NilVal {
+			continue
+		}
+		stepResults.Set(stepInstanceAddrFromManifestStep(step), outputs)
+	}
+}
+
+func decodePlannedStepOutputs(step *runbookplanfile.Step) cty.Value {
+	if step == nil || len(step.PlannedOutputs) == 0 {
+		return cty.NilVal
+	}
+	ret := make(map[string]cty.Value, len(step.PlannedOutputs))
+	for name, raw := range step.PlannedOutputs {
+		v, err := ctymsgpack.Unmarshal(raw, cty.DynamicPseudoType)
+		if err != nil {
+			continue
+		}
+		ret[name] = v
+	}
+	if len(ret) == 0 {
+		return cty.NilVal
+	}
+	return cty.ObjectVal(ret)
+}
+
 func firstDiagnosticDetail(diags []*terraform1.Diagnostic) string {
 	if len(diags) == 0 || diags[0] == nil {
 		return ""
@@ -901,52 +931,51 @@ func plannedOutputsFromResponse(resp *runbooks.PlanRunbookStep_Response) (cty.Va
 }
 
 func eachScopeForManifestStep(step *runbookplanfile.Step) cty.Value {
-	if step == nil || step.BaseName == "" {
-		return cty.EmptyObjectVal
+	if step == nil || step.ForEachExpression == "" {
+		return cty.NilVal
 	}
 	key := cty.StringVal(step.ForEachKey)
+	value := key
+	if decoded, err := decodeManifestForEachValue(step); err == nil && decoded != cty.NilVal {
+		value = decoded
+	}
 	return cty.ObjectVal(map[string]cty.Value{
 		"key":   key,
-		"value": key,
+		"value": value,
 	})
 }
 
-func mergeExpandedStepResults(existing cty.Value, key string, stepOutputs cty.Value) cty.Value {
-	vals := map[string]cty.Value{}
-	if existing != cty.NilVal && existing.Type().IsObjectType() {
-		for name, val := range existing.AsValueMap() {
-			vals[name] = val
-		}
+func countScopeForManifestStep(step *runbookplanfile.Step) cty.Value {
+	if step == nil || step.CountIndex == nil {
+		return cty.EmptyObjectVal
 	}
-	vals[key] = stepOutputs
-	return cty.ObjectVal(vals)
+	return cty.ObjectVal(map[string]cty.Value{
+		"index": cty.NumberIntVal(int64(*step.CountIndex)),
+	})
 }
 
-func baseStepResultForManifestStep(step *runbookplanfile.Step, stepResults map[string]cty.Value) map[string]cty.Value {
-	ret := make(map[string]cty.Value, len(stepResults)+1)
-	for name, val := range stepResults {
-		ret[name] = val
+func decodeManifestForEachValue(step *runbookplanfile.Step) (cty.Value, error) {
+	if step == nil || len(step.ForEachValue) == 0 {
+		return cty.NilVal, nil
 	}
-	if step == nil || step.BaseName == "" {
-		return ret
-	}
-	if base, ok := stepResults[step.BaseName]; ok {
-		ret[step.BaseName] = flattenExpandedStepResult(base)
-	}
-	return ret
+	return ctymsgpack.Unmarshal(step.ForEachValue, cty.DynamicPseudoType)
 }
 
-func flattenExpandedStepResult(v cty.Value) cty.Value {
-	if v == cty.NilVal || !v.Type().IsObjectType() {
-		return v
+func stepInstanceAddrFromManifestStep(step *runbookplanfile.Step) runbookaddrs.StepInstance {
+	if step == nil {
+		return runbookaddrs.Step{}.Instance(addrs.NoKey)
 	}
-	vals := v.AsValueMap()
-	for _, candidate := range vals {
-		if candidate != cty.NilVal && candidate.Type().IsObjectType() {
-			return candidate
-		}
+	base := runbookaddrs.Step{Name: step.BaseName}
+	if base.Name == "" {
+		base.Name = step.Name
 	}
-	return v
+	if step.ForEachExpression != "" {
+		return base.Instance(addrs.StringKey(step.ForEachKey))
+	}
+	if step.CountIndex != nil {
+		return base.Instance(addrs.IntKey(*step.CountIndex))
+	}
+	return base.Instance(addrs.NoKey)
 }
 
 func expandDependencyInstances(deps []string, plannedStepResults map[string]cty.Value) []string {
@@ -1186,6 +1215,7 @@ func evaluateStepOutputsFromSource(step *runbookconfig.Step, scope runbookconfig
 			"actions":   normalizeRunbookScopeValue(scope.Actions),
 			"steps":     normalizeRunbookScopeValue(scope.Steps),
 			"local":     normalizeRunbookScopeValue(scope.Locals),
+			"count":     normalizeRunbookScopeValue(scope.Count),
 			"each":      normalizeRunbookScopeValue(scope.Each),
 			"workspace": normalizeRunbookScopeValue(scope.Workspace),
 		},

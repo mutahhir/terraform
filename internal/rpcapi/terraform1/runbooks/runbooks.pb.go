@@ -185,6 +185,8 @@ type EvalScope struct {
 	Steps *DynamicValue `protobuf:"bytes,4,opt,name=steps,proto3" json:"steps,omitempty"`
 	// Step local values available as local.<name>
 	Locals *DynamicValue `protobuf:"bytes,5,opt,name=locals,proto3" json:"locals,omitempty"`
+	// Instance-scoped values available as each.key / each.value
+	Each *DynamicValue `protobuf:"bytes,7,opt,name=each,proto3" json:"each,omitempty"`
 	// Workspace-scoped values available as workspace.<name>
 	Workspace     *DynamicValue `protobuf:"bytes,6,opt,name=workspace,proto3" json:"workspace,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -252,6 +254,13 @@ func (x *EvalScope) GetSteps() *DynamicValue {
 func (x *EvalScope) GetLocals() *DynamicValue {
 	if x != nil {
 		return x.Locals
+	}
+	return nil
+}
+
+func (x *EvalScope) GetEach() *DynamicValue {
+	if x != nil {
+		return x.Each
 	}
 	return nil
 }
@@ -2009,13 +2018,14 @@ const file_runbooks_proto_rawDesc = "" +
 	"\n" +
 	"\x0erunbooks.proto\x12\x13terraform1.runbooks\x1a\x10terraform1.proto\"(\n" +
 	"\fDynamicValue\x12\x18\n" +
-	"\amsgpack\x18\x01 \x01(\fR\amsgpack\"\xf5\x02\n" +
+	"\amsgpack\x18\x01 \x01(\fR\amsgpack\"\xac\x03\n" +
 	"\tEvalScope\x12?\n" +
 	"\tvariables\x18\x01 \x01(\v2!.terraform1.runbooks.DynamicValueR\tvariables\x125\n" +
 	"\x04list\x18\x02 \x01(\v2!.terraform1.runbooks.DynamicValueR\x04list\x12;\n" +
 	"\aactions\x18\x03 \x01(\v2!.terraform1.runbooks.DynamicValueR\aactions\x127\n" +
 	"\x05steps\x18\x04 \x01(\v2!.terraform1.runbooks.DynamicValueR\x05steps\x129\n" +
-	"\x06locals\x18\x05 \x01(\v2!.terraform1.runbooks.DynamicValueR\x06locals\x12?\n" +
+	"\x06locals\x18\x05 \x01(\v2!.terraform1.runbooks.DynamicValueR\x06locals\x125\n" +
+	"\x04each\x18\a \x01(\v2!.terraform1.runbooks.DynamicValueR\x04each\x12?\n" +
 	"\tworkspace\x18\x06 \x01(\v2!.terraform1.runbooks.DynamicValueR\tworkspace\"\xc0\x01\n" +
 	"\x18OpenRunbookConfiguration\x1a*\n" +
 	"\aRequest\x12\x1f\n" +
@@ -2216,54 +2226,55 @@ var file_runbooks_proto_depIdxs = []int32{
 	2,  // 2: terraform1.runbooks.EvalScope.actions:type_name -> terraform1.runbooks.DynamicValue
 	2,  // 3: terraform1.runbooks.EvalScope.steps:type_name -> terraform1.runbooks.DynamicValue
 	2,  // 4: terraform1.runbooks.EvalScope.locals:type_name -> terraform1.runbooks.DynamicValue
-	2,  // 5: terraform1.runbooks.EvalScope.workspace:type_name -> terraform1.runbooks.DynamicValue
-	41, // 6: terraform1.runbooks.OpenRunbookConfiguration.Response.diagnostics:type_name -> terraform1.Diagnostic
-	41, // 7: terraform1.runbooks.ValidateRunbookConfiguration.Response.diagnostics:type_name -> terraform1.Diagnostic
-	25, // 8: terraform1.runbooks.FindRunbookConfigurationSteps.Response.config:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig
-	26, // 9: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.providers:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.ProviderConfig
-	30, // 10: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.steps:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry
-	28, // 11: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.variables:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Variable
-	29, // 12: terraform1.runbooks.FindRunbookConfigurationSteps.Step.preconditions:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition
-	29, // 13: terraform1.runbooks.FindRunbookConfigurationSteps.Step.postconditions:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition
-	1,  // 14: terraform1.runbooks.FindRunbookConfigurationSteps.Condition.on_fail:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition.OnFail
-	27, // 15: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry.value:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Step
-	2,  // 16: terraform1.runbooks.PlanRunbookStep.PlannedQuery.data:type_name -> terraform1.runbooks.DynamicValue
-	3,  // 17: terraform1.runbooks.PlanRunbookStep.Request.scope:type_name -> terraform1.runbooks.EvalScope
-	0,  // 18: terraform1.runbooks.PlanRunbookStep.Response.status:type_name -> terraform1.runbooks.StepStatus
-	41, // 19: terraform1.runbooks.PlanRunbookStep.Response.diagnostics:type_name -> terraform1.Diagnostic
-	31, // 20: terraform1.runbooks.PlanRunbookStep.Response.planned_actions:type_name -> terraform1.runbooks.PlanRunbookStep.PlannedAction
-	33, // 21: terraform1.runbooks.PlanRunbookStep.Response.lowered_files:type_name -> terraform1.runbooks.PlanRunbookStep.LoweredFile
-	32, // 22: terraform1.runbooks.PlanRunbookStep.Response.planned_queries:type_name -> terraform1.runbooks.PlanRunbookStep.PlannedQuery
-	36, // 23: terraform1.runbooks.PlanRunbookStep.Response.planned_outputs:type_name -> terraform1.runbooks.PlanRunbookStep.Response.PlannedOutputsEntry
-	2,  // 24: terraform1.runbooks.PlanRunbookStep.Response.PlannedOutputsEntry.value:type_name -> terraform1.runbooks.DynamicValue
-	3,  // 25: terraform1.runbooks.ExecuteRunbookStep.Request.pre_execute_scope:type_name -> terraform1.runbooks.EvalScope
-	3,  // 26: terraform1.runbooks.ExecuteRunbookStep.Request.post_execute_scope:type_name -> terraform1.runbooks.EvalScope
-	0,  // 27: terraform1.runbooks.ExecuteRunbookStep.Response.status:type_name -> terraform1.runbooks.StepStatus
-	41, // 28: terraform1.runbooks.ExecuteRunbookStep.Response.diagnostics:type_name -> terraform1.Diagnostic
-	41, // 29: terraform1.runbooks.GetRunnableRunbookSteps.Response.diagnostics:type_name -> terraform1.Diagnostic
-	13, // 30: terraform1.runbooks.Runbooks.OpenRunbookConfiguration:input_type -> terraform1.runbooks.OpenRunbookConfiguration.Request
-	15, // 31: terraform1.runbooks.Runbooks.OpenRunbookRuntime:input_type -> terraform1.runbooks.OpenRunbookRuntime.Request
-	19, // 32: terraform1.runbooks.Runbooks.CloseRunbookConfiguration:input_type -> terraform1.runbooks.CloseRunbookConfiguration.Request
-	17, // 33: terraform1.runbooks.Runbooks.CloseRunbookRuntime:input_type -> terraform1.runbooks.CloseRunbookRuntime.Request
-	21, // 34: terraform1.runbooks.Runbooks.ValidateRunbookConfiguration:input_type -> terraform1.runbooks.ValidateRunbookConfiguration.Request
-	23, // 35: terraform1.runbooks.Runbooks.FindRunbookConfigurationSteps:input_type -> terraform1.runbooks.FindRunbookConfigurationSteps.Request
-	34, // 36: terraform1.runbooks.Runbooks.PlanRunbookStep:input_type -> terraform1.runbooks.PlanRunbookStep.Request
-	37, // 37: terraform1.runbooks.Runbooks.ExecuteRunbookStep:input_type -> terraform1.runbooks.ExecuteRunbookStep.Request
-	39, // 38: terraform1.runbooks.Runbooks.GetRunnableRunbookSteps:input_type -> terraform1.runbooks.GetRunnableRunbookSteps.Request
-	14, // 39: terraform1.runbooks.Runbooks.OpenRunbookConfiguration:output_type -> terraform1.runbooks.OpenRunbookConfiguration.Response
-	16, // 40: terraform1.runbooks.Runbooks.OpenRunbookRuntime:output_type -> terraform1.runbooks.OpenRunbookRuntime.Response
-	20, // 41: terraform1.runbooks.Runbooks.CloseRunbookConfiguration:output_type -> terraform1.runbooks.CloseRunbookConfiguration.Response
-	18, // 42: terraform1.runbooks.Runbooks.CloseRunbookRuntime:output_type -> terraform1.runbooks.CloseRunbookRuntime.Response
-	22, // 43: terraform1.runbooks.Runbooks.ValidateRunbookConfiguration:output_type -> terraform1.runbooks.ValidateRunbookConfiguration.Response
-	24, // 44: terraform1.runbooks.Runbooks.FindRunbookConfigurationSteps:output_type -> terraform1.runbooks.FindRunbookConfigurationSteps.Response
-	35, // 45: terraform1.runbooks.Runbooks.PlanRunbookStep:output_type -> terraform1.runbooks.PlanRunbookStep.Response
-	38, // 46: terraform1.runbooks.Runbooks.ExecuteRunbookStep:output_type -> terraform1.runbooks.ExecuteRunbookStep.Response
-	40, // 47: terraform1.runbooks.Runbooks.GetRunnableRunbookSteps:output_type -> terraform1.runbooks.GetRunnableRunbookSteps.Response
-	39, // [39:48] is the sub-list for method output_type
-	30, // [30:39] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	2,  // 5: terraform1.runbooks.EvalScope.each:type_name -> terraform1.runbooks.DynamicValue
+	2,  // 6: terraform1.runbooks.EvalScope.workspace:type_name -> terraform1.runbooks.DynamicValue
+	41, // 7: terraform1.runbooks.OpenRunbookConfiguration.Response.diagnostics:type_name -> terraform1.Diagnostic
+	41, // 8: terraform1.runbooks.ValidateRunbookConfiguration.Response.diagnostics:type_name -> terraform1.Diagnostic
+	25, // 9: terraform1.runbooks.FindRunbookConfigurationSteps.Response.config:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig
+	26, // 10: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.providers:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.ProviderConfig
+	30, // 11: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.steps:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry
+	28, // 12: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.variables:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Variable
+	29, // 13: terraform1.runbooks.FindRunbookConfigurationSteps.Step.preconditions:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition
+	29, // 14: terraform1.runbooks.FindRunbookConfigurationSteps.Step.postconditions:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition
+	1,  // 15: terraform1.runbooks.FindRunbookConfigurationSteps.Condition.on_fail:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Condition.OnFail
+	27, // 16: terraform1.runbooks.FindRunbookConfigurationSteps.RunbookConfig.StepsEntry.value:type_name -> terraform1.runbooks.FindRunbookConfigurationSteps.Step
+	2,  // 17: terraform1.runbooks.PlanRunbookStep.PlannedQuery.data:type_name -> terraform1.runbooks.DynamicValue
+	3,  // 18: terraform1.runbooks.PlanRunbookStep.Request.scope:type_name -> terraform1.runbooks.EvalScope
+	0,  // 19: terraform1.runbooks.PlanRunbookStep.Response.status:type_name -> terraform1.runbooks.StepStatus
+	41, // 20: terraform1.runbooks.PlanRunbookStep.Response.diagnostics:type_name -> terraform1.Diagnostic
+	31, // 21: terraform1.runbooks.PlanRunbookStep.Response.planned_actions:type_name -> terraform1.runbooks.PlanRunbookStep.PlannedAction
+	33, // 22: terraform1.runbooks.PlanRunbookStep.Response.lowered_files:type_name -> terraform1.runbooks.PlanRunbookStep.LoweredFile
+	32, // 23: terraform1.runbooks.PlanRunbookStep.Response.planned_queries:type_name -> terraform1.runbooks.PlanRunbookStep.PlannedQuery
+	36, // 24: terraform1.runbooks.PlanRunbookStep.Response.planned_outputs:type_name -> terraform1.runbooks.PlanRunbookStep.Response.PlannedOutputsEntry
+	2,  // 25: terraform1.runbooks.PlanRunbookStep.Response.PlannedOutputsEntry.value:type_name -> terraform1.runbooks.DynamicValue
+	3,  // 26: terraform1.runbooks.ExecuteRunbookStep.Request.pre_execute_scope:type_name -> terraform1.runbooks.EvalScope
+	3,  // 27: terraform1.runbooks.ExecuteRunbookStep.Request.post_execute_scope:type_name -> terraform1.runbooks.EvalScope
+	0,  // 28: terraform1.runbooks.ExecuteRunbookStep.Response.status:type_name -> terraform1.runbooks.StepStatus
+	41, // 29: terraform1.runbooks.ExecuteRunbookStep.Response.diagnostics:type_name -> terraform1.Diagnostic
+	41, // 30: terraform1.runbooks.GetRunnableRunbookSteps.Response.diagnostics:type_name -> terraform1.Diagnostic
+	13, // 31: terraform1.runbooks.Runbooks.OpenRunbookConfiguration:input_type -> terraform1.runbooks.OpenRunbookConfiguration.Request
+	15, // 32: terraform1.runbooks.Runbooks.OpenRunbookRuntime:input_type -> terraform1.runbooks.OpenRunbookRuntime.Request
+	19, // 33: terraform1.runbooks.Runbooks.CloseRunbookConfiguration:input_type -> terraform1.runbooks.CloseRunbookConfiguration.Request
+	17, // 34: terraform1.runbooks.Runbooks.CloseRunbookRuntime:input_type -> terraform1.runbooks.CloseRunbookRuntime.Request
+	21, // 35: terraform1.runbooks.Runbooks.ValidateRunbookConfiguration:input_type -> terraform1.runbooks.ValidateRunbookConfiguration.Request
+	23, // 36: terraform1.runbooks.Runbooks.FindRunbookConfigurationSteps:input_type -> terraform1.runbooks.FindRunbookConfigurationSteps.Request
+	34, // 37: terraform1.runbooks.Runbooks.PlanRunbookStep:input_type -> terraform1.runbooks.PlanRunbookStep.Request
+	37, // 38: terraform1.runbooks.Runbooks.ExecuteRunbookStep:input_type -> terraform1.runbooks.ExecuteRunbookStep.Request
+	39, // 39: terraform1.runbooks.Runbooks.GetRunnableRunbookSteps:input_type -> terraform1.runbooks.GetRunnableRunbookSteps.Request
+	14, // 40: terraform1.runbooks.Runbooks.OpenRunbookConfiguration:output_type -> terraform1.runbooks.OpenRunbookConfiguration.Response
+	16, // 41: terraform1.runbooks.Runbooks.OpenRunbookRuntime:output_type -> terraform1.runbooks.OpenRunbookRuntime.Response
+	20, // 42: terraform1.runbooks.Runbooks.CloseRunbookConfiguration:output_type -> terraform1.runbooks.CloseRunbookConfiguration.Response
+	18, // 43: terraform1.runbooks.Runbooks.CloseRunbookRuntime:output_type -> terraform1.runbooks.CloseRunbookRuntime.Response
+	22, // 44: terraform1.runbooks.Runbooks.ValidateRunbookConfiguration:output_type -> terraform1.runbooks.ValidateRunbookConfiguration.Response
+	24, // 45: terraform1.runbooks.Runbooks.FindRunbookConfigurationSteps:output_type -> terraform1.runbooks.FindRunbookConfigurationSteps.Response
+	35, // 46: terraform1.runbooks.Runbooks.PlanRunbookStep:output_type -> terraform1.runbooks.PlanRunbookStep.Response
+	38, // 47: terraform1.runbooks.Runbooks.ExecuteRunbookStep:output_type -> terraform1.runbooks.ExecuteRunbookStep.Response
+	40, // 48: terraform1.runbooks.Runbooks.GetRunnableRunbookSteps:output_type -> terraform1.runbooks.GetRunnableRunbookSteps.Response
+	40, // [40:49] is the sub-list for method output_type
+	31, // [31:40] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_runbooks_proto_init() }

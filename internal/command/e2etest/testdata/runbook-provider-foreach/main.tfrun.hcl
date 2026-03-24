@@ -45,7 +45,7 @@ step "discover_roles" {
 }
 
 step "inspect_role" {
-  for_each = steps.discover_roles.roles
+  for_each = { for role in steps.discover_roles.roles : role => role }
 
   precondition {
     condition     = length(steps.discover_roles.roles) > 0

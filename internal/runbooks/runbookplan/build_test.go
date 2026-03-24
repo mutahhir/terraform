@@ -6,8 +6,11 @@ package runbookplan
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform/internal/addrs"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -29,7 +32,7 @@ step "discover_roles" {
 }
 
 step "inspect_role" {
-  for_each = steps.discover_roles.roles
+  for_each = toset(steps.discover_roles.roles)
 
   execute {}
 }
@@ -72,7 +75,67 @@ step "inspect_role" {
 	if got, want := len(build.Manifest.StepOrder), 2; got != want {
 		t.Fatalf("wrong step count: got %d want %d (%v)", got, want, build.Manifest.StepOrder)
 	}
-	if got, want := build.Manifest.StepOrder[1], "inspect_role[i-1]"; got != want {
+	wantAddr := runbookaddrs.Step{Name: "inspect_role"}.Instance(addrs.StringKey("i-1")).String()
+	if got, want := build.Manifest.StepOrder[1], wantAddr; got != want {
 		t.Fatalf("wrong expanded step instance: got %q want %q", got, want)
 	}
+	step := build.Manifest.Steps[1]
+	if got, want := step.ForEachKey, "i-1"; got != want {
+		t.Fatalf("wrong instance key: got %q want %q", got, want)
+	}
+	if len(step.ForEachValue) == 0 {
+		t.Fatal("expected encoded for_each value")
+	}
+	if len(build.Manifest.Steps[0].PlannedOutputs) == 0 {
+		t.Fatal("expected planned outputs to be persisted for discover_roles")
+	}
+}
+
+func TestBuildRejectsListForEachLikeTerraform(t *testing.T) {
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "inspect_role" {
+  for_each = ["a", "b"]
+
+  execute {}
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, diags := runbookconfig.LoadConfigDir(configPath)
+	if diags.HasErrors() {
+		t.Fatal(diags.Err())
+	}
+
+	_, diags, err = Build(cfg, configPath, "default", []string{"inspect_role"}, nil, cty.EmptyObjectVal, cty.EmptyObjectVal, func(stepName string, scope runbookconfig.EvalScope) (StepPlanResult, error) {
+		return StepPlanResult{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !diags.HasErrors() && len(buildManifestNames(t, cfg, configPath)) != 0 {
+		t.Fatal("expected invalid for_each diagnostic")
+	}
+	if !diags.HasErrors() {
+		t.Fatal("expected invalid for_each diagnostic")
+	}
+	if got, want := diags.Err().Error(), `must be a map, or set of strings, and you have provided a value of type tuple`; !strings.Contains(got, want) {
+		t.Fatalf("wrong diagnostic: got %q want substring %q", got, want)
+	}
+}
+
+func buildManifestNames(t *testing.T, cfg *runbookconfig.Config, configPath string) []string {
+	t.Helper()
+	build, diags, err := Build(cfg, configPath, "default", []string{"inspect_role"}, nil, cty.EmptyObjectVal, cty.EmptyObjectVal, func(stepName string, scope runbookconfig.EvalScope) (StepPlanResult, error) {
+		return StepPlanResult{}, nil
+	})
+	if err != nil || diags.HasErrors() || build == nil || build.Manifest == nil {
+		return nil
+	}
+	return build.Manifest.StepOrder
 }
