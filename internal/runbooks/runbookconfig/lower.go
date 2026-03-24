@@ -248,7 +248,7 @@ func appendStepOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerSc
 		rewrittenSrc, rewriteDiags := lowerScope.RewriteExpr(output.Value, valueSrc)
 		diags = diags.Append(rewriteDiags)
 		valueSrc = bytes.TrimSpace(rewriteRepetitionReferences(rewrittenSrc, lowerScope.scope.Each, lowerScope.scope.Count))
-		blockSrc := fmt.Sprintf("output %q {\n  value = %s\n}\n", name, string(valueSrc))
+		blockSrc := fmt.Sprintf("output %q {\n  value     = %s\n  sensitive = true\n}\n", name, string(valueSrc))
 		parsed, parseDiags := hclwrite.ParseConfig([]byte(blockSrc), output.DeclRange.Filename, hcl.InitialPos)
 		if parseDiags.HasErrors() || parsed == nil {
 			diags = diags.Append(parseDiags)
@@ -275,7 +275,7 @@ func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *Lo
 				rewrittenSrc, rewriteDiags := lowerScope.RewriteExpr(cond.Condition, conditionSrc)
 				diags = diags.Append(rewriteDiags)
 				conditionSrc = bytes.TrimSpace(rewriteRepetitionReferences(rewrittenSrc, lowerScope.scope.Each, lowerScope.scope.Count))
-				blockSrc := fmt.Sprintf("output %q {\n  value = %s\n}\n", fmt.Sprintf("__runbook_%s_%d_condition", kind, i), string(conditionSrc))
+				blockSrc := fmt.Sprintf("output %q {\n  value     = %s\n  sensitive = true\n}\n", fmt.Sprintf("__runbook_%s_%d_condition", kind, i), string(conditionSrc))
 				parsed, parseDiags := hclwrite.ParseConfig([]byte(blockSrc), cond.DeclRange.Filename, hcl.InitialPos)
 				if parseDiags.HasErrors() || parsed == nil {
 					diags = diags.Append(parseDiags)
@@ -289,7 +289,7 @@ func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *Lo
 				rewrittenSrc, rewriteDiags := lowerScope.RewriteExpr(cond.ErrorMessage, errorSrc)
 				diags = diags.Append(rewriteDiags)
 				errorSrc = bytes.TrimSpace(rewriteRepetitionReferences(rewrittenSrc, lowerScope.scope.Each, lowerScope.scope.Count))
-				blockSrc := fmt.Sprintf("output %q {\n  value = %s\n}\n", fmt.Sprintf("__runbook_%s_%d_error_message", kind, i), string(errorSrc))
+				blockSrc := fmt.Sprintf("output %q {\n  value     = %s\n  sensitive = true\n}\n", fmt.Sprintf("__runbook_%s_%d_error_message", kind, i), string(errorSrc))
 				parsed, parseDiags := hclwrite.ParseConfig([]byte(blockSrc), cond.DeclRange.Filename, hcl.InitialPos)
 				if parseDiags.HasErrors() || parsed == nil {
 					diags = diags.Append(parseDiags)

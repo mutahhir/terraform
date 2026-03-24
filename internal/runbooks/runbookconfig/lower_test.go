@@ -303,4 +303,16 @@ step "example" {
 	if !strings.Contains(mainSrc, `variable "__runbook_workspace"`) || !strings.Contains(mainSrc, `variable "__runbook_steps"`) {
 		t.Fatalf("lowered main.tf did not emit synthetic runbook variables:\n%s", mainSrc)
 	}
+	if !strings.Contains(mainSrc, `output "result" {
+  value     = var.__runbook_workspace.output.enabled && data.simple_resource.current.value == var.__runbook_steps.bootstrap.message
+  sensitive = true
+}`) {
+		t.Fatalf("lowered main.tf did not mark rewritten step outputs as sensitive:\n%s", mainSrc)
+	}
+	if !strings.Contains(mainSrc, `output "__runbook_precondition_0_condition" {
+  value     = var.__runbook_workspace.output.enabled && var.__runbook_steps.bootstrap.ready
+  sensitive = true
+}`) {
+		t.Fatalf("lowered main.tf did not mark synthetic condition outputs as sensitive:\n%s", mainSrc)
+	}
 }
