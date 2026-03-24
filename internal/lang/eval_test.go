@@ -808,6 +808,61 @@ func TestScopeExpandEvalBlock(t *testing.T) {
 
 }
 
+func TestScopeEvalExprInRunbookScope(t *testing.T) {
+	data := &dataForTests{
+		InputVariables: map[string]cty.Value{
+			"name": cty.StringVal("hello"),
+		},
+		Steps: map[string]cty.Value{
+			"deploy": cty.ObjectVal(map[string]cty.Value{
+				"blue": cty.ObjectVal(map[string]cty.Value{
+					"status": cty.StringVal("ok"),
+				}),
+			}),
+		},
+		WorkspaceOuts: map[string]cty.Value{
+			"cluster": cty.ObjectVal(map[string]cty.Value{
+				"name": cty.StringVal("prod"),
+			}),
+		},
+		Resources: map[string]cty.Value{
+			`list.test_resource.inventory`: cty.ObjectVal(map[string]cty.Value{
+				"data": cty.TupleVal([]cty.Value{cty.StringVal("x")}),
+			}),
+		},
+	}
+
+	scope := &Scope{
+		Data:     data,
+		ParseRef: addrs.ParseRefFromRunbookScope,
+	}
+
+	tests := []struct {
+		Expr string
+		Want cty.Value
+	}{
+		{`steps.deploy["blue"].status`, cty.StringVal("ok")},
+		{`workspace.output.cluster.name`, cty.StringVal("prod")},
+		{`list.test_resource.inventory.data[0]`, cty.StringVal("x")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.Expr, func(t *testing.T) {
+			expr, parseDiags := hclsyntax.ParseExpression([]byte(test.Expr), "", hcl.Pos{Line: 1, Column: 1})
+			if parseDiags.HasErrors() {
+				t.Fatal(parseDiags)
+			}
+			got, diags := scope.EvalExpr(expr, cty.DynamicPseudoType)
+			if diags.HasErrors() {
+				t.Fatal(diags.Err())
+			}
+			if !got.RawEquals(test.Want) {
+				t.Fatalf("wrong result for %s: got %#v want %#v", test.Expr, got, test.Want)
+			}
+		})
+	}
+}
+
 func formattedJSONValue(val cty.Value) string {
 	val = cty.UnknownAsNull(val) // since JSON can't represent unknowns
 	j, err := ctyjson.Marshal(val, val.Type())

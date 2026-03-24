@@ -145,18 +145,10 @@ func expandStepInstances(step *runbookconfig.Step, stepName string, outputs cty.
 	if step.Count == nil && step.ForEach == nil {
 		return nil, diags
 	}
-	ctx := &hcl.EvalContext{
-		Variables: map[string]cty.Value{
-			"steps":     normalizeScopeValue(plannedSteps),
-			"workspace": normalizeScopeValue(workspaceScope),
-			"var":       normalizeScopeValue(varScope),
-		},
-		Functions: lang.TestingFunctions(),
-	}
 	if step.ForEach != nil {
-		val, hclDiags := step.ForEach.Value(ctx)
-		diags = diags.Append(hclDiags)
-		if hclDiags.HasErrors() || val == cty.NilVal || !val.IsKnown() || val.IsNull() {
+		val, evalDiags := runbookconfig.EvalExpr(step.ForEach, runbookconfig.EvalScope{Variables: varScope, Steps: plannedSteps, Workspace: workspaceScope}, cty.DynamicPseudoType)
+		diags = diags.Append(evalDiags)
+		if evalDiags.HasErrors() || val == cty.NilVal || !val.IsKnown() || val.IsNull() {
 			return nil, diags
 		}
 		if !(val.Type().IsMapType() || val.Type().IsObjectType() || val.Type().IsSetType()) {
@@ -177,7 +169,7 @@ func expandStepInstances(step *runbookconfig.Step, stepName string, outputs cty.
 		}
 		return expandForEachInstances(step, stepName, val, outputs), diags
 	}
-	count, countDiags := evaluateCountExpression(step.Count, ctx)
+	count, countDiags := evaluateCountExpression(step.Count, runbookconfig.EvalScope{Variables: varScope, Steps: plannedSteps, Workspace: workspaceScope})
 	diags = diags.Append(countDiags)
 	if countDiags.HasErrors() {
 		return nil, diags
@@ -295,14 +287,14 @@ func countScopeForExpandedStep(step *runbookplanfile.Step) cty.Value {
 	})
 }
 
-func evaluateCountExpression(expr hcl.Expression, ctx *hcl.EvalContext) (int, tfdiags.Diagnostics) {
+func evaluateCountExpression(expr hcl.Expression, scope runbookconfig.EvalScope) (int, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if expr == nil {
 		return 0, diags
 	}
-	val, hclDiags := expr.Value(ctx)
-	diags = diags.Append(hclDiags)
-	if hclDiags.HasErrors() {
+	val, evalDiags := runbookconfig.EvalExpr(expr, scope, cty.Number)
+	diags = diags.Append(evalDiags)
+	if evalDiags.HasErrors() {
 		return 0, diags
 	}
 	if val == cty.NilVal || val.IsNull() {

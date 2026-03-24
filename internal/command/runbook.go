@@ -20,7 +20,6 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configload"
-	"github.com/hashicorp/terraform/internal/lang"
 	"github.com/hashicorp/terraform/internal/plans"
 	"github.com/hashicorp/terraform/internal/rpcapi"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1"
@@ -1208,24 +1207,11 @@ func evaluateStepOutputsFromSource(step *runbookconfig.Step, scope runbookconfig
 	}
 	scope = runbookconfig.ScopeWithStepLists(step, scope)
 	vals := make(map[string]cty.Value, len(step.Outputs))
-	ctx := &hcl.EvalContext{
-		Variables: map[string]cty.Value{
-			"var":       normalizeRunbookScopeValue(scope.Variables),
-			"list":      normalizeRunbookScopeValue(scope.List),
-			"actions":   normalizeRunbookScopeValue(scope.Actions),
-			"steps":     normalizeRunbookScopeValue(scope.Steps),
-			"local":     normalizeRunbookScopeValue(scope.Locals),
-			"count":     normalizeRunbookScopeValue(scope.Count),
-			"each":      normalizeRunbookScopeValue(scope.Each),
-			"workspace": normalizeRunbookScopeValue(scope.Workspace),
-		},
-		Functions: lang.TestingFunctions(),
-	}
 	for name, output := range step.Outputs {
 		if output == nil || output.Value == nil {
 			continue
 		}
-		val, diags := output.Value.Value(ctx)
+		val, diags := runbookconfig.EvalExpr(output.Value, scope, cty.DynamicPseudoType)
 		if diags.HasErrors() {
 			continue
 		}
@@ -1236,14 +1222,6 @@ func evaluateStepOutputsFromSource(step *runbookconfig.Step, scope runbookconfig
 	}
 	return cty.ObjectVal(vals)
 }
-
-func normalizeRunbookScopeValue(v cty.Value) cty.Value {
-	if v == cty.NilVal {
-		return cty.EmptyObjectVal
-	}
-	return v
-}
-
 func mergeStepOutputs(primary, fallback cty.Value) cty.Value {
 	vals := map[string]cty.Value{}
 	if fallback != cty.NilVal && fallback.Type().IsObjectType() {

@@ -9,20 +9,20 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/lang"
 	"github.com/zclconf/go-cty/cty"
-	"github.com/zclconf/go-cty/cty/convert"
 
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type EvalScope struct {
-	Variables cty.Value
-	List      cty.Value
-	Actions   cty.Value
-	Steps     cty.Value
-	Locals    cty.Value
-	Count     cty.Value
-	Each      cty.Value
-	Workspace cty.Value
+	Variables     cty.Value
+	List          cty.Value
+	Actions       cty.Value
+	Steps         cty.Value
+	Locals        cty.Value
+	Count         cty.Value
+	Each          cty.Value
+	Workspace     cty.Value
+	ExternalFuncs lang.ExternalFuncs
 }
 
 type StepStatus string
@@ -102,14 +102,14 @@ func evaluateConditions(conditions []*Condition, scope EvalScope, allowSkip bool
 			return StepEvaluation{
 				Status: StepStatusSkipped,
 				Detail: "step skipped by precondition",
-				Diags:  conditionFailureDiagnostics(condition),
+				Diags:  conditionFailureDiagnostics(condition, scope),
 			}
 		}
 
 		return StepEvaluation{
 			Status: StepStatusFailed,
 			Detail: "step condition failed",
-			Diags:  conditionFailureDiagnostics(condition),
+			Diags:  conditionFailureDiagnostics(condition, scope),
 		}
 	}
 
@@ -124,35 +124,10 @@ func evaluateCondition(condition *Condition, scope EvalScope) (bool, tfdiags.Dia
 	if condition == nil || condition.Condition == nil {
 		return true, diags
 	}
-
-	ctx := &hcl.EvalContext{
-		Variables: map[string]cty.Value{
-			"var":       normalizeScopeValue(scope.Variables),
-			"list":      normalizeScopeValue(scope.List),
-			"actions":   normalizeScopeValue(scope.Actions),
-			"steps":     normalizeScopeValue(scope.Steps),
-			"local":     normalizeScopeValue(scope.Locals),
-			"count":     normalizeScopeValue(scope.Count),
-			"each":      normalizeScopeValue(scope.Each),
-			"workspace": normalizeScopeValue(scope.Workspace),
-		},
-		Functions: lang.TestingFunctions(),
-	}
-
-	resultVal, hclDiags := condition.Condition.Value(ctx)
-	diags = diags.Append(hclDiags)
-	if hclDiags.HasErrors() {
+	resultVal, evalDiags := EvalExpr(condition.Condition, scope, cty.Bool)
+	diags = diags.Append(evalDiags)
+	if evalDiags.HasErrors() {
 		return false, diags
-	}
-
-	resultVal, err := convert.Convert(resultVal, cty.Bool)
-	if err != nil {
-		return false, diags.Append(&hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("Invalid %s expression", condition.Kind),
-			Detail:   fmt.Sprintf("The %s condition must evaluate to a boolean value: %s.", condition.Kind, err),
-			Subject:  condition.Condition.Range().Ptr(),
-		})
 	}
 	if !resultVal.IsKnown() || resultVal.IsNull() {
 		return false, diags.Append(&hcl.Diagnostic{
@@ -166,7 +141,7 @@ func evaluateCondition(condition *Condition, scope EvalScope) (bool, tfdiags.Dia
 	return resultVal.True(), diags
 }
 
-func conditionFailureDiagnostics(condition *Condition) tfdiags.Diagnostics {
+func conditionFailureDiagnostics(condition *Condition, scope EvalScope) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if condition == nil || condition.ErrorMessage == nil {
 		return diags.Append(tfdiags.Sourceless(
@@ -176,14 +151,12 @@ func conditionFailureDiagnostics(condition *Condition) tfdiags.Diagnostics {
 		))
 	}
 
-	val, hclDiags := condition.ErrorMessage.Value(&hcl.EvalContext{Functions: lang.TestingFunctions()})
-	diags = diags.Append(hclDiags)
-	if hclDiags.HasErrors() {
+	val, evalDiags := EvalExpr(condition.ErrorMessage, scope, cty.String)
+	diags = diags.Append(evalDiags)
+	if evalDiags.HasErrors() {
 		return diags
 	}
-
-	val, err := convert.Convert(val, cty.String)
-	if err != nil || !val.IsKnown() || val.IsNull() {
+	if !val.IsKnown() || val.IsNull() {
 		return diags.Append(tfdiags.Sourceless(
 			tfdiags.Error,
 			"Runbook condition failed",

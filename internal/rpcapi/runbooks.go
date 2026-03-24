@@ -130,12 +130,26 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 
 	cfg := s.handles.RunbookConfig(handle[*runbookconfig.Config](req.RunbookConfigHandle))
 	plan := runbookconfig.PlanStepWithConfig(cfg, step, scope)
+	runtime, err := s.lookupRunbookRuntime(req.RunbookRuntimeHandle)
+	if err != nil {
+		return nil, err
+	}
+	providerFactories, providerErr := runbookProviderFactories(s, runtime)
+	if providerErr != nil {
+		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize runbook providers", providerErr.Error()))
+	}
 	plannedOutputVals := plannedOutputsFromStepPlan(plan, step)
-	if plan.Lowered != nil {
-		runtime, err := s.lookupRunbookRuntime(req.RunbookRuntimeHandle)
-		if err != nil {
-			return nil, err
+	if evalScope, evalDiags := s.runbookEvalScope(cfg, scope, providerFactories); !evalDiags.HasErrors() {
+		if evaluated, moreDiags := evaluateRunbookOutputsWithTerraformScope(evalScope, step); len(evaluated) > 0 || !moreDiags.HasErrors() {
+			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(moreDiags)
+			for name, val := range evaluated {
+				plannedOutputVals[name] = val
+			}
 		}
+	} else {
+		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(evalDiags)
+	}
+	if plan.Lowered != nil {
 		tfPlan, lowerDiags := s.validateAndPlanLoweredStepDir(plan.Lowered.Dir, runtime)
 		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(lowerDiags)
 		if tfPlan != nil && tfPlan.Changes != nil {

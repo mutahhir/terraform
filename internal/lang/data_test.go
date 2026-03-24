@@ -22,6 +22,8 @@ type dataForTests struct {
 	InputVariables map[string]cty.Value
 	CheckBlocks    map[string]cty.Value
 	RunBlocks      map[string]cty.Value
+	Steps          map[string]cty.Value
+	WorkspaceOuts  map[string]cty.Value
 }
 
 var _ Data = &dataForTests{}
@@ -78,4 +80,12 @@ func (d *dataForTests) GetCheckBlock(addr addrs.Check, rng tfdiags.SourceRange) 
 
 func (d *dataForTests) GetRunBlock(addr addrs.Run, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return d.RunBlocks[addr.Name], nil
+}
+
+func (d *dataForTests) GetStep(addr addrs.Step, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return d.Steps[addr.Name], nil
+}
+
+func (d *dataForTests) GetWorkspaceOutput(addr addrs.WorkspaceOutput, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return d.WorkspaceOuts[addr.Name], nil
 }

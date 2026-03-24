@@ -38,3 +38,11 @@ type Data interface {
 	GetCheckBlock(addrs.Check, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics)
 	GetRunBlock(addrs.Run, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics)
 }
+
+// RunbookData is an optional extension to Data for runbook-specific references.
+// Terraform evaluators that do not participate in runbook expression scopes do
+// not need to implement this interface.
+type RunbookData interface {
+	GetStep(addrs.Step, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics)
+	GetWorkspaceOutput(addrs.WorkspaceOutput, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics)
+}

@@ -270,6 +270,20 @@ func TestProvidersSchema(t *testing.T) {
                     }
                 }
             },
+            "action_schemas": {
+                "simple_action": {
+                    "block": {
+                        "attributes": {
+                            "value": {
+                                "type": "string",
+                                "description_kind": "plain",
+                                "optional": true
+                            }
+                        },
+                        "description_kind": "plain"
+                    }
+                }
+            },
             "state_store_schemas" : {
                 "simple6_fs": {
                     "version":0,

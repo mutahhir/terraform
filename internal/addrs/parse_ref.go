@@ -144,6 +144,143 @@ func ParseRefFromTestingScope(traversal hcl.Traversal) (*Reference, tfdiags.Diag
 	return ParseRef(traversal)
 }
 
+// ParseRefFromRunbookScope adds runbook-only references into the available
+// references returned by ParseRef without changing normal Terraform parsing.
+func ParseRefFromRunbookScope(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
+	root := traversal.RootName()
+	rootRange := traversal[0].SourceRange()
+
+	var diags tfdiags.Diagnostics
+	var reference *Reference
+
+	switch root {
+	case "steps":
+		name, rng, remain, stepDiags := parseSingleAttrRef(traversal)
+		diags = stepDiags
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		stepAddr := Step{Name: name}
+		stepInstAddr := StepInstance{Step: stepAddr, Key: NoKey}
+		if len(remain) > 0 {
+			if idxTrav, ok := remain[0].(hcl.TraverseIndex); ok {
+				var err error
+				stepInstAddr.Key, err = ParseInstanceKey(idxTrav.Key)
+				if err != nil {
+					diags = diags.Append(&hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  "Invalid index key",
+						Detail:   fmt.Sprintf("Invalid index for step instance: %s.", err),
+						Subject:  &idxTrav.SrcRange,
+					})
+					return nil, diags
+				}
+				rng = hcl.RangeBetween(rng, idxTrav.SrcRange)
+				remain = remain[1:]
+				reference = &Reference{Subject: stepInstAddr, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}
+				return reference, diags
+			}
+		}
+		reference = &Reference{Subject: stepAddr, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}
+	case "workspace":
+		if len(traversal) < 3 {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid reference",
+				Detail:   `The "workspace" object cannot be accessed directly. Instead, access one of its attributes.`,
+				Subject:  rootRange.Ptr(),
+			})
+			return nil, diags
+		}
+		firstAttr, ok := traversal[1].(hcl.TraverseAttr)
+		if !ok {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid reference",
+				Detail:   `The "workspace" object does not support this operation.`,
+				Subject:  traversal[1].SourceRange().Ptr(),
+			})
+			return nil, diags
+		}
+		switch firstAttr.Name {
+		case "output":
+			nameAttr, ok := traversal[2].(hcl.TraverseAttr)
+			if !ok {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid reference",
+					Detail:   `The "workspace.output" object does not support this operation.`,
+					Subject:  traversal[2].SourceRange().Ptr(),
+				})
+				return nil, diags
+			}
+			rng := hcl.RangeBetween(rootRange, nameAttr.SrcRange)
+			reference = &Reference{Subject: WorkspaceOutput{Name: nameAttr.Name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: traversal[3:]}
+		case "action":
+			ref, actionDiags := parseActionRef(rootRange, traversal[2:])
+			diags = actionDiags
+			if ref != nil {
+				reference = &Reference{Subject: ref.Subject, SourceRange: tfdiags.SourceRangeFromHCL(hcl.RangeBetween(rootRange, ref.SourceRange.ToHCL())), Remaining: ref.Remaining}
+			}
+		default:
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid reference",
+				Detail:   fmt.Sprintf(`The "workspace" object does not support attribute %q.`, firstAttr.Name),
+				Subject:  firstAttr.SrcRange.Ptr(),
+			})
+			return nil, diags
+		}
+	case "list":
+		if len(traversal) < 3 {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid reference",
+				Detail:   `The "list" object must be followed by two attribute names: the list resource type and the resource name.`,
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+			return nil, diags
+		}
+		remain := traversal[1:]
+		return parseResourceRef(ListResourceMode, rootRange, remain)
+	case "action":
+		if len(traversal) < 3 {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid reference",
+				Detail:   `The "action" object must be followed by two attribute names: the action type and the action name.`,
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+			return nil, diags
+		}
+		remain := traversal[1:]
+		return parseActionRef(rootRange, remain)
+	}
+
+	if reference != nil {
+		if len(reference.Remaining) == 0 {
+			reference.Remaining = nil
+		}
+		return reference, diags
+	}
+
+	return ParseRef(traversal)
+}
+
+func ParseRefStrFromRunbookScope(str string) (*Reference, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+
+	traversal, parseDiags := hclsyntax.ParseTraversalAbs([]byte(str), "", hcl.Pos{Line: 1, Column: 1})
+	diags = diags.Append(parseDiags)
+	if parseDiags.HasErrors() {
+		return nil, diags
+	}
+
+	ref, targetDiags := ParseRefFromRunbookScope(traversal)
+	diags = diags.Append(targetDiags)
+	return ref, diags
+}
+
 // ParseRefStr is a helper wrapper around ParseRef that takes a string
 // and parses it with the HCL native syntax traversal parser before
 // interpreting it.

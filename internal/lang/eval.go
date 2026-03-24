@@ -291,6 +291,8 @@ func (s *Scope) evalContext(refs []*addrs.Reference, selfAddr addrs.Referenceabl
 	inputVariables := map[string]cty.Value{}
 	localValues := map[string]cty.Value{}
 	outputValues := map[string]cty.Value{}
+	runbookSteps := map[string]cty.Value{}
+	runbookWorkspaceOutputs := map[string]cty.Value{}
 	pathAttrs := map[string]cty.Value{}
 	terraformAttrs := map[string]cty.Value{}
 	countAttrs := map[string]cty.Value{}
@@ -298,6 +300,7 @@ func (s *Scope) evalContext(refs []*addrs.Reference, selfAddr addrs.Referenceabl
 	checkBlocks := map[string]cty.Value{}
 	runBlocks := map[string]cty.Value{}
 	var self cty.Value
+	runbookData, _ := s.Data.(RunbookData)
 
 	for _, ref := range refs {
 		rng := ref.SourceRange
@@ -361,6 +364,8 @@ func (s *Scope) evalContext(refs []*addrs.Reference, selfAddr addrs.Referenceabl
 			rawSubj = addr.Call.Call
 		case addrs.ActionInstance:
 			rawSubj = addr.Action
+		case addrs.StepInstance:
+			rawSubj = addr.Step
 		}
 
 		switch subj := rawSubj.(type) {
@@ -428,6 +433,32 @@ func (s *Scope) evalContext(refs []*addrs.Reference, selfAddr addrs.Referenceabl
 			diags = diags.Append(valDiags)
 			outputValues[subj.Name] = val
 
+		case addrs.Step:
+			if runbookData == nil {
+				return nil, diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid reference",
+					Detail:   "Runbook step references are not available in this evaluation context.",
+					Subject:  rng.ToHCL().Ptr(),
+				})
+			}
+			val, valDiags := normalizeRefValue(runbookData.GetStep(subj, rng))
+			diags = diags.Append(valDiags)
+			runbookSteps[subj.Name] = val
+
+		case addrs.WorkspaceOutput:
+			if runbookData == nil {
+				return nil, diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid reference",
+					Detail:   "Runbook workspace references are not available in this evaluation context.",
+					Subject:  rng.ToHCL().Ptr(),
+				})
+			}
+			val, valDiags := normalizeRefValue(runbookData.GetWorkspaceOutput(subj, rng))
+			diags = diags.Append(valDiags)
+			runbookWorkspaceOutputs[subj.Name] = val
+
 		case addrs.Check:
 			val, valDiags := normalizeRefValue(s.Data.GetCheckBlock(subj, rng))
 			diags = diags.Append(valDiags)
@@ -471,6 +502,14 @@ func (s *Scope) evalContext(refs []*addrs.Reference, selfAddr addrs.Referenceabl
 	vals["terraform"] = cty.ObjectVal(terraformAttrs)
 	vals["count"] = cty.ObjectVal(countAttrs)
 	vals["each"] = cty.ObjectVal(forEachAttrs)
+	if len(runbookSteps) > 0 {
+		vals["steps"] = cty.ObjectVal(runbookSteps)
+	}
+	if len(runbookWorkspaceOutputs) > 0 {
+		vals["workspace"] = cty.ObjectVal(map[string]cty.Value{
+			"output": cty.ObjectVal(runbookWorkspaceOutputs),
+		})
+	}
 
 	// Checks, outputs, and run blocks are conditionally included in the
 	// available scope, so we'll only write out their values if we actually have

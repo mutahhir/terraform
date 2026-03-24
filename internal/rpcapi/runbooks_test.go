@@ -370,6 +370,70 @@ step "first" {
 	}
 }
 
+func TestRunbooksPlanRunbookStepProviderFunctionInOutput(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(testRunbookProvider()),
+	}
+
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+variable "name" {
+  default = "hello"
+}
+
+step "first" {
+  output "echoed" {
+    value = provider::test::echo(var.name)
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle: openResp.RunbookConfigHandle,
+		StepName:            "first",
+		Scope:               &runbooks.EvalScope{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned := resp.GetPlannedOutputs()["echoed"]
+	if planned == nil {
+		t.Fatal("expected planned output value for echoed")
+	}
+	val, err := ctymsgpack.Unmarshal(planned.Msgpack, cty.DynamicPseudoType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val.Type() != cty.String {
+		t.Fatalf("wrong planned provider function output type: %s (%s)", val.Type().FriendlyName(), val.GoString())
+	}
+	if got, want := val.AsString(), "hello"; got != want {
+		t.Fatalf("wrong planned provider function output: got %q want %q", got, want)
+	}
+}
+
 func TestRunbooksPlanRunbookStepResolvesRootAction(t *testing.T) {
 	ctx := context.Background()
 	handles := newHandleTable()
@@ -763,6 +827,15 @@ func testRunbookProvider() *provider_testing.MockProvider {
 	provider := new(provider_testing.MockProvider)
 	provider.GetProviderSchemaResponse = &providers.GetProviderSchemaResponse{
 		Provider: providers.Schema{Body: &configschema.Block{}},
+		Functions: map[string]providers.FunctionDecl{
+			"echo": {
+				Parameters: []providers.FunctionParam{{
+					Name: "arg",
+					Type: cty.String,
+				}},
+				ReturnType: cty.String,
+			},
+		},
 		ResourceTypes: map[string]providers.Schema{
 			"test_resource": {
 				Body: &configschema.Block{
@@ -858,6 +931,9 @@ func testRunbookProvider() *provider_testing.MockProvider {
 	}
 	provider.PlanActionFn = func(req providers.PlanActionRequest) providers.PlanActionResponse {
 		return providers.PlanActionResponse{}
+	}
+	provider.CallFunctionFn = func(req providers.CallFunctionRequest) providers.CallFunctionResponse {
+		return providers.CallFunctionResponse{Result: req.Arguments[0]}
 	}
 	return provider
 }
