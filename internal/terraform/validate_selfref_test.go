@@ -113,6 +113,47 @@ func TestValidateSelfRef(t *testing.T) {
 	}
 }
 
+func TestValidateSelfRefListResource(t *testing.T) {
+	addr := addrs.Resource{
+		Mode: addrs.ListResourceMode,
+		Type: "aws_lambda",
+		Name: "scratchpad",
+	}
+	body := hcltest.MockBody(&hcl.BodyContent{
+		Attributes: hcl.Attributes{
+			"provider": {
+				Name: "provider",
+				Expr: hcltest.MockExprVariable("aws"),
+			},
+		},
+	})
+
+	ps := providers.ProviderSchema{
+		ListResourceTypes: map[string]providers.Schema{
+			"aws_lambda": {
+				Body: &configschema.Block{
+					Attributes: map[string]*configschema.Attribute{
+						"provider": {
+							Type:     cty.DynamicPseudoType,
+							Optional: true,
+						},
+					},
+					BlockTypes: map[string]*configschema.NestedBlock{
+						"config": {
+							Block: configschema.Block{},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	diags := validateSelfRef(addr, body, ps)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected error validating list resource self refs: %s", diags.Err())
+	}
+}
+
 func TestValidateSelfInExpr(t *testing.T) {
 	rAddr := addrs.Resource{
 		Mode: addrs.ManagedResourceMode,
