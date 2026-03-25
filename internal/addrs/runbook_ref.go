@@ -61,3 +61,20 @@ func (w WorkspaceOutput) UniqueKey() UniqueKey {
 }
 
 func (w WorkspaceOutput) uniqueKeySigil() {}
+
+// RunbookAction is the address of a runbook action reference in runbooks.
+type RunbookAction struct {
+	referenceable
+	Type string
+	Name string
+}
+
+func (a RunbookAction) String() string {
+	return fmt.Sprintf("action.%s.%s", a.Type, a.Name)
+}
+
+func (a RunbookAction) UniqueKey() UniqueKey {
+	return a
+}
+
+func (a RunbookAction) uniqueKeySigil() {}

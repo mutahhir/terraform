@@ -59,7 +59,7 @@ func TestParseRefInRunbookScope(t *testing.T) {
 		{
 			`action.test_action.target.result`,
 			&Reference{
-				Subject: ActionInstance{Action: Action{Type: "test_action", Name: "target"}, Key: NoKey},
+				Subject: RunbookAction{Type: "test_action", Name: "target"},
 				SourceRange: tfdiags.SourceRange{
 					Start: tfdiags.SourcePos{Line: 1, Column: 1, Byte: 0},
 					End:   tfdiags.SourcePos{Line: 1, Column: 26, Byte: 25},

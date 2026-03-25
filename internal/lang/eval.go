@@ -292,6 +292,7 @@ func (s *Scope) evalContext(refs []*addrs.Reference, selfAddr addrs.Referenceabl
 	localValues := map[string]cty.Value{}
 	outputValues := map[string]cty.Value{}
 	runbookSteps := map[string]cty.Value{}
+	runbookActions := map[string]cty.Value{}
 	runbookWorkspaceOutputs := map[string]cty.Value{}
 	pathAttrs := map[string]cty.Value{}
 	terraformAttrs := map[string]cty.Value{}
@@ -459,6 +460,19 @@ func (s *Scope) evalContext(refs []*addrs.Reference, selfAddr addrs.Referenceabl
 			diags = diags.Append(valDiags)
 			runbookWorkspaceOutputs[subj.Name] = val
 
+		case addrs.RunbookAction:
+			if runbookData == nil {
+				return nil, diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid reference",
+					Detail:   "Runbook action references are not available in this evaluation context.",
+					Subject:  rng.ToHCL().Ptr(),
+				})
+			}
+			val, valDiags := normalizeRefValue(runbookData.GetRunbookAction(subj, rng))
+			diags = diags.Append(valDiags)
+			runbookActions[subj.Type] = appendRunbookActionValue(runbookActions[subj.Type], subj.Name, val)
+
 		case addrs.Check:
 			val, valDiags := normalizeRefValue(s.Data.GetCheckBlock(subj, rng))
 			diags = diags.Append(valDiags)
@@ -505,6 +519,9 @@ func (s *Scope) evalContext(refs []*addrs.Reference, selfAddr addrs.Referenceabl
 	if len(runbookSteps) > 0 {
 		vals["steps"] = cty.ObjectVal(runbookSteps)
 	}
+	if len(runbookActions) > 0 {
+		vals["action"] = cty.ObjectVal(runbookActions)
+	}
 	if len(runbookWorkspaceOutputs) > 0 {
 		vals["workspace"] = cty.ObjectVal(map[string]cty.Value{
 			"output": cty.ObjectVal(runbookWorkspaceOutputs),
@@ -535,6 +552,15 @@ func (s *Scope) evalContext(refs []*addrs.Reference, selfAddr addrs.Referenceabl
 	}
 
 	return ctx, diags
+}
+
+func appendRunbookActionValue(existing cty.Value, name string, val cty.Value) cty.Value {
+	vals := map[string]cty.Value{}
+	if existing != cty.NilVal && existing != cty.DynamicVal && existing.Type().IsObjectType() {
+		vals = existing.AsValueMap()
+	}
+	vals[name] = val
+	return cty.ObjectVal(vals)
 }
 
 func buildResourceObjects(resources map[string]map[string]cty.Value) map[string]cty.Value {

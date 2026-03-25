@@ -23,6 +23,7 @@ type dataForTests struct {
 	CheckBlocks    map[string]cty.Value
 	RunBlocks      map[string]cty.Value
 	Steps          map[string]cty.Value
+	Actions        map[string]map[string]cty.Value
 	WorkspaceOuts  map[string]cty.Value
 }
 
@@ -88,4 +89,14 @@ func (d *dataForTests) GetStep(addr addrs.Step, rng tfdiags.SourceRange) (cty.Va
 
 func (d *dataForTests) GetWorkspaceOutput(addr addrs.WorkspaceOutput, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return d.WorkspaceOuts[addr.Name], nil
+}
+
+func (d *dataForTests) GetRunbookAction(addr addrs.RunbookAction, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	if d.Actions == nil {
+		return cty.DynamicVal, nil
+	}
+	if byType, ok := d.Actions[addr.Type]; ok {
+		return byType[addr.Name], nil
+	}
+	return cty.DynamicVal, nil
 }

@@ -45,4 +45,5 @@ type Data interface {
 type RunbookData interface {
 	GetStep(addrs.Step, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics)
 	GetWorkspaceOutput(addrs.WorkspaceOutput, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics)
+	GetRunbookAction(addrs.RunbookAction, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics)
 }

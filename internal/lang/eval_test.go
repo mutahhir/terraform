@@ -825,6 +825,15 @@ func TestScopeEvalExprInRunbookScope(t *testing.T) {
 				"name": cty.StringVal("prod"),
 			}),
 		},
+		Actions: map[string]map[string]cty.Value{
+			"test_action": {
+				"target": cty.ObjectVal(map[string]cty.Value{
+					"result": cty.ObjectVal(map[string]cty.Value{
+						"status_code": cty.NumberIntVal(200),
+					}),
+				}),
+			},
+		},
 		Resources: map[string]cty.Value{
 			`list.test_resource.inventory`: cty.ObjectVal(map[string]cty.Value{
 				"data": cty.TupleVal([]cty.Value{cty.StringVal("x")}),
@@ -843,6 +852,7 @@ func TestScopeEvalExprInRunbookScope(t *testing.T) {
 	}{
 		{`steps.deploy["blue"].status`, cty.StringVal("ok")},
 		{`workspace.output.cluster.name`, cty.StringVal("prod")},
+		{`action.test_action.target.result.status_code`, cty.NumberIntVal(200)},
 		{`list.test_resource.inventory.data[0]`, cty.StringVal("x")},
 	}
 

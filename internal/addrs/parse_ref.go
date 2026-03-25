@@ -253,8 +253,26 @@ func ParseRefFromRunbookScope(traversal hcl.Traversal) (*Reference, tfdiags.Diag
 			})
 			return nil, diags
 		}
-		remain := traversal[1:]
-		return parseActionRef(rootRange, remain)
+		typeAttr, ok := traversal[1].(hcl.TraverseAttr)
+		if !ok {
+			return nil, diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid reference",
+				Detail:   `The "action" object must be followed by two attribute names: the action type and the action name.`,
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+		}
+		nameAttr, ok := traversal[2].(hcl.TraverseAttr)
+		if !ok {
+			return nil, diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid reference",
+				Detail:   `The "action" object must be followed by two attribute names: the action type and the action name.`,
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+		}
+		rng := hcl.RangeBetween(rootRange, nameAttr.SrcRange)
+		return &Reference{Subject: RunbookAction{Type: typeAttr.Name, Name: nameAttr.Name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: traversal[3:]}, diags
 	}
 
 	if reference != nil {

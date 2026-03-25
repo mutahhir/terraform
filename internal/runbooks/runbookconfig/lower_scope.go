@@ -20,6 +20,7 @@ import (
 const (
 	lowerVarSteps     = "__runbook_steps"
 	lowerVarWorkspace = "__runbook_workspace"
+	lowerVarActions   = "__runbook_actions"
 )
 
 type LowerScope struct {
@@ -63,6 +64,9 @@ func (s *LowerScope) RewriteExpr(expr hcl.Expression, exprSrc []byte) ([]byte, t
 		case addrs.Step, addrs.StepInstance:
 			varName = lowerVarSteps
 			varVal = normalizeScopeValue(s.scope.Steps)
+		case addrs.RunbookAction:
+			varName = lowerVarActions
+			varVal = normalizeScopeValue(s.scope.Actions)
 		case addrs.WorkspaceOutput:
 			varName = lowerVarWorkspace
 			varVal = normalizeScopeValue(s.scope.Workspace)

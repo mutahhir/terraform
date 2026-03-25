@@ -303,6 +303,9 @@ step "example" {
 	if !strings.Contains(mainSrc, `variable "__runbook_workspace"`) || !strings.Contains(mainSrc, `variable "__runbook_steps"`) {
 		t.Fatalf("lowered main.tf did not emit synthetic runbook variables:\n%s", mainSrc)
 	}
+	if strings.Contains(mainSrc, `var.__runbook_workspace.output.output`) || strings.Contains(mainSrc, `var.__runbook_steps.steps.`) {
+		t.Fatalf("lowered main.tf introduced duplicated runbook scope segments:\n%s", mainSrc)
+	}
 	if !strings.Contains(mainSrc, `output "result" {
   value     = var.__runbook_workspace.output.enabled && data.simple_resource.current.value == var.__runbook_steps.bootstrap.message
   sensitive = true
