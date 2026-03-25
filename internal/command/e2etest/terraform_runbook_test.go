@@ -302,8 +302,8 @@ func TestRunbookPlanForEachStepExpansion(t *testing.T) {
 	if !strings.Contains(stdout, "# Step 2: inspect_role[") {
 		t.Fatalf("missing expanded inspect_role instance output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "expanded_from   = \"inspect_role\"") {
-		t.Fatalf("missing expanded step metadata:\n%s", stdout)
+	if strings.Contains(stdout, "expanded_from") || strings.Contains(stdout, "total_instances") || strings.Contains(stdout, "instance        =") {
+		t.Fatalf("unexpected logical-step expansion metadata in plan output:\n%s", stdout)
 	}
 
 	cancel()
@@ -364,13 +364,16 @@ func TestRunbookExecuteForEachStepExpansion(t *testing.T) {
 	}
 	stdout, stderr, err := tf.Run("runbook", "execute")
 	if err != nil {
-		t.Fatalf("unexpected runbook execute error: %s\nstderr:\n%s", err, stderr)
+		t.Fatalf("unexpected runbook execute error: %s\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "# inspect_role[") {
 		t.Fatalf("missing expanded inspect_role execute output:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "role = \"static_id\"") {
 		t.Fatalf("missing instance output value:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "Action invocations:") || !strings.Contains(stdout, `action.simple_action.inspect`) {
+		t.Fatalf("missing execute action invocation output:\n%s", stdout)
 	}
 
 	cancel()
@@ -505,6 +508,167 @@ func TestRunbookExecuteCountStepExpansion(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `idx = 0`) || !strings.Contains(stdout, `idx = 1`) {
 		t.Fatalf("missing count output values:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "Action invocations:") || !strings.Contains(stdout, `action.simple_action.inspect`) {
+		t.Fatalf("missing count execute action invocation output:\n%s", stdout)
+	}
+	cancel()
+	<-closeCh
+}
+
+func TestRunbookExecuteStreamsActionOutput(t *testing.T) {
+	if !canRunGoBuild {
+		t.Skip("can't run without building a new provider executable")
+	}
+
+	t.Parallel()
+	os.Setenv(e2e.TestExperimentFlag, "true")
+	terraformBin := e2e.GoBuild("github.com/hashicorp/terraform", "terraform")
+
+	fixturePath := filepath.Join("testdata", "runbook-provider")
+	tf := e2e.NewBinary(t, terraformBin, fixturePath)
+
+	reattachCh := make(chan *plugin.ReattachConfig)
+	closeCh := make(chan struct{})
+	provider6 := &providerServer{ProviderServer: grpcwrap.Provider6(simple.Provider())}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go plugin.Serve(&plugin.ServeConfig{
+		Logger:     hclog.New(&hclog.LoggerOptions{Name: "plugintest", Level: hclog.Trace, Output: io.Discard}),
+		Test:       &plugin.ServeTestConfig{Context: ctx, ReattachConfigCh: reattachCh, CloseCh: closeCh},
+		GRPCServer: plugin.DefaultGRPCServer,
+		VersionedPlugins: map[int]plugin.PluginSet{
+			6: {
+				"provider": &tfplugin.GRPCProviderPlugin{GRPCProvider: func() proto.ProviderServer { return provider6 }},
+			},
+		},
+	})
+	config := <-reattachCh
+	reattachStr, err := json.Marshal(map[string]reattachConfig{
+		"hashicorp/test": {
+			Protocol:        string(config.Protocol),
+			ProtocolVersion: 6,
+			Pid:             config.Pid,
+			Test:            true,
+			Addr:            reattachConfigAddr{Network: config.Addr.Network(), String: config.Addr.String()},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tf.AddEnv("TF_REATTACH_PROVIDERS=" + string(reattachStr))
+
+	state := states.NewState()
+	state.RootOutputValues["enabled"] = &states.OutputValue{Value: cty.True, Sensitive: false}
+	stateFile := &statefile.File{
+		Lineage:          "runbook-test",
+		Serial:           1,
+		TerraformVersion: version.Must(version.NewVersion("1.0.0")),
+		State:            state,
+	}
+	var stateBuf bytes.Buffer
+	if err := statefile.WriteForTest(stateFile, &stateBuf); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(tf.Path("states", "default"), os.ModePerm); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tf.Path("states", "default", "terraform.tfstate"), stateBuf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tf.Path("terraform.tfstate"), stateBuf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, stderr, err := tf.Run("init"); err != nil {
+		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
+	}
+	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
+		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
+	}
+	if _, stderr, err := tf.Run("runbook", "plan"); err != nil {
+		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
+	}
+	stdout, stderr, err := tf.Run("runbook", "execute")
+	if err != nil {
+		t.Fatalf("unexpected runbook execute error: %s\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Action invocations:") || !strings.Contains(stdout, `action.simple_action.target`) {
+		t.Fatalf("missing action invocation summary output:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Action started: action.simple_action.target") || !strings.Contains(stdout, "Action action.simple_action.target (triggered by CLI):") || !strings.Contains(stdout, "Hello world!") || !strings.Contains(stdout, "Action complete: action.simple_action.target") {
+		t.Fatalf("missing action progress output:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+
+	cancel()
+	<-closeCh
+}
+
+func TestRunbookPlanFailsFastOnStepPlanningError(t *testing.T) {
+	if !canRunGoBuild {
+		t.Skip("can't run without building a new provider executable")
+	}
+
+	t.Parallel()
+	os.Setenv(e2e.TestExperimentFlag, "true")
+	terraformBin := e2e.GoBuild("github.com/hashicorp/terraform", "terraform")
+
+	fixturePath := filepath.Join("testdata", "runbook-provider-invalid-action")
+	tf := e2e.NewBinary(t, terraformBin, fixturePath)
+
+	reattachCh := make(chan *plugin.ReattachConfig)
+	closeCh := make(chan struct{})
+	provider6 := &providerServer{ProviderServer: grpcwrap.Provider6(simple.Provider())}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go plugin.Serve(&plugin.ServeConfig{
+		Logger:     hclog.New(&hclog.LoggerOptions{Name: "plugintest", Level: hclog.Trace, Output: io.Discard}),
+		Test:       &plugin.ServeTestConfig{Context: ctx, ReattachConfigCh: reattachCh, CloseCh: closeCh},
+		GRPCServer: plugin.DefaultGRPCServer,
+		VersionedPlugins: map[int]plugin.PluginSet{
+			6: {
+				"provider": &tfplugin.GRPCProviderPlugin{GRPCProvider: func() proto.ProviderServer { return provider6 }},
+			},
+		},
+	})
+	config := <-reattachCh
+	reattachStr, err := json.Marshal(map[string]reattachConfig{
+		"hashicorp/test": {
+			Protocol:        string(config.Protocol),
+			ProtocolVersion: 6,
+			Pid:             config.Pid,
+			Test:            true,
+			Addr:            reattachConfigAddr{Network: config.Addr.Network(), String: config.Addr.String()},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tf.AddEnv("TF_REATTACH_PROVIDERS=" + string(reattachStr))
+
+	if _, stderr, err := tf.Run("init"); err != nil {
+		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
+	}
+	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
+		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
+	}
+	stdout, stderr, err := tf.Run("runbook", "plan")
+	if err == nil {
+		t.Fatalf("expected runbook plan error\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Planning step:") || !strings.Contains(stdout, "invoke") {
+		t.Fatalf("missing plan progress output:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "Unsupported argument") {
+		t.Fatalf("missing step planning diagnostic:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if strings.Contains(stdout, "Saved runbook plan:") {
+		t.Fatalf("unexpected saved plan output after planning failure:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if _, statErr := os.Stat(tf.Path(".terraform", "runbook.tfrunplan")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no saved runbook plan after planning failure: %v", statErr)
 	}
 
 	cancel()

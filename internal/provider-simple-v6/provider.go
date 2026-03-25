@@ -475,7 +475,19 @@ func (s simple) PlanAction(providers.PlanActionRequest) providers.PlanActionResp
 }
 
 func (s simple) InvokeAction(providers.InvokeActionRequest) providers.InvokeActionResponse {
-	return providers.InvokeActionResponse{}
+	events := []providers.InvokeActionEvent{
+		providers.InvokeActionEvent_Progress{Message: "Hello world!"},
+		providers.InvokeActionEvent_Completed{},
+	}
+	return providers.InvokeActionResponse{
+		Events: func(yield func(providers.InvokeActionEvent) bool) {
+			for _, event := range events {
+				if !yield(event) {
+					return
+				}
+			}
+		},
+	}
 }
 
 func (s simple) ValidateActionConfig(providers.ValidateActionConfigRequest) providers.ValidateActionConfigResponse {

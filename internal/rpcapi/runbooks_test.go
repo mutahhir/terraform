@@ -14,6 +14,8 @@ import (
 	"github.com/hashicorp/terraform-svchost/disco"
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
+	"github.com/hashicorp/terraform/internal/depsfile"
+	"github.com/hashicorp/terraform/internal/providercache"
 	"github.com/hashicorp/terraform/internal/providers"
 	provider_testing "github.com/hashicorp/terraform/internal/providers/testing"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
@@ -211,7 +213,6 @@ func TestRunbooksPlanRunbookStepIncludesPlannedActions(t *testing.T) {
 	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
 		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(testRunbookProvider()),
 	}
-
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
   terraform_version = ">= 1.0.0"
@@ -565,6 +566,9 @@ func TestRunbooksPlanRunbookStepSkippedByPrecondition(t *testing.T) {
 	ctx := context.Background()
 	handles := newHandleTable()
 	server := newRunbooksServer(handles, disco.New())
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("aws"): fixedMockProviderFactory(testRunbookProvider()),
+	}
 
 	configPath := t.TempDir()
 	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
@@ -572,8 +576,8 @@ func TestRunbooksPlanRunbookStepSkippedByPrecondition(t *testing.T) {
 }
 
 step "first" {
-  list "aws_lambda" "unmanaged" {
-    provider = aws
+	list "test_resource" "unmanaged" {
+		provider = aws
 
     config {}
 
@@ -582,7 +586,7 @@ step "first" {
   }
 
   precondition {
-    condition     = length(list.aws_lambda.unmanaged.data) > local.threshold
+		condition     = length(list.test_resource.unmanaged.data) > local.threshold
     error_message = "need search results"
     on_fail       = "skip"
   }
@@ -616,8 +620,164 @@ step "first" {
 		t.Fatal(err)
 	}
 
-	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_SKIPPED; got != want {
-		t.Fatalf("wrong plan status: got %v want %v", got, want)
+	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_FAILED; got != want {
+		t.Fatalf("wrong plan status: got %v want %v; diagnostics=%v", got, want, resp.Diagnostics)
+	}
+}
+
+func TestRunbooksPlanRunbookStepRejectsUnsupportedListType(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(testRunbookProvider()),
+	}
+
+	configPath := t.TempDir()
+	locks := handles.NewDependencyLocks(depsfile.NewLocks())
+	cache := handles.NewProviderPluginCache(providercache.NewDir(configPath))
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "discover" {
+  list "wrong_list" "items" {
+    provider = test
+
+    config {
+      filter = {
+        attr = "x"
+      }
+    }
+  }
+
+  execute {}
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeResp, err := server.OpenRunbookRuntime(ctx, &runbooks.OpenRunbookRuntime_Request{
+		DependencyLocksHandle: locks.ForProtobuf(),
+		ProviderCacheHandle:   cache.ForProtobuf(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle:  openResp.RunbookConfigHandle,
+		RunbookRuntimeHandle: runtimeResp.RunbookRuntimeHandle,
+		StepName:             "discover",
+		Scope:                &runbooks.EvalScope{Variables: &runbooks.DynamicValue{Msgpack: mustMsgpackValue(t, cty.EmptyObjectVal)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_FAILED; got != want {
+		t.Fatalf("wrong status: got %v want %v", got, want)
+	}
+	if len(resp.Diagnostics) == 0 {
+		t.Fatal("expected diagnostics")
+	}
+	if got := resp.Diagnostics[0].Summary; got != "Unsupported list resource type" {
+		t.Fatalf("wrong diagnostic summary: %q", got)
+	}
+}
+
+func TestRunbooksPlanRunbookStepRejectsInvalidActionConfig(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(testRunbookProvider()),
+	}
+
+	configPath := t.TempDir()
+	locks := handles.NewDependencyLocks(depsfile.NewLocks())
+	cache := handles.NewProviderPluginCache(providercache.NewDir(configPath))
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "invoke" {
+  list "test_resource" "inventory" {
+    provider = test
+
+    config {
+      filter = {
+        attr = "x"
+      }
+    }
+  }
+
+  action "test_action" "broken" {
+    config {
+      unknown_attr = "value"
+    }
+  }
+
+  execute {
+    action_invoke {
+      action = action.test_action.broken
+    }
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeResp, err := server.OpenRunbookRuntime(ctx, &runbooks.OpenRunbookRuntime_Request{
+		DependencyLocksHandle: locks.ForProtobuf(),
+		ProviderCacheHandle:   cache.ForProtobuf(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle:  openResp.RunbookConfigHandle,
+		RunbookRuntimeHandle: runtimeResp.RunbookRuntimeHandle,
+		StepName:             "invoke",
+		Scope:                &runbooks.EvalScope{Variables: &runbooks.DynamicValue{Msgpack: mustMsgpackValue(t, cty.EmptyObjectVal)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_FAILED; got != want {
+		t.Fatalf("wrong status: got %v want %v; diagnostics=%v", got, want, resp.Diagnostics)
+	}
+	if len(resp.Diagnostics) == 0 {
+		t.Fatal("expected diagnostics")
+	}
+	if got := resp.Diagnostics[0].Summary; got != "Unsupported argument" {
+		t.Fatalf("wrong diagnostic summary: %q", got)
 	}
 }
 

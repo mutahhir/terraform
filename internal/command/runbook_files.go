@@ -136,11 +136,6 @@ func formatPlanSummary(color *colorstring.Colorize, manifest *runbookplanfile.Pl
 	skippedCount := 0
 	for i, step := range manifest.Steps {
 		b.WriteString(color.Color(fmt.Sprintf("[bold][cyan]# Step %d: %s[reset]\n", i+1, step.Name)))
-		if step.BaseName != "" && step.InstanceCount > 0 {
-			b.WriteString(fmt.Sprintf("    instance        = %q\n", step.ForEachKey))
-			b.WriteString(fmt.Sprintf("    expanded_from   = %q\n", step.BaseName))
-			b.WriteString(fmt.Sprintf("    total_instances = %d\n", step.InstanceCount))
-		}
 		if len(step.After) > 0 {
 			b.WriteString(fmt.Sprintf("    after           = [%s]\n", strings.Join(step.After, ", ")))
 		}
@@ -212,6 +207,24 @@ func formatStepOutputs(color *colorstring.Colorize, stepName string, outputs cty
 	b.WriteString(color.Color(fmt.Sprintf("[bold]Outputs for %s:[reset]\n", stepName)))
 	for _, name := range keys {
 		b.WriteString(fmt.Sprintf("  %s = %s\n", name, tfdiags.CompactValueStr(vals[name])))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatActionInvocations(color *colorstring.Colorize, actions []string) string {
+	if len(actions) == 0 {
+		return ""
+	}
+	if color == nil {
+		color = &colorstring.Colorize{Disable: true}
+	}
+	vals := append([]string(nil), actions...)
+	sort.Strings(vals)
+
+	var b strings.Builder
+	b.WriteString(color.Color("[bold]Action invocations:[reset]\n"))
+	for _, action := range vals {
+		b.WriteString(fmt.Sprintf("  - %s\n", action))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

@@ -5,6 +5,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,9 +19,12 @@ import (
 	ctymsgpack "github.com/zclconf/go-cty/cty/msgpack"
 
 	"github.com/hashicorp/terraform/internal/addrs"
+	"github.com/hashicorp/terraform/internal/backend/backendrun"
+	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configload"
 	"github.com/hashicorp/terraform/internal/plans"
+	"github.com/hashicorp/terraform/internal/providers"
 	"github.com/hashicorp/terraform/internal/rpcapi"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/dependencies"
@@ -39,6 +43,17 @@ import (
 
 type RunbookCommand struct {
 	Meta
+}
+
+type runbookStepPlanningFailedError struct {
+	stepName string
+}
+
+func (e runbookStepPlanningFailedError) Error() string {
+	if e.stepName == "" {
+		return "runbook step planning failed"
+	}
+	return fmt.Sprintf("runbook step %q planning failed", e.stepName)
 }
 
 func (c *RunbookCommand) Help() string {
@@ -227,10 +242,19 @@ func (c *RunbookCommand) runPlan() int {
 			rawSteps[name] = step
 		}
 	}
-	varScope := buildRunbookVariableScope(rawCfg)
+	varScope, runbookInputs, varDiags := c.loadRunbookVariableValues(rawCfg)
+	if varDiags.HasErrors() {
+		c.Ui.Error(varDiags.Err().Error())
+		return 1
+	}
 	workspaceScope, workspaceDiags := c.buildWorkspaceScope(ctx)
 	if workspaceDiags.HasErrors() {
 		c.Ui.Error(workspaceDiags.Err().Error())
+		return 1
+	}
+	providerFactories, providerErr := c.ProviderFactories()
+	if providerErr != nil {
+		c.Ui.Error(fmt.Sprintf("Failed to initialize providers for runbook plan: %s", providerErr))
 		return 1
 	}
 	stateFile, stateFileDiags := c.buildWorkspaceStateFile(ctx)
@@ -243,6 +267,10 @@ func (c *RunbookCommand) runPlan() int {
 	buildResult, buildDiags, buildErr := runbookplan.Build(rawCfg, state.ConfigPath, state.Workspace, state.StepOrder, state.Dependencies, varScope, workspaceScope, func(stepName string, scope runbookconfig.EvalScope) (runbookplan.StepPlanResult, error) {
 		rawStep := rawSteps[stepName]
 		step := stepsResp.Config.Steps[stepName]
+		c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[cyan]Planning step:[reset] %s", stepName)))
+		if scope.Each != cty.NilVal || scope.Count != cty.NilVal {
+			return c.planRunbookStepInstance(stepName, rawCfg, rawStep, step, scope, runbookInputs, providerFactories)
+		}
 		protoScope := &runbooks.EvalScope{Variables: dynamicProtoValue(scope.Variables), Steps: dynamicProtoValue(scope.Steps), Each: dynamicProtoValue(scope.Each)}
 		protoScope.Workspace = dynamicProtoValue(scope.Workspace)
 		planResp, err := client.Runbooks().PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
@@ -253,6 +281,10 @@ func (c *RunbookCommand) runPlan() int {
 		})
 		if err != nil {
 			return runbookplan.StepPlanResult{}, err
+		}
+		c.showRunbookProtoDiagnostics(planResp.Diagnostics)
+		if planResp.GetStatus() == runbooks.StepStatus_STEP_STATUS_FAILED {
+			return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
 		}
 		loweredFiles := copyLoweredFiles(planResp)
 		if rawStep != nil && len(loweredFiles) == 0 {
@@ -282,6 +314,10 @@ func (c *RunbookCommand) runPlan() int {
 		}, nil
 	})
 	if buildErr != nil {
+		var stepErr runbookStepPlanningFailedError
+		if errors.As(buildErr, &stepErr) {
+			return 1
+		}
 		c.Ui.Error(buildErr.Error())
 		return 1
 	}
@@ -357,7 +393,7 @@ func (c *RunbookCommand) runExecute() int {
 		c.Ui.Error(fmt.Sprintf("Failed to initialize providers for runbook execute: %s", err))
 		return 1
 	}
-	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1, Providers: providerFactories})
+	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1, Providers: providerFactories, Hooks: []terraform.Hook{c.uiHook()}})
 	if ctxDiags.HasErrors() {
 		c.Ui.Error(ctxDiags.Err().Error())
 		return 1
@@ -365,9 +401,18 @@ func (c *RunbookCommand) runExecute() int {
 
 	stepResults := runbookeval.NewStepResults()
 	seedStepResultsFromPlan(manifest, stepResults)
-	currentState := states.NewState()
+	// originalWorkspaceState is the snapshot produced by normal Terraform apply.
+	// Runbook execution must treat it as read-only and must not plan/apply
+	// lowered step configs against it, because each lowered step is only a
+	// partial configuration.
+	originalWorkspaceState := states.NewState()
 	if stateFile != nil && stateFile.State != nil {
-		currentState = stateFile.State.DeepCopy()
+		originalWorkspaceState = stateFile.State.DeepCopy()
+	}
+	varScope, runbookInputs, varDiags := c.loadRunbookVariableValues(rawCfg)
+	if varDiags.HasErrors() {
+		c.Ui.Error(varDiags.Err().Error())
+		return 1
 	}
 	baseWorkspaceScope, workspaceDiags := c.buildWorkspaceScope(ctx)
 	if workspaceDiags.HasErrors() {
@@ -395,19 +440,17 @@ func (c *RunbookCommand) runExecute() int {
 			c.Ui.Error(fmt.Sprintf("Failed to read lowered files for step %q: %s", stepName, err))
 			return 1
 		}
-		if manifestStep != nil && manifestStep.ForEachExpression != "" {
-			if loweredBundle, lowerDiags := runbookconfig.LowerStepInstanceWithScope(rawCfg, step, runbookconfig.EvalScope{
-				Variables: buildRunbookVariableScope(rawCfg),
-				Steps:     stepResults.ScopeValue(),
-				Workspace: mergedWorkspaceScope(baseWorkspaceScope, currentState),
-				Each:      eachScopeForManifestStep(manifestStep),
-				Count:     countScopeForManifestStep(manifestStep),
-			}); lowerDiags.HasErrors() {
-				c.Ui.Error(lowerDiags.Err().Error())
-				return 1
-			} else if loweredBundle != nil {
-				loweredFiles = loweredBundle.Files
-			}
+		if loweredBundle, lowerDiags := runbookconfig.LowerStepInstanceWithScope(rawCfg, step, runbookconfig.EvalScope{
+			Variables: varScope,
+			Steps:     stepResults.ScopeValue(),
+			Workspace: mergedWorkspaceScope(baseWorkspaceScope, originalWorkspaceState),
+			Each:      eachScopeForManifestStep(manifestStep),
+			Count:     countScopeForManifestStep(manifestStep),
+		}); lowerDiags.HasErrors() {
+			c.Ui.Error(lowerDiags.Err().Error())
+			return 1
+		} else if loweredBundle != nil {
+			loweredFiles = loweredBundle.Files
 		}
 		planFiles := loweredFiles
 		if len(loweredFiles) == 0 {
@@ -428,11 +471,11 @@ func (c *RunbookCommand) runExecute() int {
 		}
 
 		preScope := runbookconfig.EvalScope{
-			Variables: buildRunbookVariableScope(rawCfg),
+			Variables: varScope,
 			Steps:     stepResults.ScopeValue(),
 			Count:     countScopeForManifestStep(manifestStep),
 			Each:      eachScopeForManifestStep(manifestStep),
-			Workspace: mergedWorkspaceScope(baseWorkspaceScope, currentState),
+			Workspace: mergedWorkspaceScope(baseWorkspaceScope, originalWorkspaceState),
 		}
 		preEval := runbookconfig.EvaluateStepForPlan(step, preScope)
 		if preEval.Status == runbookconfig.StepStatusSkipped {
@@ -449,7 +492,7 @@ func (c *RunbookCommand) runExecute() int {
 			return 1
 		}
 
-		planConfig, inputValues, configDiags := loadLoweredStepConfig(planFiles)
+		planConfig, inputValues, configDiags := loadLoweredStepConfig(planFiles, runbookInputs)
 		if configDiags.HasErrors() {
 			c.Ui.Error(configDiags.Err().Error())
 			return 1
@@ -457,7 +500,8 @@ func (c *RunbookCommand) runExecute() int {
 		plannedStepNames := append([]string(nil), manifest.StepOrder...)
 		trimmedPlanConfig := stripFutureStepOutputs(planConfig, plannedStepNames, stepName)
 		hasQueries := hasLoweredQueryFiles(loweredFiles)
-		_, planDiags := tfCtx.Plan(trimmedPlanConfig, currentState.DeepCopy(), &terraform.PlanOpts{
+		stepState := states.NewState()
+		_, planDiags := tfCtx.Plan(trimmedPlanConfig, stepState, &terraform.PlanOpts{
 			Mode:         plans.NormalMode,
 			Query:        hasQueries,
 			SetVariables: inputValues,
@@ -468,12 +512,12 @@ func (c *RunbookCommand) runExecute() int {
 		}
 		applyFiles := stripExecuteUnsafeFiles(planFiles)
 		if hasApplyableConfig(applyFiles) {
-			applyConfig, _, applyConfigDiags := loadLoweredStepConfig(applyFiles)
+			applyConfig, _, applyConfigDiags := loadLoweredStepConfig(applyFiles, runbookInputs)
 			if applyConfigDiags.HasErrors() {
 				c.Ui.Error(applyConfigDiags.Err().Error())
 				return 1
 			}
-			applyPlan, applyPlanDiags := tfCtx.Plan(applyConfig, currentState.DeepCopy(), &terraform.PlanOpts{
+			applyPlan, applyPlanDiags := tfCtx.Plan(applyConfig, stepState, &terraform.PlanOpts{
 				Mode:         plans.NormalMode,
 				Query:        false,
 				SetVariables: inputValues,
@@ -488,17 +532,60 @@ func (c *RunbookCommand) runExecute() int {
 				return 1
 			}
 			if newState != nil {
-				currentState = newState
+				stepState = newState
 			}
 		}
 
+		invokeFiles := planFiles
+		if len(manifestStep.PlannedActions) > 0 {
+			invokeFiles = stripInvokeUnsafeFiles(planFiles)
+		}
+		for _, actionRef := range manifestStep.PlannedActions {
+			target, targetDiags := runbookActionTarget(actionRefForManifestStep(manifestStep, actionRef))
+			if targetDiags.HasErrors() {
+				c.Ui.Error(targetDiags.Err().Error())
+				return 1
+			}
+			planConfig, invokeInputValues, invokeConfigDiags := loadLoweredStepConfig(invokeFiles, runbookInputs)
+			if invokeConfigDiags.HasErrors() {
+				c.Ui.Error(invokeConfigDiags.Err().Error())
+				return 1
+			}
+			invokePlan, invokePlanDiags := tfCtx.Plan(planConfig, states.NewState(), &terraform.PlanOpts{
+				Mode:          plans.RefreshOnlyMode,
+				ActionTargets: []addrs.Targetable{target},
+				SetVariables:  invokeInputValues,
+			})
+			if invokePlanDiags.HasErrors() {
+				c.Ui.Error(invokePlanDiags.Err().Error())
+				return 1
+			}
+			if invokePlan == nil || invokePlan.Changes == nil || len(invokePlan.Changes.ActionInvocations) == 0 {
+				c.Ui.Error(fmt.Sprintf("runbook execute did not produce an action invocation for %s", actionRef))
+				return 1
+			}
+			c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold]Action started: %s[reset]", actionRef)))
+			_, invokeApplyDiags := tfCtx.Apply(invokePlan, planConfig, &terraform.ApplyOpts{})
+			if invokeApplyDiags.HasErrors() {
+				c.Ui.Error(invokeApplyDiags.Err().Error())
+				return 1
+			}
+			c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][green]Action complete: %s[reset]", actionRef)))
+		}
+
 		stepOutputs := stepResults.Get(stepInstanceAddrFromManifestStep(manifestStep))
-		if !(manifestStep != nil && len(step.Lists) > 0) {
+		stepOutputs = mergeStepOutputs(stepOutputsFromState(stepState, step), stepOutputs)
+		if len(step.Lists) == 0 {
 			stepOutputs = mergeStepOutputs(evaluateStepOutputsFromSource(step, preScope), stepOutputs)
 		}
 		stepResults.Set(stepInstanceAddrFromManifestStep(manifestStep), stepOutputs)
 		c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][cyan]# %s[reset]", stepName)))
 		c.Ui.Output(c.Colorize().Color("status = [green]\"complete\"[reset]"))
+		if formatted := formatActionInvocations(c.Colorize(), manifestStep.PlannedActions); formatted != "" {
+			for _, line := range strings.Split(formatted, "\n") {
+				c.Ui.Output(line)
+			}
+		}
 		if formatted := formatStepOutputs(c.Colorize(), stepName, stepOutputs); formatted != "" {
 			for _, line := range strings.Split(formatted, "\n") {
 				c.Ui.Output(line)
@@ -507,7 +594,7 @@ func (c *RunbookCommand) runExecute() int {
 		c.Ui.Output("")
 	}
 
-	if err := c.writeRunbookStateSnapshot(ctx, manifest.Workspace, currentState); err != nil {
+	if err := c.writeRunbookStateSnapshot(ctx, manifest.Workspace, originalWorkspaceState); err != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to persist runbook state: %s", err))
 		return 1
 	}
@@ -649,12 +736,54 @@ func (c *RunbookCommand) buildWorkspaceStateFile(ctx context.Context) (*statefil
 	return &statefile.File{State: state}, diags
 }
 
-func buildRunbookVariableScope(cfg *runbookconfig.Config) cty.Value {
+func (c *RunbookCommand) loadRunbookVariableValues(cfg *runbookconfig.Config) (cty.Value, terraform.InputValues, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	decls := runbookVariableDecls(cfg)
+	collected := c.VariableValues
+	if collected == nil {
+		var collectDiags tfdiags.Diagnostics
+		collected, collectDiags = (&arguments.Vars{}).CollectValues(func(string, []byte) {})
+		diags = diags.Append(collectDiags)
+	}
+	inputValues, parseDiags := backendrun.ParseVariableValues(collected, decls)
+	diags = diags.Append(parseDiags)
+	return buildRunbookVariableScope(cfg, inputValues), inputValues, diags
+}
+
+func runbookVariableDecls(cfg *runbookconfig.Config) map[string]*configs.Variable {
+	if cfg == nil || len(cfg.Variables) == 0 {
+		return map[string]*configs.Variable{}
+	}
+	ret := make(map[string]*configs.Variable, len(cfg.Variables))
+	for name, variable := range cfg.Variables {
+		decl := &configs.Variable{
+			Name:           name,
+			Type:           cty.DynamicPseudoType,
+			ConstraintType: cty.DynamicPseudoType,
+			ParsingMode:    configs.VariableParseLiteral,
+			Nullable:       true,
+			Default:        cty.NilVal,
+		}
+		if variable != nil && variable.Default != nil {
+			if val, defaultDiags := variable.Default.Value(&hcl.EvalContext{}); !defaultDiags.HasErrors() {
+				decl.Default = val
+			}
+		}
+		ret[name] = decl
+	}
+	return ret
+}
+
+func buildRunbookVariableScope(cfg *runbookconfig.Config, inputValues terraform.InputValues) cty.Value {
 	if cfg == nil || len(cfg.Variables) == 0 {
 		return cty.EmptyObjectVal
 	}
 	vals := make(map[string]cty.Value, len(cfg.Variables))
 	for name, variable := range cfg.Variables {
+		if input := inputValues[name]; input != nil && input.Value != cty.NilVal {
+			vals[name] = input.Value
+			continue
+		}
 		if variable != nil && variable.Default != nil {
 			if val, diags := variable.Default.Value(&hcl.EvalContext{}); !diags.HasErrors() {
 				vals[name] = val
@@ -746,6 +875,31 @@ func staticQueryAddresses(step *runbookconfig.Step) []string {
 		ret = append(ret, query.GetAddress())
 	}
 	return ret
+}
+
+func runbookActionTarget(ref string) (addrs.Targetable, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	if strings.HasPrefix(ref, "workspace.") {
+		ref = strings.TrimPrefix(ref, "workspace.")
+	}
+	if strings.Contains(ref, "[") {
+		addr, addrDiags := addrs.ParseAbsActionInstanceStr(ref)
+		diags = diags.Append(addrDiags)
+		if addrDiags.HasErrors() {
+			return nil, diags
+		}
+		return addr, diags
+	}
+	addr, addrDiags := addrs.ParseAbsActionStr(ref)
+	diags = diags.Append(addrDiags)
+	if addrDiags.HasErrors() {
+		return nil, diags
+	}
+	return addr, diags
+}
+
+func actionRefForManifestStep(step *runbookplanfile.Step, ref string) string {
+	return ref
 }
 
 func staticPlannedActions(cfg *runbookconfig.Config, step *runbookconfig.Step) []*runbooks.PlanRunbookStep_PlannedAction {
@@ -896,7 +1050,243 @@ func firstDiagnosticDetail(diags []*terraform1.Diagnostic) string {
 	if len(diags) == 0 || diags[0] == nil {
 		return ""
 	}
-	return diags[0].Detail
+	if diags[0].Detail != "" {
+		return diags[0].Detail
+	}
+	return diags[0].Summary
+}
+
+func (c *RunbookCommand) planRunbookStepInstance(stepName string, cfg *runbookconfig.Config, rawStep *runbookconfig.Step, protoStep *runbooks.FindRunbookConfigurationSteps_Step, scope runbookconfig.EvalScope, runbookInputs terraform.InputValues, providerFactories map[addrs.Provider]providers.Factory) (runbookplan.StepPlanResult, error) {
+	if rawStep == nil {
+		return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+	}
+	loweredBundle, lowerDiags := runbookconfig.LowerStepInstanceWithScope(cfg, rawStep, scope)
+	if len(lowerDiags) != 0 {
+		c.showDiagnostics(lowerDiags)
+		if lowerDiags.HasErrors() {
+			return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+		}
+	}
+	if loweredBundle == nil {
+		return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+	}
+	planConfig, inputValues, configDiags := loadLoweredStepConfig(loweredBundle.Files, runbookInputs)
+	if len(configDiags) != 0 {
+		c.showDiagnostics(configDiags)
+		if configDiags.HasErrors() {
+			return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+		}
+	}
+	hasQueries := hasLoweredQueryFiles(loweredBundle.Files)
+	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1, Providers: providerFactories})
+	if len(ctxDiags) != 0 {
+		c.showDiagnostics(ctxDiags)
+		if ctxDiags.HasErrors() {
+			return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+		}
+	}
+	validateDiags := tfCtx.Validate(planConfig, &terraform.ValidateOpts{Query: hasQueries})
+	if len(validateDiags) != 0 {
+		c.showDiagnostics(validateDiags)
+		if validateDiags.HasErrors() {
+			return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+		}
+	}
+	tfPlan, planDiags := tfCtx.Plan(planConfig, states.NewState(), &terraform.PlanOpts{
+		Mode:         plans.NormalMode,
+		Query:        hasQueries,
+		SetVariables: inputValues,
+	})
+	if len(planDiags) != 0 {
+		c.showDiagnostics(planDiags)
+		if planDiags.HasErrors() {
+			return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+		}
+	}
+	plannedOutputs := map[string]cty.Value{}
+	queries := []runbookconfig.PlannedQuery{}
+	if tfPlan != nil && tfPlan.Changes != nil {
+		schemas, schemaDiags := tfCtx.Schemas(planConfig, states.NewState())
+		if len(schemaDiags) != 0 {
+			c.showDiagnostics(schemaDiags)
+			if schemaDiags.HasErrors() {
+				return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+			}
+		}
+		for _, q := range tfPlan.Changes.Queries {
+			if q == nil {
+				continue
+			}
+			count := 0
+			data := cty.NilVal
+			if schema := schemaForLocalPlannedQuery(schemas, q); schema != nil {
+				if decoded, err := q.Decode(*schema); err == nil && decoded.Results.Value != cty.NilVal && decoded.Results.Value.Type().HasAttribute("data") {
+					decodedData := decoded.Results.Value.GetAttr("data")
+					decodedData, _ = decodedData.UnmarkDeep()
+					data = decodedData
+					if data.IsKnown() && !data.IsNull() && (data.Type().IsTupleType() || data.Type().IsListType()) {
+						count = data.LengthInt()
+					}
+				}
+			}
+			queries = append(queries, runbookconfig.PlannedQuery{Address: q.Addr.String(), Count: count, Data: data})
+		}
+		for _, output := range tfPlan.Changes.Outputs {
+			if output == nil {
+				continue
+			}
+			decoded, err := output.Decode()
+			if err != nil {
+				c.Ui.Error(fmt.Sprintf("Failed to decode lowered step output: %s", err))
+				return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+			}
+			plannedOutputs[decoded.Addr.OutputValue.Name] = decoded.Change.After
+		}
+	}
+	plannedOutputs = mergeOutputMaps(plannedOutputs, outputsMapFromValue(runbookplan.StepOutputsFromQueriesWithScope(rawStep, queries, scope)))
+	knownSkipped, skipReason, conditionErr := terraformDrivenStepConditionStatus(rawStep, plannedOutputs)
+	if conditionErr != nil {
+		c.Ui.Error(conditionErr.Error())
+		return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+	}
+	invokeFiles := loweredBundle.Files
+	if len(rawStep.ExecuteInvokes) > 0 {
+		invokeFiles = stripInvokeUnsafeFiles(loweredBundle.Files)
+	}
+	for _, actionRef := range staticActionAddresses(cfg, rawStep) {
+		target, targetDiags := runbookActionTarget(actionRef)
+		if len(targetDiags) != 0 {
+			c.showDiagnostics(targetDiags)
+			if targetDiags.HasErrors() {
+				return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+			}
+		}
+		invokeConfig, invokeInputs, invokeConfigDiags := loadLoweredStepConfig(invokeFiles, runbookInputs)
+		if len(invokeConfigDiags) != 0 {
+			c.showDiagnostics(invokeConfigDiags)
+			if invokeConfigDiags.HasErrors() {
+				return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+			}
+		}
+		invokePlan, invokePlanDiags := tfCtx.Plan(invokeConfig, states.NewState(), &terraform.PlanOpts{
+			Mode:          plans.RefreshOnlyMode,
+			ActionTargets: []addrs.Targetable{target},
+			SetVariables:  invokeInputs,
+		})
+		if len(invokePlanDiags) != 0 {
+			c.showDiagnostics(invokePlanDiags)
+			if invokePlanDiags.HasErrors() {
+				return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+			}
+		}
+		if invokePlan == nil || invokePlan.Changes == nil || len(invokePlan.Changes.ActionInvocations) == 0 {
+			c.Ui.Error(fmt.Sprintf("Failed to plan runbook action invocation: Runbook action %s did not produce an action invocation during planning.", actionRef))
+			return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
+		}
+	}
+	outputsVal := valueFromOutputMap(plannedOutputs)
+	return runbookplan.StepPlanResult{
+		Outputs:        outputsVal,
+		Queries:        queries,
+		KnownSkipped:   knownSkipped,
+		SkipReason:     skipReason,
+		PlannedActions: staticActionAddresses(cfg, rawStep),
+		PlannedQueries: staticQueryAddresses(rawStep),
+		PlannedData:    staticPlannedData(rawStep),
+		OutputNames:    protoStep.Outputs,
+		LoweredFiles:   loweredBundle.Files,
+	}, nil
+}
+
+func schemaForLocalPlannedQuery(schemas *terraform.Schemas, q *plans.QueryInstanceSrc) *providers.Schema {
+	if schemas == nil || q == nil {
+		return nil
+	}
+	providerSchema, ok := schemas.Providers[q.ProviderAddr.Provider]
+	if !ok {
+		return nil
+	}
+	schema, ok := providerSchema.ListResourceTypes[q.Addr.Resource.Resource.Type]
+	if !ok {
+		return nil
+	}
+	return &schema
+}
+
+func terraformDrivenStepConditionStatus(step *runbookconfig.Step, outputs map[string]cty.Value) (bool, string, error) {
+	if step == nil {
+		return false, "", nil
+	}
+	check := func(conds []*runbookconfig.Condition, kind string, allowSkip bool) (bool, string, error) {
+		for i, cond := range conds {
+			if cond == nil {
+				continue
+			}
+			result, ok := outputs[fmt.Sprintf("__runbook_%s_%d_condition", kind, i)]
+			if !ok || !result.IsKnown() || result.IsNull() || result.Type() != cty.Bool || result.True() {
+				continue
+			}
+			message := "A step condition returned false."
+			if msg, ok := outputs[fmt.Sprintf("__runbook_%s_%d_error_message", kind, i)]; ok && msg.IsKnown() && !msg.IsNull() && msg.Type() == cty.String {
+				message = msg.AsString()
+			}
+			if allowSkip && cond.OnFail == runbookconfig.ConditionOnFailSkip {
+				return true, message, nil
+			}
+			return false, "", fmt.Errorf("Runbook condition failed: %s", message)
+		}
+		return false, "", nil
+	}
+	if skipped, reason, err := check(step.Preconditions, "precondition", true); skipped || err != nil {
+		return skipped, reason, err
+	}
+	_, _, err := check(step.Postconditions, "postcondition", false)
+	return false, "", err
+}
+
+func outputsMapFromValue(v cty.Value) map[string]cty.Value {
+	if v == cty.NilVal || !v.Type().IsObjectType() {
+		return nil
+	}
+	return v.AsValueMap()
+}
+
+func valueFromOutputMap(vals map[string]cty.Value) cty.Value {
+	if len(vals) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return cty.ObjectVal(vals)
+}
+
+func mergeOutputMaps(primary, fallback map[string]cty.Value) map[string]cty.Value {
+	ret := map[string]cty.Value{}
+	for name, val := range fallback {
+		ret[name] = val
+	}
+	for name, val := range primary {
+		ret[name] = val
+	}
+	return ret
+}
+
+func (c *RunbookCommand) showRunbookProtoDiagnostics(diags []*terraform1.Diagnostic) {
+	for _, diag := range diags {
+		if diag == nil {
+			continue
+		}
+		msg := diag.GetSummary()
+		if diag.GetDetail() != "" {
+			msg = fmt.Sprintf("%s: %s", diag.GetSummary(), diag.GetDetail())
+		}
+		switch diag.GetSeverity() {
+		case terraform1.Diagnostic_ERROR:
+			c.Ui.Error(msg)
+		case terraform1.Diagnostic_WARNING:
+			c.Ui.Warn(msg)
+		default:
+			c.Ui.Output(msg)
+		}
+	}
 }
 
 func planRespQueries(resp *runbooks.PlanRunbookStep_Response) []runbookconfig.PlannedQuery {
@@ -1006,7 +1396,7 @@ func formatRunbookEvalDiagnostics(stepName string, eval runbookconfig.StepEvalua
 	return fmt.Sprintf("Step %q failed.", stepName)
 }
 
-func loadLoweredStepConfig(files map[string][]byte) (*configs.Config, terraform.InputValues, tfdiags.Diagnostics) {
+func loadLoweredStepConfig(files map[string][]byte, provided terraform.InputValues) (*configs.Config, terraform.InputValues, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	dir, err := os.MkdirTemp("", "terraform-runbook-execute-")
 	if err != nil {
@@ -1027,13 +1417,24 @@ func loadLoweredStepConfig(files map[string][]byte) (*configs.Config, terraform.
 	if mod == nil || hclDiags.HasErrors() {
 		return nil, nil, diags
 	}
-	inputValues := make(terraform.InputValues)
-	for name := range mod.Variables {
-		inputValues[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
-	}
+	inputValues := rootModuleInputValues(mod.Variables, provided)
 	config, buildDiags := terraform.BuildConfigWithGraph(mod, loader.ModuleWalker(), inputValues, configs.MockDataLoaderFunc(loader.LoadExternalMockData))
 	diags = diags.Append(buildDiags)
 	return config, inputValues, diags
+}
+
+func rootModuleInputValues(decls map[string]*configs.Variable, provided terraform.InputValues) terraform.InputValues {
+	ret := make(terraform.InputValues, len(decls))
+	for name := range decls {
+		if provided != nil {
+			if value, ok := provided[name]; ok && value != nil {
+				ret[name] = value
+				continue
+			}
+		}
+		ret[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
+	}
+	return ret
 }
 
 func stripSyntheticConditionOutputs(files map[string][]byte) map[string][]byte {
@@ -1234,6 +1635,29 @@ func stripListBackedOutputs(files map[string][]byte) map[string][]byte {
 		}
 		exprSrc := string(attr.Expr().BuildTokens(nil).Bytes())
 		if strings.Contains(exprSrc, "list.") {
+			body.RemoveBlock(block)
+		}
+	}
+	updated := make(map[string][]byte, len(files))
+	for name, src := range files {
+		updated[name] = src
+	}
+	updated["main.tf"] = hclwrite.Format(parsed.Bytes())
+	return updated
+}
+
+func stripInvokeUnsafeFiles(files map[string][]byte) map[string][]byte {
+	mainSrc, ok := files["main.tf"]
+	if !ok {
+		return files
+	}
+	parsed, diags := hclwrite.ParseConfig(mainSrc, "main.tf", hcl.InitialPos)
+	if diags.HasErrors() || parsed == nil {
+		return files
+	}
+	body := parsed.Body()
+	for _, block := range body.Blocks() {
+		if block.Type() == "output" {
 			body.RemoveBlock(block)
 		}
 	}

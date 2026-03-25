@@ -52,24 +52,46 @@ func Build(cfg *runbookconfig.Config, configPath, workspace string, stepOrder []
 		if step == nil {
 			continue
 		}
-		result, err := planner(stepName, runbookconfig.EvalScope{
+		baseScope := runbookconfig.EvalScope{
 			Variables: varScope,
 			Steps:     stepResults.ScopeValue(),
 			Workspace: workspaceScope,
-		})
-		if err != nil {
-			return nil, diags, err
 		}
-		result.Outputs = mergeOutputs(result.Outputs, StepOutputsFromQueries(step, result.Queries, varScope, stepResults.ScopeValue(), workspaceScope))
-		expanded, moreDiags := expandStepInstances(step, stepName, result.Outputs, stepResults.ScopeValue(), workspaceScope, varScope)
+		if step.Count == nil && step.ForEach == nil {
+			result, err := planner(stepName, baseScope)
+			if err != nil {
+				return nil, diags, err
+			}
+			result.Outputs = mergeOutputs(result.Outputs, StepOutputsFromQueriesWithScope(step, result.Queries, baseScope))
+			expandedStep := singletonStepManifest(step, stepName, deps[stepName], result)
+			manifest.StepOrder = append(manifest.StepOrder, expandedStep.Name)
+			manifest.Steps = append(manifest.Steps, expandedStep)
+			stepResults.Set(stepInstanceAddr(expandedStep), decodePlannedOutputsMap(expandedStep.PlannedOutputs))
+			if len(result.LoweredFiles) > 0 {
+				lowered[expandedStep.Name] = result.LoweredFiles
+			}
+			continue
+		}
+
+		priorStepsScope := stepResults.ScopeValue()
+		expanded, moreDiags := expandStepInstances(step, stepName, priorStepsScope, workspaceScope, varScope)
 		diags = diags.Append(moreDiags)
 		if moreDiags.HasErrors() {
 			return nil, diags, nil
 		}
-		if step.Count == nil && step.ForEach == nil && len(expanded) == 0 {
-			expanded = []runbookplanfile.Step{singletonStepManifest(step, stepName, deps[stepName], result)}
-		}
 		for _, expandedStep := range expanded {
+			instanceScope := runbookconfig.EvalScope{
+				Variables: varScope,
+				Steps:     priorStepsScope,
+				Workspace: workspaceScope,
+				Each:      eachScopeForExpandedStep(&expandedStep),
+				Count:     countScopeForExpandedStep(&expandedStep),
+			}
+			result, err := planner(stepName, instanceScope)
+			if err != nil {
+				return nil, diags, err
+			}
+			result.Outputs = mergeOutputs(result.Outputs, StepOutputsFromQueriesWithScope(step, result.Queries, instanceScope))
 			expandedStep.After = append([]string(nil), deps[stepName]...)
 			expandedStep.KnownSkipped = result.KnownSkipped
 			expandedStep.SkipReason = result.SkipReason
@@ -77,33 +99,12 @@ func Build(cfg *runbookconfig.Config, configPath, workspace string, stepOrder []
 			expandedStep.PlannedQueries = append([]string(nil), result.PlannedQueries...)
 			expandedStep.PlannedData = append([]string(nil), result.PlannedData...)
 			expandedStep.Outputs = append([]string(nil), result.OutputNames...)
+			expandedStep.PlannedOutputs = encodePlannedOutputs(result.Outputs)
 			manifest.StepOrder = append(manifest.StepOrder, expandedStep.Name)
 			manifest.Steps = append(manifest.Steps, expandedStep)
 			stepResults.Set(stepInstanceAddr(expandedStep), decodePlannedOutputsMap(expandedStep.PlannedOutputs))
 			if len(result.LoweredFiles) > 0 {
-				loweredBundle := result.LoweredFiles
-				if expandedStep.ForEachExpression != "" || expandedStep.CountExpression != "" {
-					var eachVal cty.Value
-					var countVal cty.Value
-					if expandedStep.ForEachExpression != "" {
-						eachVal = eachScopeForExpandedStep(&expandedStep)
-					}
-					if expandedStep.CountIndex != nil {
-						countVal = countScopeForExpandedStep(&expandedStep)
-					}
-					if loweredInstance, lowerDiags := runbookconfig.LowerStepInstanceWithScope(cfg, step, runbookconfig.EvalScope{
-						Variables: varScope,
-						Steps:     stepResults.ScopeValue(),
-						Workspace: workspaceScope,
-						Each:      eachVal,
-						Count:     countVal,
-					}); lowerDiags.HasErrors() {
-						return nil, diags.Append(lowerDiags), nil
-					} else if loweredInstance != nil {
-						loweredBundle = loweredInstance.Files
-					}
-				}
-				lowered[expandedStep.Name] = loweredBundle
+				lowered[expandedStep.Name] = result.LoweredFiles
 			}
 		}
 	}
@@ -142,7 +143,7 @@ func stepsByName(cfg *runbookconfig.Config) map[string]*runbookconfig.Step {
 	return ret
 }
 
-func expandStepInstances(step *runbookconfig.Step, stepName string, outputs cty.Value, plannedSteps cty.Value, workspaceScope cty.Value, varScope cty.Value) ([]runbookplanfile.Step, tfdiags.Diagnostics) {
+func expandStepInstances(step *runbookconfig.Step, stepName string, plannedSteps cty.Value, workspaceScope cty.Value, varScope cty.Value) ([]runbookplanfile.Step, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if step == nil {
 		return nil, diags
@@ -172,14 +173,14 @@ func expandStepInstances(step *runbookconfig.Step, stepName string, outputs cty.
 				Subject:  step.ForEach.Range().Ptr(),
 			})
 		}
-		return expandForEachInstances(step, stepName, val, outputs), diags
+		return expandForEachInstances(step, stepName, val), diags
 	}
 	count, countDiags := evaluateCountExpression(step.Count, runbookconfig.EvalScope{Variables: varScope, Steps: plannedSteps, Workspace: workspaceScope})
 	diags = diags.Append(countDiags)
 	if countDiags.HasErrors() {
 		return nil, diags
 	}
-	return expandCountInstances(step, stepName, count, outputs), diags
+	return expandCountInstances(step, stepName, count), diags
 }
 
 func stepInstanceAddr(step runbookplanfile.Step) runbookaddrs.StepInstance {
@@ -193,7 +194,7 @@ func stepInstanceAddr(step runbookplanfile.Step) runbookaddrs.StepInstance {
 	return base.Instance(addrs.NoKey)
 }
 
-func expandForEachInstances(step *runbookconfig.Step, stepName string, val cty.Value, outputs cty.Value) []runbookplanfile.Step {
+func expandForEachInstances(step *runbookconfig.Step, stepName string, val cty.Value) []runbookplanfile.Step {
 	keys := []string{}
 	steps := []runbookplanfile.Step{}
 	if val.Type().IsMapType() || val.Type().IsObjectType() || val.Type().IsSetType() {
@@ -210,7 +211,6 @@ func expandForEachInstances(step *runbookconfig.Step, stepName string, val cty.V
 				ForEachExpression: string(step.ForEachSrc),
 				ForEachKey:        key,
 				ForEachValue:      encodeForEachValue(vals[key]),
-				PlannedOutputs:    encodePlannedOutputs(outputs),
 				InstanceCount:     len(keys),
 			})
 		}
@@ -219,7 +219,7 @@ func expandForEachInstances(step *runbookconfig.Step, stepName string, val cty.V
 	return nil
 }
 
-func expandCountInstances(step *runbookconfig.Step, stepName string, count int, outputs cty.Value) []runbookplanfile.Step {
+func expandCountInstances(step *runbookconfig.Step, stepName string, count int) []runbookplanfile.Step {
 	steps := make([]runbookplanfile.Step, 0, count)
 	for i := 0; i < count; i++ {
 		idx := i
@@ -229,7 +229,6 @@ func expandCountInstances(step *runbookconfig.Step, stepName string, count int, 
 			BaseName:        stepName,
 			CountExpression: string(step.CountSrc),
 			CountIndex:      &idx,
-			PlannedOutputs:  encodePlannedOutputs(outputs),
 			InstanceCount:   count,
 		})
 	}
@@ -249,6 +248,28 @@ func singletonStepManifest(step *runbookconfig.Step, stepName string, after []st
 		PlannedData:    append([]string(nil), result.PlannedData...),
 		Outputs:        append([]string(nil), result.OutputNames...),
 	}
+}
+
+func evaluateInstanceOutputs(step *runbookconfig.Step, scope runbookconfig.EvalScope) cty.Value {
+	if step == nil || len(step.Outputs) == 0 {
+		return cty.EmptyObjectVal
+	}
+	scope = runbookconfig.ScopeWithStepLists(step, scope)
+	vals := map[string]cty.Value{}
+	for name, output := range step.Outputs {
+		if output == nil || output.Value == nil {
+			continue
+		}
+		val, diags := runbookconfig.EvalExpr(output.Value, scope, cty.DynamicPseudoType)
+		if diags.HasErrors() {
+			continue
+		}
+		vals[name] = val
+	}
+	if len(vals) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return cty.ObjectVal(vals)
 }
 
 func decodePlannedOutputsMap(raw map[string][]byte) cty.Value {

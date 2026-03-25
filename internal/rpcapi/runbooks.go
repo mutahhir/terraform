@@ -6,7 +6,9 @@ package rpcapi
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform-svchost/disco"
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
@@ -138,6 +140,28 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 	if providerErr != nil {
 		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize runbook providers", providerErr.Error()))
 	}
+	providerSchemas := map[addrs.Provider]providers.ProviderSchema{}
+	for addr, factory := range providerFactories {
+		provider, err := factory()
+		if err != nil {
+			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize runbook provider schema", fmt.Sprintf("Could not instantiate provider %s to validate runbook lists: %s.", addr, err)))
+			continue
+		}
+		schema := provider.GetProviderSchema()
+		_ = provider.Close()
+		if schema.Diagnostics.HasErrors() {
+			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to load runbook provider schema", fmt.Sprintf("Could not load the schema for provider %s: %s.", addr, schema.Diagnostics.Err())))
+			continue
+		}
+		providerSchemas[addr] = schema
+	}
+	plan.Evaluation.Diags = plan.Evaluation.Diags.Append(validateRunbookStepProviderBackedTypes(cfg, step, providerSchemas))
+	if plan.Evaluation.Diags.HasErrors() {
+		plan.Evaluation.Status = runbookconfig.StepStatusFailed
+		if plan.Evaluation.Detail == "" || plan.Evaluation.Detail == "conditions satisfied" {
+			plan.Evaluation.Detail = plan.Evaluation.Diags.Err().Error()
+		}
+	}
 	plannedOutputVals := plannedOutputsFromStepPlan(plan, step)
 	if evalScope, evalDiags := s.runbookEvalScope(cfg, scope, providerFactories); !evalDiags.HasErrors() {
 		if evaluated, moreDiags := evaluateRunbookOutputsWithTerraformScope(evalScope, step); len(evaluated) > 0 || !moreDiags.HasErrors() {
@@ -150,10 +174,25 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(evalDiags)
 	}
 	if plan.Lowered != nil {
-		tfPlan, lowerDiags := s.validateAndPlanLoweredStepDir(plan.Lowered.Dir, runtime)
+		providedVars := terraform.InputValuesFromCaller(scope.Variables.AsValueMap())
+		tfPlan, lowerDiags := s.validateAndPlanLoweredStepDir(plan.Lowered.Dir, runtime, providedVars, len(step.Lists) > 0)
 		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(lowerDiags)
+		if lowerDiags.HasErrors() {
+			plan.Evaluation.Status = runbookconfig.StepStatusFailed
+			if plan.Evaluation.Detail == "" || plan.Evaluation.Detail == "conditions satisfied" {
+				plan.Evaluation.Detail = lowerDiags.Err().Error()
+			}
+		}
 		if tfPlan != nil && tfPlan.Changes != nil {
-			schemas, schemaDiags := s.schemasForRunbookPlan(plan.Lowered.Dir, runtime)
+			invokeDiags := s.planRunbookExecuteInvokes(plan.Lowered.Dir, runtime, providedVars, step, tfPlan)
+			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(invokeDiags)
+			if invokeDiags.HasErrors() {
+				plan.Evaluation.Status = runbookconfig.StepStatusFailed
+				if plan.Evaluation.Detail == "" || plan.Evaluation.Detail == "conditions satisfied" {
+					plan.Evaluation.Detail = invokeDiags.Err().Error()
+				}
+			}
+			schemas, schemaDiags := s.schemasForRunbookPlan(plan.Lowered.Dir, runtime, providedVars)
 			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(schemaDiags)
 			for _, q := range tfPlan.Changes.Queries {
 				count := int64(0)
@@ -504,7 +543,7 @@ func stepStatusToProto(status runbookconfig.StepStatus) runbooks.StepStatus {
 	}
 }
 
-func (s *runbooksServer) validateAndPlanLoweredStepDir(dir string, runtime *runbookRuntime) (*plans.Plan, tfdiags.Diagnostics) {
+func (s *runbooksServer) validateAndPlanLoweredStepDir(dir string, runtime *runbookRuntime, provided terraform.InputValues, query bool) (*plans.Plan, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	loader, err := configload.NewLoader(&configload.Config{
 		ModulesDir:        dir + "/.terraform/modules",
@@ -518,10 +557,7 @@ func (s *runbooksServer) validateAndPlanLoweredStepDir(dir string, runtime *runb
 	if rootMod == nil || hclDiags.HasErrors() {
 		return nil, diags
 	}
-	inputValues := make(terraform.InputValues)
-	for name := range rootMod.Variables {
-		inputValues[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
-	}
+	inputValues := rootModuleInputValues(rootMod.Variables, provided)
 	config, buildDiags := terraform.BuildConfigWithGraph(rootMod, loader.ModuleWalker(), inputValues, configs.MockDataLoaderFunc(loader.LoadExternalMockData))
 	diags = diags.Append(buildDiags)
 	if config == nil {
@@ -542,9 +578,14 @@ func (s *runbooksServer) validateAndPlanLoweredStepDir(dir string, runtime *runb
 	if ctxDiags.HasErrors() {
 		return nil, diags
 	}
+	validateDiags := tfCtx.Validate(config, &terraform.ValidateOpts{Query: query})
+	diags = diags.Append(validateDiags)
+	if validateDiags.HasErrors() {
+		return nil, diags
+	}
 	plan, planDiags := tfCtx.Plan(config, states.NewState(), &terraform.PlanOpts{
 		Mode:         plans.NormalMode,
-		Query:        true,
+		Query:        query,
 		SetVariables: inputValues,
 	})
 	if plan != nil && plan.Changes != nil && len(plan.Changes.Queries) == 0 {
@@ -558,7 +599,7 @@ func (s *runbooksServer) validateAndPlanLoweredStepDir(dir string, runtime *runb
 	return plan, diags
 }
 
-func (s *runbooksServer) schemasForRunbookPlan(dir string, runtime *runbookRuntime) (*terraform.Schemas, tfdiags.Diagnostics) {
+func (s *runbooksServer) schemasForRunbookPlan(dir string, runtime *runbookRuntime, provided terraform.InputValues) (*terraform.Schemas, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	loader, err := configload.NewLoader(&configload.Config{
 		ModulesDir:        dir + "/.terraform/modules",
@@ -572,10 +613,7 @@ func (s *runbooksServer) schemasForRunbookPlan(dir string, runtime *runbookRunti
 	if rootMod == nil || hclDiags.HasErrors() {
 		return nil, diags
 	}
-	inputValues := make(terraform.InputValues)
-	for name := range rootMod.Variables {
-		inputValues[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
-	}
+	inputValues := rootModuleInputValues(rootMod.Variables, provided)
 	config, buildDiags := terraform.BuildConfigWithGraph(rootMod, loader.ModuleWalker(), inputValues, configs.MockDataLoaderFunc(loader.LoadExternalMockData))
 	diags = diags.Append(buildDiags)
 	if config == nil {
@@ -614,6 +652,157 @@ func schemaForPlannedQuery(schemas *terraform.Schemas, q *plans.QueryInstanceSrc
 		return nil
 	}
 	return &schema
+}
+
+func validateRunbookStepProviderBackedTypes(cfg *runbookconfig.Config, step *runbookconfig.Step, providerSchemas map[addrs.Provider]providers.ProviderSchema) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if cfg == nil || step == nil {
+		return diags
+	}
+	for _, list := range step.Lists {
+		if list == nil {
+			continue
+		}
+		providerName := list.Provider
+		if providerName == "" {
+			providerName = addrs.Resource{Mode: addrs.ListResourceMode, Type: list.Type, Name: list.Name}.ImpliedProvider()
+		}
+		providerAddr := providerForRunbookList(cfg, providerName)
+		schema, ok := providerSchemas[providerAddr]
+		if !ok {
+			continue
+		}
+		if _, ok := schema.ListResourceTypes[list.Type]; ok {
+			continue
+		}
+		diags = diags.Append((&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Unsupported list resource type",
+			Detail:   fmt.Sprintf("The provider %s does not support list resource %q.", providerAddr, list.Type),
+			Subject:  list.DeclRange.ToHCL().Ptr(),
+		}))
+	}
+	return diags
+}
+
+func providerForRunbookList(cfg *runbookconfig.Config, providerName string) addrs.Provider {
+	if cfg != nil && cfg.Runbook != nil {
+		for _, req := range cfg.Runbook.RequiredProviders {
+			if req.Name == providerName && req.Source != "" {
+				if provider, diags := addrs.ParseProviderSourceString(req.Source); !diags.HasErrors() {
+					return provider
+				}
+			}
+		}
+	}
+	return addrs.ImpliedProviderForUnqualifiedType(providerName)
+}
+
+func rootModuleInputValues(decls map[string]*configs.Variable, provided terraform.InputValues) terraform.InputValues {
+	ret := make(terraform.InputValues, len(decls))
+	for name := range decls {
+		if provided != nil {
+			if value, ok := provided[name]; ok && value != nil {
+				ret[name] = value
+				continue
+			}
+		}
+		ret[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
+	}
+	return ret
+}
+
+func (s *runbooksServer) planRunbookExecuteInvokes(dir string, runtime *runbookRuntime, provided terraform.InputValues, step *runbookconfig.Step, tfPlan *plans.Plan) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if step == nil || len(step.ExecuteInvokes) == 0 {
+		return diags
+	}
+	planConfig, inputValues, loadDiags := loadLoweredStepConfigForRunbook(dir, runtime, provided)
+	diags = diags.Append(loadDiags)
+	if loadDiags.HasErrors() || planConfig == nil {
+		return diags
+	}
+	providerFactories := map[addrs.Provider]providers.Factory{}
+	if s != nil && s.providerCacheOverride != nil {
+		providerFactories = s.providerCacheOverride
+	} else if runtime != nil {
+		var err error
+		providerFactories, err = providerFactoriesForLocks(runtime.Locks, runtime.ProviderCache)
+		if err != nil {
+			return diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize runbook providers", err.Error()))
+		}
+	}
+	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1, Providers: providerFactories})
+	diags = diags.Append(ctxDiags)
+	if ctxDiags.HasErrors() {
+		return diags
+	}
+	for _, invoke := range step.ExecuteInvokes {
+		if invoke == nil {
+			continue
+		}
+		target, targetDiags := runbookActionTarget(invoke.ActionRef)
+		diags = diags.Append(targetDiags)
+		if targetDiags.HasErrors() {
+			continue
+		}
+		invokePlan, invokePlanDiags := tfCtx.Plan(planConfig, states.NewState(), &terraform.PlanOpts{
+			Mode:          plans.RefreshOnlyMode,
+			ActionTargets: []addrs.Targetable{target},
+			SetVariables:  inputValues,
+		})
+		diags = diags.Append(invokePlanDiags)
+		if invokePlanDiags.HasErrors() {
+			continue
+		}
+		if invokePlan == nil || invokePlan.Changes == nil || len(invokePlan.Changes.ActionInvocations) == 0 {
+			diags = diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to plan runbook action invocation", fmt.Sprintf("Runbook action %s did not produce an action invocation during planning.", invoke.ActionRef)))
+		}
+	}
+	_ = tfPlan
+	return diags
+}
+
+func loadLoweredStepConfigForRunbook(dir string, runtime *runbookRuntime, provided terraform.InputValues) (*configs.Config, terraform.InputValues, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	loader, err := configload.NewLoader(&configload.Config{ModulesDir: dir + "/.terraform/modules", IncludeQueryFiles: true})
+	if err != nil {
+		return nil, nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to initialize lowered step loader", err.Error()))
+	}
+	rootMod, hclDiags := loader.LoadRootModule(dir)
+	diags = diags.Append(hclDiags)
+	if rootMod == nil || hclDiags.HasErrors() {
+		return nil, nil, diags
+	}
+	inputValues := rootModuleInputValues(rootMod.Variables, provided)
+	config, buildDiags := terraform.BuildConfigWithGraph(rootMod, loader.ModuleWalker(), inputValues, configs.MockDataLoaderFunc(loader.LoadExternalMockData))
+	diags = diags.Append(buildDiags)
+	if config == nil {
+		return nil, nil, diags
+	}
+	_ = runtime
+	return config, inputValues, diags
+}
+
+func runbookActionTarget(ref string) (addrs.Targetable, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	if strings.HasPrefix(ref, "workspace.") {
+		ref = strings.TrimPrefix(ref, "workspace.")
+	}
+	if strings.Contains(ref, "[") {
+		addr, addrDiags := addrs.ParseAbsActionInstanceStr(ref)
+		diags = diags.Append(addrDiags)
+		if addrDiags.HasErrors() {
+			return nil, diags
+		}
+		return addr, diags
+	}
+	addr, addrDiags := addrs.ParseAbsActionStr(ref)
+	diags = diags.Append(addrDiags)
+	if addrDiags.HasErrors() {
+		return nil, diags
+	}
+	return addr, diags
 }
 
 func (s *runbooksServer) lookupRunbookRuntime(runtimeHandle int64) (*runbookRuntime, error) {
