@@ -203,10 +203,10 @@ func evaluateRunbookOutputsWithTerraformScope(scope *lang.Scope, step *runbookco
 			continue
 		}
 		val, moreDiags := scope.EvalExpr(output.Value, cty.DynamicPseudoType)
-		diags = diags.Append(moreDiags)
 		if moreDiags.HasErrors() {
 			continue
 		}
+		diags = diags.Append(moreDiags)
 		ret[name] = val
 	}
 	return ret, diags
