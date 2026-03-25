@@ -111,6 +111,7 @@ type List struct {
 	Name      string
 	Config    hcl.Body
 	Src       []byte
+	Provider  string
 	DeclRange tfdiags.SourceRange
 }
 
@@ -897,6 +898,17 @@ func decodeRunbookListBlock(src []byte, block *hcl.Block, syntaxBlock *hclsyntax
 		Config:    block.Body,
 		Src:       sourceSlice(src, syntaxBlockRange(block, syntaxBlock)),
 		DeclRange: tfdiags.SourceRangeFromHCL(block.DefRange),
+	}
+	content, _, moreDiags := block.Body.PartialContent(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "provider"}}})
+	diags = diags.Append(moreDiags)
+	if content != nil {
+		if attr, exists := content.Attributes["provider"]; exists {
+			traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
+			diags = diags.Append(travDiags)
+			if !travDiags.HasErrors() && len(traversal) > 0 {
+				ret.Provider = traversal.RootName()
+			}
+		}
 	}
 	if !hclsyntax.ValidIdentifier(ret.Type) {
 		diags = diags.Append(&hcl.Diagnostic{
