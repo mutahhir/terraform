@@ -49,6 +49,24 @@ type runbookStepPlanningFailedError struct {
 	stepName string
 }
 
+type runbookPlanArgs struct {
+	OutPath string
+	Vars    arguments.Vars
+}
+
+type runbookExecuteArgs struct {
+	PlanPath string
+	Vars     arguments.Vars
+}
+
+type builtRunbookPlan struct {
+	Manifest  *runbookplanfile.Plan
+	Lowered   map[string]map[string][]byte
+	Sources   map[string][]byte
+	StateFile *statefile.File
+	Config    *runbookconfig.Config
+}
+
 type runbookActionOutputHook struct {
 	terraform.NilHook
 	outputs map[string]*strings.Builder
@@ -115,9 +133,8 @@ func (c *RunbookCommand) Help() string {
 	return strings.TrimSpace(`
 Usage: terraform [global options] runbook <subcommand>
 
-  init   Validate the runbook and initialize local runbook state.
-  plan   Generate a multi-step runbook plan file from local runbook state.
-	  execute Execute a persisted multi-step runbook plan file.
+	  plan    Generate a multi-step runbook plan.
+	  execute Execute a runbook plan or create one and execute it.
 `)
 }
 
@@ -127,78 +144,107 @@ func (c *RunbookCommand) Synopsis() string {
 
 func (c *RunbookCommand) Run(args []string) int {
 	args = c.Meta.process(args)
-	if len(args) != 1 {
+	if len(args) < 1 {
 		c.Ui.Error(c.Help())
 		return 1
 	}
 
 	switch args[0] {
-	case "init":
-		return c.runInit()
 	case "plan":
-		return c.runPlan()
+		return c.runPlan(args[1:])
 	case "execute":
-		return c.runExecute()
+		return c.runExecute(args[1:])
 	default:
 		c.Ui.Error(c.Help())
 		return 1
 	}
 }
 
-func (c *RunbookCommand) runInit() int {
-	statePath := c.runbookStatePath()
-	if state, err := c.loadRunbookState(); err == nil && state != nil && state.Status == "in_progress" {
-		c.Ui.Error(fmt.Sprintf("An in-progress runbook state already exists at %s. Run 'terraform runbook plan' or remove it before starting again.", statePath))
+func (c *RunbookCommand) runPlan(args []string) int {
+	parsed, diags := c.parseRunbookPlanArgs(args)
+	if diags.HasErrors() {
+		c.Ui.Error(diags.Err().Error())
 		return 1
 	}
-	_ = c.removeRunbookState()
+	var varDiags tfdiags.Diagnostics
+	c.VariableValues, varDiags = parsed.Vars.CollectValues(func(string, []byte) {})
+	if varDiags.HasErrors() {
+		c.Ui.Error(varDiags.Err().Error())
+		return 1
+	}
+	built, ok := c.buildRunbookPlan(context.Background())
+	if !ok {
+		return 1
+	}
+	for _, line := range strings.Split(formatPlanSummary(c.Colorize(), built.Manifest), "\n") {
+		if line == "" {
+			c.Ui.Output("")
+			continue
+		}
+		c.Ui.Output(line)
+	}
+	if parsed.OutPath != "" {
+		if err := runbookplanfile.Create(parsed.OutPath, runbookplanfile.CreateArgs{Plan: built.Manifest, StateFile: built.StateFile, Lowered: built.Lowered, Sources: built.Sources}); err != nil {
+			c.Ui.Error(fmt.Sprintf("Failed to write runbook plan file: %s", err))
+			return 1
+		}
+		c.Ui.Output("")
+		c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][green]Saved runbook plan:[reset] %s", parsed.OutPath)))
+	}
+	return 0
+}
 
-	ctx := context.Background()
+func (c *RunbookCommand) buildRunbookPlan(ctx context.Context) (*builtRunbookPlan, bool) {
 	client, err := rpcapi.NewInternalClient(ctx, &setup.ClientCapabilities{})
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to start Terraform RPC client: %s", err))
-		return 1
+		return nil, false
 	}
 	defer client.Close(ctx)
-	core := &rpcapi.GRPCCoreClient{}
-	_ = core
 	if client.ServerCapabilities() == nil {
 		c.Ui.Error("Failed to complete RPC handshake")
-		return 1
+		return nil, false
 	}
-
 	configPath := c.WorkingDir.RootModuleDir()
+
 	openResp, err := client.Runbooks().OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to open runbook configuration: %s", err))
-		return 1
+		return nil, false
 	}
 	if len(openResp.Diagnostics) > 0 {
 		for _, diag := range openResp.Diagnostics {
 			c.Ui.Error(diag.Summary + ": " + diag.Detail)
 		}
 		if openResp.RunbookConfigHandle == 0 {
-			return 1
+			return nil, false
 		}
 	}
 
-	runtimeHandle, cleanupRuntime, err := c.openRunbookRuntimeInternal(ctx, client)
+	runbookRuntimeHandle, cleanupRuntime, err := c.openRunbookRuntimeInternal(ctx, client)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to open runbook runtime: %s", err))
-		return 1
+		return nil, false
 	}
 	defer cleanupRuntime()
-	_ = runtimeHandle // initialization/validation side effect for now
+
+	stepsResp, err := client.Runbooks().FindRunbookConfigurationSteps(ctx, &runbooks.FindRunbookConfigurationSteps_Request{
+		RunbookConfigHandle: openResp.RunbookConfigHandle,
+	})
+	if err != nil {
+		c.Ui.Error(fmt.Sprintf("Failed to inspect runbook steps: %s", err))
+		return nil, false
+	}
 
 	rawCfg, loadDiags := runbookconfig.LoadConfigDir(configPath)
 	if loadDiags.HasErrors() {
 		c.Ui.Error(loadDiags.Err().Error())
-		return 1
+		return nil, false
 	}
 	stepDeps, depDiags := runbookconfig.AnalyzeDependencies(rawCfg)
 	if depDiags.HasErrors() {
 		c.Ui.Error(depDiags.Err().Error())
-		return 1
+		return nil, false
 	}
 	stepNames := make([]string, 0, len(stepDeps.Dependencies))
 	for name := range stepDeps.Dependencies {
@@ -209,87 +255,7 @@ func (c *RunbookCommand) runInit() int {
 	workspaceName, err := c.Workspace()
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to determine workspace: %s", err))
-		return 1
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	state := &localRunbookState{
-		Version:      1,
-		Status:       "in_progress",
-		ConfigPath:   configPath,
-		Workspace:    workspaceName,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		StepOrder:    ordered,
-		Dependencies: stepDeps.Dependencies,
-	}
-	if err := c.saveRunbookState(state); err != nil {
-		c.Ui.Error(fmt.Sprintf("Failed to write runbook state: %s", err))
-		return 1
-	}
-
-	c.Ui.Output(c.Colorize().Color("[bold][green]Runbook initialized.[reset]"))
-	c.Ui.Output("")
-	c.Ui.Output(fmt.Sprintf("State file: %s", statePath))
-	c.Ui.Output(fmt.Sprintf("Validated steps: %d", len(ordered)))
-	return 0
-}
-
-func (c *RunbookCommand) runPlan() int {
-	state, err := c.loadRunbookState()
-	if err != nil {
-		if os.IsNotExist(err) {
-			c.Ui.Error("No runbook state exists. Run 'terraform runbook init' first.")
-			return 1
-		}
-		c.Ui.Error(fmt.Sprintf("Failed to read runbook state: %s", err))
-		return 1
-	}
-
-	ctx := context.Background()
-	client, err := rpcapi.NewInternalClient(ctx, &setup.ClientCapabilities{})
-	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Failed to start Terraform RPC client: %s", err))
-		return 1
-	}
-	defer client.Close(ctx)
-	if client.ServerCapabilities() == nil {
-		c.Ui.Error("Failed to complete RPC handshake")
-		return 1
-	}
-
-	openResp, err := client.Runbooks().OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: state.ConfigPath})
-	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Failed to open runbook configuration: %s", err))
-		return 1
-	}
-	if len(openResp.Diagnostics) > 0 {
-		for _, diag := range openResp.Diagnostics {
-			c.Ui.Error(diag.Summary + ": " + diag.Detail)
-		}
-		if openResp.RunbookConfigHandle == 0 {
-			return 1
-		}
-	}
-
-	runbookRuntimeHandle, cleanupRuntime, err := c.openRunbookRuntimeInternal(ctx, client)
-	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Failed to open runbook runtime: %s", err))
-		return 1
-	}
-	defer cleanupRuntime()
-
-	stepsResp, err := client.Runbooks().FindRunbookConfigurationSteps(ctx, &runbooks.FindRunbookConfigurationSteps_Request{
-		RunbookConfigHandle: openResp.RunbookConfigHandle,
-	})
-	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Failed to inspect runbook steps: %s", err))
-		return 1
-	}
-
-	rawCfg, loadDiags := runbookconfig.LoadConfigDir(state.ConfigPath)
-	if loadDiags.HasErrors() {
-		c.Ui.Error(loadDiags.Err().Error())
-		return 1
+		return nil, false
 	}
 	rawSteps := make(map[string]*runbookconfig.Step)
 	for _, file := range rawCfg.Files {
@@ -300,26 +266,25 @@ func (c *RunbookCommand) runPlan() int {
 	varScope, runbookInputs, varDiags := c.loadRunbookVariableValues(rawCfg)
 	if varDiags.HasErrors() {
 		c.Ui.Error(varDiags.Err().Error())
-		return 1
+		return nil, false
 	}
 	workspaceScope, workspaceDiags := c.buildWorkspaceScope(ctx)
 	if workspaceDiags.HasErrors() {
 		c.Ui.Error(workspaceDiags.Err().Error())
-		return 1
+		return nil, false
 	}
 	providerFactories, providerErr := c.ProviderFactories()
 	if providerErr != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to initialize providers for runbook plan: %s", providerErr))
-		return 1
+		return nil, false
 	}
 	stateFile, stateFileDiags := c.buildWorkspaceStateFile(ctx)
 	if stateFileDiags.HasErrors() {
 		c.Ui.Error(stateFileDiags.Err().Error())
-		return 1
+		return nil, false
 	}
-	_ = stateFile
 
-	buildResult, buildDiags, buildErr := runbookplan.Build(rawCfg, state.ConfigPath, state.Workspace, state.StepOrder, state.Dependencies, varScope, workspaceScope, func(stepName string, scope runbookconfig.EvalScope) (runbookplan.StepPlanResult, error) {
+	buildResult, buildDiags, buildErr := runbookplan.Build(rawCfg, configPath, workspaceName, ordered, stepDeps.Dependencies, varScope, workspaceScope, func(stepName string, scope runbookconfig.EvalScope) (runbookplan.StepPlanResult, error) {
 		rawStep := rawSteps[stepName]
 		step := stepsResp.Config.Steps[stepName]
 		c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[cyan]Planning step:[reset] %s", stepName)))
@@ -371,48 +336,59 @@ func (c *RunbookCommand) runPlan() int {
 	if buildErr != nil {
 		var stepErr runbookStepPlanningFailedError
 		if errors.As(buildErr, &stepErr) {
-			return 1
+			return nil, false
 		}
 		c.Ui.Error(buildErr.Error())
-		return 1
+		return nil, false
 	}
 	if buildDiags.HasErrors() {
 		c.Ui.Error(buildDiags.Err().Error())
-		return 1
+		return nil, false
 	}
 	manifest := buildResult.Manifest
 	manifest.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	lowered := buildResult.Lowered
-
-	planPath := c.runbookPlanPath()
-	sources, sourceErr := c.readRunbookSourceFiles(state.ConfigPath)
+	sources, sourceErr := c.readRunbookSourceFiles(configPath)
 	if sourceErr != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to read runbook source files: %s", sourceErr))
-		return 1
+		return nil, false
 	}
-	if err := runbookplanfile.Create(planPath, runbookplanfile.CreateArgs{Plan: manifest, StateFile: stateFile, Lowered: lowered, Sources: sources}); err != nil {
-		c.Ui.Error(fmt.Sprintf("Failed to write runbook plan file: %s", err))
-		return 1
-	}
-
-	for _, line := range strings.Split(formatPlanSummary(c.Colorize(), manifest), "\n") {
-		if line == "" {
-			c.Ui.Output("")
-			continue
-		}
-		c.Ui.Output(line)
-	}
-	c.Ui.Output("")
-	c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][green]Saved runbook plan:[reset] %s", planPath)))
-	return 0
+	return &builtRunbookPlan{Manifest: manifest, Lowered: lowered, Sources: sources, StateFile: stateFile, Config: rawCfg}, true
 }
 
-func (c *RunbookCommand) runExecute() int {
-	planPath := c.runbookPlanPath()
-	r, err := runbookplanfile.Open(planPath)
+func (c *RunbookCommand) runExecute(args []string) int {
+	parsed, diags := c.parseRunbookExecuteArgs(args)
+	if diags.HasErrors() {
+		c.Ui.Error(diags.Err().Error())
+		return 1
+	}
+	var varDiags tfdiags.Diagnostics
+	c.VariableValues, varDiags = parsed.Vars.CollectValues(func(string, []byte) {})
+	if varDiags.HasErrors() {
+		c.Ui.Error(varDiags.Err().Error())
+		return 1
+	}
+	if parsed.PlanPath == "" {
+		built, ok := c.buildRunbookPlan(context.Background())
+		if !ok {
+			return 1
+		}
+		for _, line := range strings.Split(formatPlanSummary(c.Colorize(), built.Manifest), "\n") {
+			if line == "" {
+				c.Ui.Output("")
+				continue
+			}
+			c.Ui.Output(line)
+		}
+		c.Ui.Output("")
+		return c.executeRunbookPlanData(built.Manifest, built.Sources, built.StateFile, func(stepName string) (map[string][]byte, error) {
+			return built.Lowered[stepName], nil
+		})
+	}
+	r, err := runbookplanfile.Open(parsed.PlanPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			c.Ui.Error("No runbook plan exists. Run 'terraform runbook plan' first.")
+			c.Ui.Error(fmt.Sprintf("No runbook plan exists at %s.", parsed.PlanPath))
 			return 1
 		}
 		c.Ui.Error(fmt.Sprintf("Failed to open runbook plan file: %s", err))
@@ -435,7 +411,10 @@ func (c *RunbookCommand) runExecute() int {
 		c.Ui.Error(fmt.Sprintf("Failed to read embedded runbook state: %s", err))
 		return 1
 	}
+	return c.executeRunbookPlanData(manifest, sources, stateFile, r.ReadLoweredStepFiles)
+}
 
+func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, sources map[string][]byte, stateFile *statefile.File, loweredReader func(string) (map[string][]byte, error)) int {
 	rawCfg, loadDiags := runbookconfig.LoadConfigSources(manifest.ConfigPath, sources)
 	if loadDiags.HasErrors() {
 		c.Ui.Error(loadDiags.Err().Error())
@@ -491,7 +470,7 @@ func (c *RunbookCommand) runExecute() int {
 			return 1
 		}
 
-		loweredFiles, err := r.ReadLoweredStepFiles(stepName)
+		loweredFiles, err := loweredReader(stepName)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf("Failed to read lowered files for step %q: %s", stepName, err))
 			return 1
@@ -673,6 +652,50 @@ func (c *RunbookCommand) runExecute() int {
 
 	c.Ui.Output(c.Colorize().Color("[bold][green]Runbook apply complete.[reset]"))
 	return 0
+}
+
+func (c *RunbookCommand) parseRunbookPlanArgs(args []string) (*runbookPlanArgs, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	ret := &runbookPlanArgs{}
+	cmdFlags := c.defaultFlagSet("runbook plan")
+	cmdFlags.StringVar(&ret.OutPath, "out", "", "out")
+	varsFlags := arguments.NewFlagNameValueSlice("-var")
+	varFilesFlags := varsFlags.Alias("-var-file")
+	ret.Vars = runbookVarsFromFlags(&varsFlags, &varFilesFlags)
+	cmdFlags.Var(&varsFlags, "var", "var")
+	cmdFlags.Var(&varFilesFlags, "var-file", "var-file")
+	if err := cmdFlags.Parse(args); err != nil {
+		diags = diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to parse command-line flags", err.Error()))
+	}
+	if len(cmdFlags.Args()) > 0 {
+		diags = diags.Append(tfdiags.Sourceless(tfdiags.Error, "Too many command line arguments", "To save a runbook plan file, use the -out flag."))
+	}
+	return ret, diags
+}
+
+func (c *RunbookCommand) parseRunbookExecuteArgs(args []string) (*runbookExecuteArgs, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	ret := &runbookExecuteArgs{}
+	cmdFlags := c.defaultFlagSet("runbook execute")
+	varsFlags := arguments.NewFlagNameValueSlice("-var")
+	varFilesFlags := varsFlags.Alias("-var-file")
+	ret.Vars = runbookVarsFromFlags(&varsFlags, &varFilesFlags)
+	cmdFlags.Var(&varsFlags, "var", "var")
+	cmdFlags.Var(&varFilesFlags, "var-file", "var-file")
+	if err := cmdFlags.Parse(args); err != nil {
+		diags = diags.Append(tfdiags.Sourceless(tfdiags.Error, "Failed to parse command-line flags", err.Error()))
+	}
+	remaining := cmdFlags.Args()
+	if len(remaining) > 1 {
+		diags = diags.Append(tfdiags.Sourceless(tfdiags.Error, "Too many command line arguments", "Expected at most one runbook plan file path."))
+	} else if len(remaining) == 1 {
+		ret.PlanPath = remaining[0]
+	}
+	return ret, diags
+}
+
+func runbookVarsFromFlags(varsFlags, varFilesFlags *arguments.FlagNameValueSlice) arguments.Vars {
+	return arguments.VarsFromFlagSlices(varsFlags, varFilesFlags)
 }
 
 func (c *RunbookCommand) openRunbookRuntimeInternal(ctx context.Context, client *rpcapi.Client) (int64, func(), error) {

@@ -4,13 +4,10 @@
 package command
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookplanfile"
@@ -20,59 +17,11 @@ import (
 )
 
 const (
-	runbookStateFilename = "runbook-state.json"
-	runbookPlanFilename  = "runbook.tfrunplan"
+	runbookPlanFilename = "runbook.tfrunplan"
 )
-
-type localRunbookState struct {
-	Version      int                 `json:"version"`
-	Status       string              `json:"status"`
-	ConfigPath   string              `json:"config_path"`
-	Workspace    string              `json:"workspace"`
-	CreatedAt    string              `json:"created_at"`
-	UpdatedAt    string              `json:"updated_at"`
-	StepOrder    []string            `json:"step_order"`
-	Dependencies map[string][]string `json:"dependencies"`
-}
-
-func (c *RunbookCommand) runbookStatePath() string {
-	return filepath.Join(c.DataDir(), runbookStateFilename)
-}
 
 func (c *RunbookCommand) runbookPlanPath() string {
 	return filepath.Join(c.DataDir(), runbookPlanFilename)
-}
-
-func (c *RunbookCommand) loadRunbookState() (*localRunbookState, error) {
-	src, err := os.ReadFile(c.runbookStatePath())
-	if err != nil {
-		return nil, err
-	}
-	var state localRunbookState
-	if err := json.Unmarshal(src, &state); err != nil {
-		return nil, err
-	}
-	return &state, nil
-}
-
-func (c *RunbookCommand) saveRunbookState(state *localRunbookState) error {
-	if err := os.MkdirAll(c.DataDir(), 0o755); err != nil {
-		return err
-	}
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	buf, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	buf = append(buf, '\n')
-	return os.WriteFile(c.runbookStatePath(), buf, 0o600)
-}
-
-func (c *RunbookCommand) removeRunbookState() error {
-	if err := os.Remove(c.runbookStatePath()); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
 }
 
 func persistedStepFromPlan(stepName string, after []string, rawStepOutputs []string, planResp *runbooks.PlanRunbookStep_Response, rawActions, rawQueries []string, rawData []string) runbookplanfile.Step {

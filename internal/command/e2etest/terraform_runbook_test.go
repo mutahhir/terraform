@@ -97,20 +97,6 @@ func TestRunbookPlan(t *testing.T) {
 	}
 	_ = stdout
 
-	stdout, stderr, err = tf.Run("runbook", "init")
-	if err != nil {
-		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
-	}
-	if !strings.Contains(stdout, "Runbook initialized.") {
-		t.Fatalf("missing runbook init confirmation:\n%s", stdout)
-	}
-	if strings.Contains(stdout, "Steps: ") || strings.Contains(stdout, " -> ") {
-		t.Fatalf("init should not print planning-style step order:\n%s", stdout)
-	}
-	if _, err := os.Stat(tf.Path(".terraform", "runbook-state.json")); err != nil {
-		t.Fatalf("expected runbook state file to exist: %s", err)
-	}
-
 	stdout, stderr, err = tf.Run("runbook", "plan")
 	if err != nil {
 		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
@@ -134,14 +120,21 @@ func TestRunbookPlan(t *testing.T) {
 	if !strings.Contains(stdout, "Plan:") || !strings.Contains(stdout, "1 to execute, 0 to skip.") {
 		t.Fatalf("missing runbook plan footer summary:\n%s", stdout)
 	}
+	if strings.Contains(stdout, "Saved runbook plan:") {
+		t.Fatalf("plan should not save without -out:\n%s", stdout)
+	}
+	if _, err := os.Stat(tf.Path(".terraform", "runbook.tfrunplan")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect default runbook plan file: %v", err)
+	}
+	stdout, stderr, err = tf.Run("runbook", "plan", "-out=.terraform/runbook.tfrunplan")
+	if err != nil {
+		t.Fatalf("unexpected runbook plan -out error: %s\nstderr:\n%s", err, stderr)
+	}
 	if !strings.Contains(stdout, "Saved runbook plan:") {
 		t.Fatalf("missing saved runbook plan message:\n%s", stdout)
 	}
-	if _, err := os.Stat(tf.Path(".terraform", "runbook.tfrunplan")); err != nil {
-		t.Fatalf("expected runbook plan file to exist: %s", err)
-	}
 
-	stdout, stderr, err = tf.Run("runbook", "execute")
+	stdout, stderr, err = tf.Run("runbook", "execute", ".terraform/runbook.tfrunplan")
 	if err != nil {
 		t.Fatalf("unexpected runbook execute error: %s\nstderr:\n%s", err, stderr)
 	}
@@ -208,10 +201,6 @@ func TestRunbookExecuteMultiStep(t *testing.T) {
 	}
 	_ = stdout
 
-	stdout, stderr, err = tf.Run("runbook", "init")
-	if err != nil {
-		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
-	}
 	stdout, stderr, err = tf.Run("runbook", "plan")
 	if err != nil {
 		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
@@ -289,9 +278,6 @@ func TestRunbookPlanForEachStepExpansion(t *testing.T) {
 	if _, stderr, err := tf.Run("init"); err != nil {
 		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
 	}
-	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
-		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
-	}
 	stdout, stderr, err := tf.Run("runbook", "plan")
 	if err != nil {
 		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
@@ -355,12 +341,6 @@ func TestRunbookExecuteForEachStepExpansion(t *testing.T) {
 
 	if _, stderr, err := tf.Run("init"); err != nil {
 		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
-	}
-	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
-		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
-	}
-	if _, stderr, err := tf.Run("runbook", "plan"); err != nil {
-		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
 	}
 	stdout, stderr, err := tf.Run("runbook", "execute")
 	if err != nil {
@@ -426,9 +406,6 @@ func TestRunbookPlanCountStepExpansion(t *testing.T) {
 	if _, stderr, err := tf.Run("init"); err != nil {
 		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
 	}
-	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
-		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
-	}
 	stdout, stderr, err := tf.Run("runbook", "plan")
 	if err != nil {
 		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
@@ -489,12 +466,6 @@ func TestRunbookExecuteCountStepExpansion(t *testing.T) {
 
 	if _, stderr, err := tf.Run("init"); err != nil {
 		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
-	}
-	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
-		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
-	}
-	if _, stderr, err := tf.Run("runbook", "plan"); err != nil {
-		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
 	}
 	stdout, stderr, err := tf.Run("runbook", "execute")
 	if err != nil {
@@ -584,12 +555,6 @@ func TestRunbookExecuteStreamsActionOutput(t *testing.T) {
 	if _, stderr, err := tf.Run("init"); err != nil {
 		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
 	}
-	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
-		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
-	}
-	if _, stderr, err := tf.Run("runbook", "plan"); err != nil {
-		t.Fatalf("unexpected runbook plan error: %s\nstderr:\n%s", err, stderr)
-	}
 	stdout, stderr, err := tf.Run("runbook", "execute")
 	if err != nil {
 		t.Fatalf("unexpected runbook execute error: %s\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
@@ -653,9 +618,6 @@ func TestRunbookPlanFailsFastOnStepPlanningError(t *testing.T) {
 
 	if _, stderr, err := tf.Run("init"); err != nil {
 		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
-	}
-	if _, stderr, err := tf.Run("runbook", "init"); err != nil {
-		t.Fatalf("unexpected runbook init error: %s\nstderr:\n%s", err, stderr)
 	}
 	stdout, stderr, err := tf.Run("runbook", "plan")
 	if err == nil {

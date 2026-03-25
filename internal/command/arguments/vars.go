@@ -52,6 +52,13 @@ type Vars struct {
 	varFiles *FlagNameValueSlice
 }
 
+func VarsFromFlagSlices(vars, varFiles *FlagNameValueSlice) Vars {
+	return Vars{
+		vars:     vars,
+		varFiles: varFiles,
+	}
+}
+
 func (v *Vars) All() []FlagNameValue {
 	if v.vars == nil {
 		return nil
