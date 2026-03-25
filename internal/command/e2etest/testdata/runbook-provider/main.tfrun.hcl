@@ -50,7 +50,16 @@ step "invoke_resource" {
     }
   }
 
+  postcondition {
+    condition     = strcontains(action.simple_action.target.output, "Hello world!")
+    error_message = "action output must be available after execution"
+  }
+
   output "invoked" {
     value = true
+  }
+
+  output "action_output" {
+    value = action.simple_action.target.output
   }
 }

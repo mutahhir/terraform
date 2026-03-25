@@ -260,6 +260,9 @@ func evaluateInstanceOutputs(step *runbookconfig.Step, scope runbookconfig.EvalS
 		if output == nil || output.Value == nil {
 			continue
 		}
+		if runbookconfig.ExprReferencesRunbookActionOutput(output.Value) {
+			continue
+		}
 		val, diags := runbookconfig.EvalExpr(output.Value, scope, cty.DynamicPseudoType)
 		if diags.HasErrors() {
 			continue

@@ -477,6 +477,7 @@ func (s simple) PlanAction(providers.PlanActionRequest) providers.PlanActionResp
 func (s simple) InvokeAction(providers.InvokeActionRequest) providers.InvokeActionResponse {
 	events := []providers.InvokeActionEvent{
 		providers.InvokeActionEvent_Progress{Message: "Hello world!"},
+		providers.InvokeActionEvent_Progress{Message: "Done."},
 		providers.InvokeActionEvent_Completed{},
 	}
 	return providers.InvokeActionResponse{

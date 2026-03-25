@@ -199,6 +199,9 @@ func evaluateRunbookOutputsWithTerraformScope(scope *lang.Scope, step *runbookco
 		if output == nil || output.Value == nil {
 			continue
 		}
+		if runbookconfig.ExprReferencesRunbookActionOutput(output.Value) {
+			continue
+		}
 		val, moreDiags := scope.EvalExpr(output.Value, cty.DynamicPseudoType)
 		diags = diags.Append(moreDiags)
 		if moreDiags.HasErrors() {

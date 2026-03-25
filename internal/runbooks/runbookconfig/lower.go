@@ -244,6 +244,9 @@ func appendStepOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerSc
 		if output == nil || len(bytes.TrimSpace(output.ValueSrc)) == 0 {
 			continue
 		}
+		if ExprReferencesRunbookActionOutput(output.Value) {
+			continue
+		}
 		valueSrc := bytes.TrimSpace(output.ValueSrc)
 		rewrittenSrc, rewriteDiags := lowerScope.RewriteExpr(output.Value, valueSrc)
 		diags = diags.Append(rewriteDiags)

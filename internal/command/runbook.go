@@ -49,11 +49,66 @@ type runbookStepPlanningFailedError struct {
 	stepName string
 }
 
+type runbookActionOutputHook struct {
+	terraform.NilHook
+	outputs map[string]*strings.Builder
+}
+
 func (e runbookStepPlanningFailedError) Error() string {
 	if e.stepName == "" {
 		return "runbook step planning failed"
 	}
 	return fmt.Sprintf("runbook step %q planning failed", e.stepName)
+}
+
+func newRunbookActionOutputHook() *runbookActionOutputHook {
+	return &runbookActionOutputHook{outputs: map[string]*strings.Builder{}}
+}
+
+func (h *runbookActionOutputHook) ProgressAction(id terraform.HookActionIdentity, progress string) (terraform.HookAction, error) {
+	if h == nil {
+		return terraform.HookActionContinue, nil
+	}
+	addr := id.Addr.String()
+	b, ok := h.outputs[addr]
+	if !ok {
+		b = &strings.Builder{}
+		h.outputs[addr] = b
+	}
+	if b.Len() > 0 {
+		b.WriteByte('\n')
+	}
+	b.WriteString(progress)
+	return terraform.HookActionContinue, nil
+}
+
+func (h *runbookActionOutputHook) ScopeValue() cty.Value {
+	if h == nil || len(h.outputs) == 0 {
+		return cty.EmptyObjectVal
+	}
+	byType := map[string]map[string]cty.Value{}
+	for addr, buf := range h.outputs {
+		parsed, diags := addrs.ParseAbsActionStr(addr)
+		if diags.HasErrors() {
+			continue
+		}
+		actionType := parsed.Action.Type
+		actionName := parsed.Action.Name
+		if _, ok := byType[actionType]; !ok {
+			byType[actionType] = map[string]cty.Value{}
+		}
+		byType[actionType][actionName] = cty.ObjectVal(map[string]cty.Value{
+			"output": cty.StringVal(buf.String()),
+		})
+	}
+	if len(byType) == 0 {
+		return cty.EmptyObjectVal
+	}
+	ret := map[string]cty.Value{}
+	for actionType, byName := range byType {
+		ret[actionType] = cty.ObjectVal(byName)
+	}
+	return cty.ObjectVal(ret)
 }
 
 func (c *RunbookCommand) Help() string {
@@ -393,7 +448,8 @@ func (c *RunbookCommand) runExecute() int {
 		c.Ui.Error(fmt.Sprintf("Failed to initialize providers for runbook execute: %s", err))
 		return 1
 	}
-	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1, Providers: providerFactories, Hooks: []terraform.Hook{c.uiHook()}})
+	actionOutputHook := newRunbookActionOutputHook()
+	tfCtx, ctxDiags := terraform.NewContext(&terraform.ContextOpts{Parallelism: 1, Providers: providerFactories, Hooks: []terraform.Hook{c.uiHook(), actionOutputHook}})
 	if ctxDiags.HasErrors() {
 		c.Ui.Error(ctxDiags.Err().Error())
 		return 1
@@ -475,6 +531,7 @@ func (c *RunbookCommand) runExecute() int {
 			Steps:     stepResults.ScopeValue(),
 			Count:     countScopeForManifestStep(manifestStep),
 			Each:      eachScopeForManifestStep(manifestStep),
+			Actions:   actionOutputHook.ScopeValue(),
 			Workspace: mergedWorkspaceScope(baseWorkspaceScope, originalWorkspaceState),
 		}
 		preEval := runbookconfig.EvaluateStepForPlan(step, preScope)
@@ -573,11 +630,26 @@ func (c *RunbookCommand) runExecute() int {
 			c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][green]Action complete: %s[reset]", actionRef)))
 		}
 
+		postScope := runbookconfig.EvalScope{
+			Variables: varScope,
+			Steps:     stepResults.ScopeValue(),
+			Count:     countScopeForManifestStep(manifestStep),
+			Each:      eachScopeForManifestStep(manifestStep),
+			Actions:   actionOutputHook.ScopeValue(),
+			Workspace: mergedWorkspaceScope(baseWorkspaceScope, originalWorkspaceState),
+		}
+		postEval := runbookconfig.EvaluateStepForExecution(step, preScope, postScope)
+		if postEval.Status == runbookconfig.StepStatusFailed {
+			c.Ui.Error(formatRunbookEvalDiagnostics(stepName, postEval))
+			return 1
+		}
+
 		stepOutputs := stepResults.Get(stepInstanceAddrFromManifestStep(manifestStep))
 		stepOutputs = mergeStepOutputs(stepOutputsFromState(stepState, step), stepOutputs)
 		if len(step.Lists) == 0 {
-			stepOutputs = mergeStepOutputs(evaluateStepOutputsFromSource(step, preScope), stepOutputs)
+			stepOutputs = mergeStepOutputs(evaluateStepOutputsFromSource(step, postScope), stepOutputs)
 		}
+		stepOutputs = mergeStepOutputs(evaluateStepOutputsFromSourceWithExecuteActions(step, postScope), stepOutputs)
 		stepResults.Set(stepInstanceAddrFromManifestStep(manifestStep), stepOutputs)
 		c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][cyan]# %s[reset]", stepName)))
 		c.Ui.Output(c.Colorize().Color("status = [green]\"complete\"[reset]"))
@@ -1581,6 +1653,9 @@ func evaluateStepOutputsFromSource(step *runbookconfig.Step, scope runbookconfig
 		if output == nil || output.Value == nil {
 			continue
 		}
+		if runbookconfig.ExprReferencesRunbookActionOutput(output.Value) {
+			continue
+		}
 		val, diags := runbookconfig.EvalExpr(output.Value, scope, cty.DynamicPseudoType)
 		if diags.HasErrors() {
 			continue
@@ -1592,6 +1667,85 @@ func evaluateStepOutputsFromSource(step *runbookconfig.Step, scope runbookconfig
 	}
 	return cty.ObjectVal(vals)
 }
+
+func evaluateStepOutputsFromSourceWithExecuteActions(step *runbookconfig.Step, scope runbookconfig.EvalScope) cty.Value {
+	if step == nil || len(step.Outputs) == 0 {
+		return cty.EmptyObjectVal
+	}
+	scope = runbookconfig.ScopeWithStepLists(step, scope)
+	vals := make(map[string]cty.Value, len(step.Outputs))
+	for name, output := range step.Outputs {
+		if output == nil || output.Value == nil {
+			continue
+		}
+		if !runbookconfig.ExprReferencesRunbookActionOutput(output.Value) {
+			continue
+		}
+		val, diags := runbookconfig.EvalExpr(output.Value, scope, cty.DynamicPseudoType)
+		if diags.HasErrors() {
+			continue
+		}
+		vals[name] = val
+	}
+	if len(vals) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return cty.ObjectVal(vals)
+}
+
+func stripOutputBlocks(files map[string][]byte, names []string) map[string][]byte {
+	if len(names) == 0 {
+		return files
+	}
+	mainSrc, ok := files["main.tf"]
+	if !ok {
+		return files
+	}
+	parsed, diags := hclwrite.ParseConfig(mainSrc, "main.tf", hcl.InitialPos)
+	if diags.HasErrors() || parsed == nil {
+		return files
+	}
+	remove := map[string]struct{}{}
+	for _, name := range names {
+		remove[name] = struct{}{}
+	}
+	body := parsed.Body()
+	for _, block := range body.Blocks() {
+		if block.Type() != "output" {
+			continue
+		}
+		labels := block.Labels()
+		if len(labels) != 1 {
+			continue
+		}
+		if _, ok := remove[labels[0]]; ok {
+			body.RemoveBlock(block)
+		}
+	}
+	updated := make(map[string][]byte, len(files))
+	for name, src := range files {
+		updated[name] = src
+	}
+	updated["main.tf"] = hclwrite.Format(parsed.Bytes())
+	return updated
+}
+
+func executeTimeActionOutputNames(step *runbookconfig.Step) []string {
+	if step == nil || len(step.Outputs) == 0 {
+		return nil
+	}
+	ret := make([]string, 0)
+	for name, output := range step.Outputs {
+		if output == nil || output.Value == nil {
+			continue
+		}
+		if runbookconfig.ExprReferencesRunbookActionOutput(output.Value) {
+			ret = append(ret, name)
+		}
+	}
+	return ret
+}
+
 func mergeStepOutputs(primary, fallback cty.Value) cty.Value {
 	vals := map[string]cty.Value{}
 	if fallback != cty.NilVal && fallback.Type().IsObjectType() {

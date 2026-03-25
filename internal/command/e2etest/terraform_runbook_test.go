@@ -597,8 +597,11 @@ func TestRunbookExecuteStreamsActionOutput(t *testing.T) {
 	if !strings.Contains(stdout, "Action invocations:") || !strings.Contains(stdout, `action.simple_action.target`) {
 		t.Fatalf("missing action invocation summary output:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
-	if !strings.Contains(stdout, "Action started: action.simple_action.target") || !strings.Contains(stdout, "Action action.simple_action.target (triggered by CLI):") || !strings.Contains(stdout, "Hello world!") || !strings.Contains(stdout, "Action complete: action.simple_action.target") {
+	if !strings.Contains(stdout, "Action started: action.simple_action.target") || !strings.Contains(stdout, "Action action.simple_action.target (triggered by CLI):") || !strings.Contains(stdout, "Hello world!") || !strings.Contains(stdout, "Done.") || !strings.Contains(stdout, "Action complete: action.simple_action.target") {
 		t.Fatalf("missing action progress output:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, `action_output = "Hello world!\nDone."`) || !strings.Contains(stdout, "Hello world!") || !strings.Contains(stdout, "Done.") {
+		t.Fatalf("missing captured action output value:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 
 	cancel()

@@ -11,6 +11,28 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+func ExprReferencesRunbookActionOutput(expr hcl.Expression) bool {
+	if expr == nil {
+		return false
+	}
+	for _, traversal := range expr.Variables() {
+		ref, diags := addrs.ParseRefFromRunbookScope(traversal)
+		if diags.HasErrors() || ref == nil {
+			continue
+		}
+		if _, ok := ref.Subject.(addrs.RunbookAction); !ok {
+			continue
+		}
+		if len(ref.Remaining) == 0 {
+			continue
+		}
+		if attr, ok := ref.Remaining[0].(hcl.TraverseAttr); ok && attr.Name == "output" {
+			return true
+		}
+	}
+	return false
+}
+
 type langData struct {
 	scope EvalScope
 }
@@ -74,6 +96,10 @@ func (d *langData) GetStep(addr addrs.Step, rng tfdiags.SourceRange) (cty.Value,
 
 func (d *langData) GetWorkspaceOutput(addr addrs.WorkspaceOutput, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return nestedAttr(d.scope.Workspace, "output", addr.Name, "workspace.output")
+}
+
+func (d *langData) GetRunbookAction(addr addrs.RunbookAction, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return nestedAttr(d.scope.Actions, addr.Type, addr.Name, "action")
 }
 
 func EvalExpr(expr hcl.Expression, scope EvalScope, wantType cty.Type) (cty.Value, tfdiags.Diagnostics) {
