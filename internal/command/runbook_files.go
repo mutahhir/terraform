@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hashicorp/terraform/internal/plans"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookplanfile"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -176,6 +177,80 @@ func formatActionInvocations(color *colorstring.Colorize, actions []string) stri
 		b.WriteString(fmt.Sprintf("  - %s\n", action))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatStepExecutionPreview(color *colorstring.Colorize, step *runbookplanfile.Step, plannedOutputs map[string]cty.Value) string {
+	if step == nil {
+		return ""
+	}
+	if color == nil {
+		color = &colorstring.Colorize{Disable: true}
+	}
+	var b strings.Builder
+	b.WriteString(color.Color(fmt.Sprintf("[bold]Step Execution Preview: %s[reset]\n", step.Name)))
+	if len(step.After) > 0 {
+		b.WriteString(fmt.Sprintf("after = [%s]\n", strings.Join(step.After, ", ")))
+	}
+	if len(step.PlannedActions) > 0 {
+		b.WriteString("actions = [\n")
+		for _, action := range step.PlannedActions {
+			b.WriteString(fmt.Sprintf("  %q,\n", action))
+		}
+		b.WriteString("]\n")
+	}
+	if len(step.PlannedQueries) > 0 {
+		b.WriteString("queries = [\n")
+		for _, query := range step.PlannedQueries {
+			b.WriteString(fmt.Sprintf("  %q,\n", query))
+		}
+		b.WriteString("]\n")
+	}
+	if len(step.PlannedData) > 0 {
+		b.WriteString("data_reads = [\n")
+		for _, data := range step.PlannedData {
+			b.WriteString(fmt.Sprintf("  %q,\n", data))
+		}
+		b.WriteString("]\n")
+	}
+	if len(plannedOutputs) > 0 {
+		keys := make([]string, 0, len(plannedOutputs))
+		for name := range plannedOutputs {
+			if strings.HasPrefix(name, "__runbook_") {
+				continue
+			}
+			keys = append(keys, name)
+		}
+		sort.Strings(keys)
+		if len(keys) > 0 {
+			b.WriteString("planned_outputs = {\n")
+			for _, name := range keys {
+				b.WriteString(fmt.Sprintf("  %s = %s\n", name, tfdiags.CompactValueStr(plannedOutputs[name])))
+			}
+			b.WriteString("}\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func plannedOutputValuesFromPlan(tfPlan *plans.Plan) map[string]cty.Value {
+	if tfPlan == nil || tfPlan.Changes == nil {
+		return nil
+	}
+	ret := map[string]cty.Value{}
+	for _, output := range tfPlan.Changes.Outputs {
+		if output == nil {
+			continue
+		}
+		decoded, err := output.Decode()
+		if err != nil {
+			continue
+		}
+		ret[decoded.Addr.OutputValue.Name] = decoded.Change.After
+	}
+	if len(ret) == 0 {
+		return nil
+	}
+	return ret
 }
 
 func copyLoweredFiles(planResp *runbooks.PlanRunbookStep_Response) map[string][]byte {

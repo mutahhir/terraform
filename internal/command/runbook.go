@@ -55,8 +55,10 @@ type runbookPlanArgs struct {
 }
 
 type runbookExecuteArgs struct {
-	PlanPath string
-	Vars     arguments.Vars
+	PlanPath     string
+	Vars         arguments.Vars
+	AutoApprove  bool
+	InputEnabled bool
 }
 
 type builtRunbookPlan struct {
@@ -136,6 +138,11 @@ Usage: terraform [global options] runbook <subcommand>
 
 	  plan    Generate a multi-step runbook plan.
 	  execute Execute a runbook plan or create one and execute it.
+
+Runbook execute options:
+
+	  -auto-approve  Skip interactive approval prompts.
+	  -input=false   Disable interactive prompts.
 `)
 }
 
@@ -366,6 +373,7 @@ func (c *RunbookCommand) runExecute(args []string) int {
 		c.Ui.Error(diags.Err().Error())
 		return 1
 	}
+	c.Meta.input = parsed.InputEnabled
 	var varDiags tfdiags.Diagnostics
 	c.VariableValues, varDiags = parsed.Vars.CollectValues(func(string, []byte) {})
 	if varDiags.HasErrors() {
@@ -377,15 +385,27 @@ func (c *RunbookCommand) runExecute(args []string) int {
 		if !ok {
 			return 1
 		}
-		for _, line := range strings.Split(formatPlanSummary(c.Colorize(), built.Manifest), "\n") {
-			if line == "" {
-				c.Ui.Output("")
-				continue
+		c.showRunbookPlanSummary(built.Manifest)
+		if !parsed.AutoApprove {
+			if !c.Input() {
+				c.Ui.Error("Runbook execute requires interactive approval unless -auto-approve is set.")
+				return 1
 			}
-			c.Ui.Output(line)
+			approved, err := c.confirm(&terraform.InputOpts{
+				Id:          "approve",
+				Query:       "Do you want to execute this runbook plan?",
+				Description: "Only 'yes' will be accepted to approve runbook execution.",
+			})
+			if err != nil {
+				c.Ui.Error(err.Error())
+				return 1
+			}
+			if !approved {
+				c.Ui.Output("Runbook execution cancelled.")
+				return 1
+			}
 		}
-		c.Ui.Output("")
-		return c.executeRunbookPlanData(built.Manifest, built.Sources, built.StateFile, collectManifestSourceMaps(built.Manifest), func(stepName string) (map[string][]byte, error) {
+		return c.executeRunbookPlanData(built.Manifest, built.Sources, built.StateFile, collectManifestSourceMaps(built.Manifest), parsed.AutoApprove, func(stepName string) (map[string][]byte, error) {
 			return built.Lowered[stepName], nil
 		})
 	}
@@ -415,10 +435,30 @@ func (c *RunbookCommand) runExecute(args []string) int {
 		c.Ui.Error(fmt.Sprintf("Failed to read embedded runbook state: %s", err))
 		return 1
 	}
-	return c.executeRunbookPlanData(manifest, sources, stateFile, collectManifestSourceMaps(manifest), r.ReadLoweredStepFiles)
+	c.showRunbookPlanSummary(manifest)
+	if !parsed.AutoApprove {
+		if !c.Input() {
+			c.Ui.Error("Runbook execute requires interactive approval unless -auto-approve is set.")
+			return 1
+		}
+		approved, err := c.confirm(&terraform.InputOpts{
+			Id:          "approve",
+			Query:       "Do you want to execute this runbook plan?",
+			Description: "Only 'yes' will be accepted to approve runbook execution.",
+		})
+		if err != nil {
+			c.Ui.Error(err.Error())
+			return 1
+		}
+		if !approved {
+			c.Ui.Output("Runbook execution cancelled.")
+			return 1
+		}
+	}
+	return c.executeRunbookPlanData(manifest, sources, stateFile, collectManifestSourceMaps(manifest), parsed.AutoApprove, r.ReadLoweredStepFiles)
 }
 
-func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, sources map[string][]byte, stateFile *statefile.File, sourceMaps map[string]map[string][]runbookconfig.SourceMapEntry, loweredReader func(string) (map[string][]byte, error)) int {
+func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, sources map[string][]byte, stateFile *statefile.File, sourceMaps map[string]map[string][]runbookconfig.SourceMapEntry, autoApprove bool, loweredReader func(string) (map[string][]byte, error)) int {
 	rawCfg, loadDiags := runbookconfig.LoadConfigSources(manifest.ConfigPath, sources)
 	if loadDiags.HasErrors() {
 		c.Ui.Error(loadDiags.Err().Error())
@@ -547,7 +587,7 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 		trimmedPlanConfig := stripFutureStepOutputs(planConfig, plannedStepNames, stepName)
 		hasQueries := hasLoweredQueryFiles(loweredFiles)
 		stepState := states.NewState()
-		_, planDiags := tfCtx.Plan(trimmedPlanConfig, stepState, &terraform.PlanOpts{
+		tfPlan, planDiags := tfCtx.Plan(trimmedPlanConfig, stepState, &terraform.PlanOpts{
 			Mode:         plans.NormalMode,
 			Query:        hasQueries,
 			SetVariables: inputValues,
@@ -557,6 +597,28 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 		}
 		if planDiags.HasErrors() {
 			return 1
+		}
+		if !autoApprove {
+			preview := formatStepExecutionPreview(c.Colorize(), manifestStep, plannedOutputValuesFromPlan(tfPlan))
+			if preview != "" {
+				for _, line := range strings.Split(preview, "\n") {
+					c.Ui.Output(line)
+				}
+				c.Ui.Output("")
+			}
+			approved, err := c.confirm(&terraform.InputOpts{
+				Id:          "runbook-step-approve-" + stepName,
+				Query:       fmt.Sprintf("Execute step %q?", stepName),
+				Description: "Only 'yes' will be accepted to approve this step execution.",
+			})
+			if err != nil {
+				c.Ui.Error(err.Error())
+				return 1
+			}
+			if !approved {
+				c.Ui.Output("Runbook execution cancelled.")
+				return 1
+			}
 		}
 		applyFiles := stripExecuteUnsafeFiles(planFiles)
 		if hasApplyableConfig(applyFiles) {
@@ -629,9 +691,26 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 			c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][green]Action complete: %s[reset]", actionRef)))
 		}
 
+		stepOutputs := stepResults.Get(stepInstanceAddrFromManifestStep(manifestStep))
+		stepOutputs = mergeStepOutputs(stepOutputsFromState(stepState, step), stepOutputs)
+		postStepResults := runbookeval.NewStepResults()
+		seedStepResultsFromPlan(manifest, postStepResults)
+		for _, priorStepName := range manifest.StepOrder {
+			priorManifestStep := persistedRunbookStep(manifest, priorStepName)
+			if priorManifestStep == nil {
+				continue
+			}
+			addr := stepInstanceAddrFromManifestStep(priorManifestStep)
+			if priorStepName == stepName {
+				postStepResults.Set(addr, stepOutputs)
+				continue
+			}
+			postStepResults.Set(addr, stepResults.Get(addr))
+		}
+
 		postScope := runbookconfig.EvalScope{
 			Variables: varScope,
-			Steps:     stepResults.ScopeValue(),
+			Steps:     postStepResults.ScopeValue(),
 			Count:     countScopeForManifestStep(manifestStep),
 			Each:      eachScopeForManifestStep(manifestStep),
 			Actions:   actionOutputHook.ScopeValue(),
@@ -639,12 +718,15 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 		}
 		postEval := runbookconfig.EvaluateStepForExecution(step, preScope, postScope)
 		if postEval.Status == runbookconfig.StepStatusFailed {
+			if _, _, conditionErr := terraformDrivenStepConditionStatus(&runbookconfig.Step{Postconditions: step.Postconditions}, rootOutputValuesFromState(stepState)); conditionErr == nil {
+				postEval = runbookconfig.StepEvaluation{Status: runbookconfig.StepStatusSucceeded, Detail: "step execution conditions satisfied"}
+			}
+		}
+		if postEval.Status == runbookconfig.StepStatusFailed {
 			c.Ui.Error(formatRunbookEvalDiagnostics(stepName, postEval))
 			return 1
 		}
 
-		stepOutputs := stepResults.Get(stepInstanceAddrFromManifestStep(manifestStep))
-		stepOutputs = mergeStepOutputs(stepOutputsFromState(stepState, step), stepOutputs)
 		if len(step.Lists) == 0 {
 			stepOutputs = mergeStepOutputs(evaluateStepOutputsFromSource(step, postScope), stepOutputs)
 		}
@@ -697,6 +779,8 @@ func (c *RunbookCommand) parseRunbookExecuteArgs(args []string) (*runbookExecute
 	var diags tfdiags.Diagnostics
 	ret := &runbookExecuteArgs{}
 	cmdFlags := c.defaultFlagSet("runbook execute")
+	cmdFlags.BoolVar(&ret.AutoApprove, "auto-approve", false, "auto-approve")
+	cmdFlags.BoolVar(&ret.InputEnabled, "input", true, "input")
 	varsFlags := arguments.NewFlagNameValueSlice("-var")
 	varFilesFlags := varsFlags.Alias("-var-file")
 	ret.Vars = runbookVarsFromFlags(&varsFlags, &varFilesFlags)
@@ -712,6 +796,17 @@ func (c *RunbookCommand) parseRunbookExecuteArgs(args []string) (*runbookExecute
 		ret.PlanPath = remaining[0]
 	}
 	return ret, diags
+}
+
+func (c *RunbookCommand) showRunbookPlanSummary(manifest *runbookplanfile.Plan) {
+	for _, line := range strings.Split(formatPlanSummary(c.Colorize(), manifest), "\n") {
+		if line == "" {
+			c.Ui.Output("")
+			continue
+		}
+		c.Ui.Output(line)
+	}
+	c.Ui.Output("")
 }
 
 func runbookVarsFromFlags(varsFlags, varFilesFlags *arguments.FlagNameValueSlice) arguments.Vars {

@@ -4,8 +4,10 @@
 package command
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/cli"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/terraform/internal/addrs"
@@ -153,6 +155,39 @@ func TestRemapDiagnosticsToRunbookSourcesMapsLoweredMainTF(t *testing.T) {
 	}
 	if got, want := src.Subject.Start.Line, 21; got != want {
 		t.Fatalf("wrong remapped line: got %d want %d", got, want)
+	}
+}
+
+func TestFormatStepExecutionPreviewIncludesPlannedOutputs(t *testing.T) {
+	preview := formatStepExecutionPreview(nil, &runbookplanfile.Step{
+		Name:           "inspect_workspace_lambda",
+		After:          []string{"discover_workspace_context"},
+		PlannedData:    []string{"data.aws_lambda_function.target"},
+		PlannedActions: []string{"action.aws_lambda_invoke.smoke"},
+	}, map[string]cty.Value{
+		"runtime":                             cty.StringVal("python3.12"),
+		"__runbook_postcondition_0_condition": cty.True,
+	})
+	if !strings.Contains(preview, "Step Execution Preview: inspect_workspace_lambda") {
+		t.Fatalf("missing preview header: %s", preview)
+	}
+	if !strings.Contains(preview, `"data.aws_lambda_function.target"`) {
+		t.Fatalf("missing planned data: %s", preview)
+	}
+	if !strings.Contains(preview, `runtime = "python3.12"`) {
+		t.Fatalf("missing planned output: %s", preview)
+	}
+	if strings.Contains(preview, "__runbook_postcondition") {
+		t.Fatalf("unexpected synthetic output in preview: %s", preview)
+	}
+}
+
+func TestShowRunbookPlanSummaryWritesPlanText(t *testing.T) {
+	ui := new(cli.MockUi)
+	cmd := &RunbookCommand{Meta: Meta{Ui: ui}}
+	cmd.showRunbookPlanSummary(&runbookplanfile.Plan{Steps: []runbookplanfile.Step{{Name: "first"}}})
+	if got := ui.OutputWriter.String(); !strings.Contains(got, "Runbook Execution Plan") || !strings.Contains(got, "# Step 1: first") {
+		t.Fatalf("missing plan summary output: %s", got)
 	}
 }
 

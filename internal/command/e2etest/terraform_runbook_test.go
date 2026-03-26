@@ -138,7 +138,7 @@ func TestRunbookPlan(t *testing.T) {
 		t.Fatalf("missing saved runbook plan message:\n%s", stdout)
 	}
 
-	stdout, stderr, err = tf.Run("runbook", "execute", ".terraform/runbook.tfrunplan")
+	stdout, stderr, err = tf.Run("runbook", "execute", "-auto-approve", ".terraform/runbook.tfrunplan")
 	if err != nil {
 		t.Fatalf("unexpected runbook execute error: %s\nstderr:\n%s", err, stderr)
 	}
@@ -216,7 +216,7 @@ func TestRunbookExecuteMultiStep(t *testing.T) {
 		t.Fatalf("missing dependency metadata in plan output:\n%s", stdout)
 	}
 
-	stdout, stderr, err = tf.Run("runbook", "execute")
+	stdout, stderr, err = tf.Run("runbook", "execute", "-auto-approve")
 	if err != nil {
 		t.Fatalf("unexpected runbook execute error: %s\nstderr:\n%s", err, stderr)
 	}
@@ -346,7 +346,7 @@ func TestRunbookExecuteForEachStepExpansion(t *testing.T) {
 	if _, stderr, err := tf.Run("init"); err != nil {
 		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
 	}
-	stdout, stderr, err := tf.Run("runbook", "execute")
+	stdout, stderr, err := tf.Run("runbook", "execute", "-auto-approve")
 	if err != nil {
 		t.Fatalf("unexpected runbook execute error: %s\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}
@@ -471,7 +471,7 @@ func TestRunbookExecuteCountStepExpansion(t *testing.T) {
 	if _, stderr, err := tf.Run("init"); err != nil {
 		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
 	}
-	stdout, stderr, err := tf.Run("runbook", "execute")
+	stdout, stderr, err := tf.Run("runbook", "execute", "-auto-approve")
 	if err != nil {
 		t.Fatalf("unexpected runbook execute error: %s\nstderr:\n%s", err, stderr)
 	}
@@ -559,7 +559,7 @@ func TestRunbookExecuteStreamsActionOutput(t *testing.T) {
 	if _, stderr, err := tf.Run("init"); err != nil {
 		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
 	}
-	stdout, stderr, err := tf.Run("runbook", "execute")
+	stdout, stderr, err := tf.Run("runbook", "execute", "-auto-approve")
 	if err != nil {
 		t.Fatalf("unexpected runbook execute error: %s\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}
