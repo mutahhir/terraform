@@ -50,6 +50,10 @@ step "bootstrap" {
   output "count" {
     value = length(list.simple_resource.inventory.data)
   }
+
+  output "seed_output" {
+    value = action.simple_action.seed.output
+  }
 }
 
 step "dependent" {
@@ -72,5 +76,9 @@ step "dependent" {
 
   output "done" {
     value = true
+  }
+
+  output "seen_seed_output" {
+    value = steps.bootstrap.seed_output
   }
 }

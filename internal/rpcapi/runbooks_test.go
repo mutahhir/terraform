@@ -621,8 +621,468 @@ step "first" {
 		t.Fatal(err)
 	}
 
-	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_FAILED; got != want {
+	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_SKIPPED; got != want {
 		t.Fatalf("wrong plan status: got %v want %v; diagnostics=%v", got, want, resp.Diagnostics)
+	}
+	if len(resp.Diagnostics) != 0 {
+		t.Fatalf("skip precondition should not emit diagnostics: %v", resp.Diagnostics)
+	}
+}
+
+func TestRunbooksPlanRunbookStepEvaluatesStepLocalsForPreconditions(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("aws"): fixedMockProviderFactory(testRunbookProvider()),
+	}
+
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "first" {
+	list "test_resource" "unmanaged" {
+		provider = aws
+
+    config {}
+
+    include_resource = true
+    limit            = 25
+  }
+
+  locals {
+    threshold = 0
+  }
+
+  precondition {
+		condition     = length(list.test_resource.unmanaged.data) > local.threshold
+    error_message = "need search results"
+    on_fail       = "skip"
+  }
+
+  execute {}
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle: openResp.RunbookConfigHandle,
+		StepName:            "first",
+		Scope:               &runbooks.EvalScope{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_SKIPPED; got != want {
+		t.Fatalf("wrong plan status: got %v want %v; diagnostics=%v", got, want, resp.Diagnostics)
+	}
+}
+
+func TestRunbooksPlanRunbookStepDefersUnknownPostconditionsAtPlan(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(testRunbookProvider()),
+	}
+
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "first" {
+  action "test_action" "seed" {
+    config {
+      attr = "hello"
+    }
+  }
+
+  execute {
+    action_invoke {
+      action = action.test_action.seed
+    }
+  }
+
+  postcondition {
+    condition     = trimspace(action.test_action.seed.output) != ""
+    error_message = "need action output"
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle: openResp.RunbookConfigHandle,
+		StepName:            "first",
+		Scope:               &runbooks.EvalScope{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_READY; got != want {
+		t.Fatalf("wrong plan status: got %v want %v; diagnostics=%v", got, want, resp.Diagnostics)
+	}
+}
+
+func TestRunbooksPlanRunbookStepExecutesListQueries(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	provider := testRunbookProvider()
+	origListResource := provider.ListResourceFn
+	listCalls := 0
+	provider.ListResourceFn = func(request providers.ListResourceRequest) providers.ListResourceResponse {
+		listCalls++
+		return origListResource(request)
+	}
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(provider),
+	}
+
+	configPath := t.TempDir()
+	locks := handles.NewDependencyLocks(depsfile.NewLocks())
+	cache := handles.NewProviderPluginCache(providercache.NewDir(configPath))
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "first" {
+  list "test_resource" "inventory" {
+    provider = test
+
+    config {
+      filter = {
+        attr = "x"
+      }
+    }
+
+    include_resource = true
+    limit            = 25
+  }
+
+  output "instance_type" {
+    value = list.test_resource.inventory.data[0].state.instance_type
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeResp, err := server.OpenRunbookRuntime(ctx, &runbooks.OpenRunbookRuntime_Request{
+		DependencyLocksHandle: locks.ForProtobuf(),
+		ProviderCacheHandle:   cache.ForProtobuf(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle:  openResp.RunbookConfigHandle,
+		RunbookRuntimeHandle: runtimeResp.RunbookRuntimeHandle,
+		StepName:             "first",
+		Scope:                &runbooks.EvalScope{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := listCalls, 1; got != want {
+		t.Fatalf("expected one list query call, got %d", got)
+	}
+	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_READY; got != want {
+		t.Fatalf("wrong status: got %v want %v; diagnostics=%v", got, want, resp.Diagnostics)
+	}
+	if len(resp.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", resp.Diagnostics)
+	}
+	if got, want := len(resp.PlannedQueries), 1; got != want {
+		t.Fatalf("wrong planned query count: got %d want %d", got, want)
+	}
+	plannedOutput, ok := resp.PlannedOutputs["instance_type"]
+	if !ok {
+		t.Fatal("missing planned output")
+	}
+	value, err := ctymsgpack.Unmarshal(plannedOutput.Msgpack, cty.DynamicPseudoType)
+	if err != nil {
+		t.Fatalf("failed to decode planned output: %s", err)
+	}
+	if got, want := value, cty.StringVal("from-test_resource"); !got.RawEquals(want) {
+		t.Fatalf("wrong planned output value: got %#v want %#v", got, want)
+	}
+}
+
+func TestRunbooksPlanRunbookStepUsesQueryBackedOutputInLaterPrecondition(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	provider := testRunbookProvider()
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(provider),
+	}
+
+	configPath := t.TempDir()
+	locks := handles.NewDependencyLocks(depsfile.NewLocks())
+	cache := handles.NewProviderPluginCache(providercache.NewDir(configPath))
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "discover" {
+  list "test_resource" "inventory" {
+    provider = test
+
+    config {
+      filter = {
+        attr = "hello"
+      }
+    }
+
+    include_resource = true
+    limit            = 10
+  }
+
+  output "instance_type" {
+    value = list.test_resource.inventory.data[0].state.instance_type
+  }
+}
+
+step "inspect" {
+  precondition {
+    condition     = steps.discover.instance_type == "from-test_resource"
+    error_message = "discover output must be known during planning"
+  }
+
+  execute {}
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeResp, err := server.OpenRunbookRuntime(ctx, &runbooks.OpenRunbookRuntime_Request{
+		DependencyLocksHandle: locks.ForProtobuf(),
+		ProviderCacheHandle:   cache.ForProtobuf(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	discoverResp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle:  openResp.RunbookConfigHandle,
+		RunbookRuntimeHandle: runtimeResp.RunbookRuntimeHandle,
+		StepName:             "discover",
+		Scope:                &runbooks.EvalScope{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := discoverResp.Status, runbooks.StepStatus_STEP_STATUS_READY; got != want {
+		t.Fatalf("wrong discover status: got %v want %v; diagnostics=%v", got, want, discoverResp.Diagnostics)
+	}
+	planned := discoverResp.PlannedOutputs["instance_type"]
+	if planned == nil {
+		t.Fatal("expected planned discover output")
+	}
+	plannedVal, err := ctymsgpack.Unmarshal(planned.Msgpack, cty.DynamicPseudoType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspectResp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle:  openResp.RunbookConfigHandle,
+		RunbookRuntimeHandle: runtimeResp.RunbookRuntimeHandle,
+		StepName:             "inspect",
+		Scope: &runbooks.EvalScope{
+			Steps: &runbooks.DynamicValue{Msgpack: mustMsgpackValue(t, cty.ObjectVal(map[string]cty.Value{
+				"discover": cty.ObjectVal(map[string]cty.Value{
+					"instance_type": plannedVal,
+				}),
+			}))},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := inspectResp.Status, runbooks.StepStatus_STEP_STATUS_READY; got != want {
+		t.Fatalf("wrong inspect status: got %v want %v; diagnostics=%v", got, want, inspectResp.Diagnostics)
+	}
+}
+
+func TestRunbooksPlanRunbookStepUsesProjectedQueryBackedOutputInLaterPrecondition(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	provider := testRunbookProvider()
+	origListResource := provider.ListResourceFn
+	provider.ListResourceFn = func(request providers.ListResourceRequest) providers.ListResourceResponse {
+		resp := origListResource(request)
+		data := resp.Result.GetAttr("data")
+		items := data.AsValueSlice()
+		items = append(items, cty.ObjectVal(map[string]cty.Value{
+			"identity": cty.ObjectVal(map[string]cty.Value{
+				"id": cty.StringVal("i-2"),
+			}),
+			"display_name": cty.StringVal("Item 2"),
+			"state": cty.ObjectVal(map[string]cty.Value{
+				"id":            cty.StringVal("2"),
+				"instance_type": cty.StringVal("shadow"),
+			}),
+		}))
+		resultMap := resp.Result.AsValueMap()
+		resultMap["data"] = cty.TupleVal(items)
+		resp.Result = cty.ObjectVal(resultMap)
+		return resp
+	}
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(provider),
+	}
+
+	configPath := t.TempDir()
+	locks := handles.NewDependencyLocks(depsfile.NewLocks())
+	cache := handles.NewProviderPluginCache(providercache.NewDir(configPath))
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "discover" {
+  list "test_resource" "inventory" {
+    provider = test
+
+    config {
+      filter = {
+        attr = "hello"
+      }
+    }
+
+    include_resource = true
+    limit            = 10
+  }
+
+  output "selected_id" {
+    value = one([for item in list.test_resource.inventory.data : item.identity.id if strcontains(item.state.instance_type, "test_resource")])
+  }
+}
+
+step "inspect" {
+  precondition {
+    condition     = steps.discover.selected_id == "i-1"
+    error_message = "discover output must stay known after projection"
+  }
+
+  execute {}
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeResp, err := server.OpenRunbookRuntime(ctx, &runbooks.OpenRunbookRuntime_Request{
+		DependencyLocksHandle: locks.ForProtobuf(),
+		ProviderCacheHandle:   cache.ForProtobuf(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	discoverResp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle:  openResp.RunbookConfigHandle,
+		RunbookRuntimeHandle: runtimeResp.RunbookRuntimeHandle,
+		StepName:             "discover",
+		Scope:                &runbooks.EvalScope{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := discoverResp.Status, runbooks.StepStatus_STEP_STATUS_READY; got != want {
+		t.Fatalf("wrong discover status: got %v want %v; diagnostics=%v", got, want, discoverResp.Diagnostics)
+	}
+	planned := discoverResp.PlannedOutputs["selected_id"]
+	if planned == nil {
+		t.Fatal("expected planned discover output")
+	}
+	plannedVal, err := ctymsgpack.Unmarshal(planned.Msgpack, cty.DynamicPseudoType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspectResp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle:  openResp.RunbookConfigHandle,
+		RunbookRuntimeHandle: runtimeResp.RunbookRuntimeHandle,
+		StepName:             "inspect",
+		Scope: &runbooks.EvalScope{
+			Steps: &runbooks.DynamicValue{Msgpack: mustMsgpackValue(t, cty.ObjectVal(map[string]cty.Value{
+				"discover": cty.ObjectVal(map[string]cty.Value{
+					"selected_id": plannedVal,
+				}),
+			}))},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := inspectResp.Status, runbooks.StepStatus_STEP_STATUS_READY; got != want {
+		t.Fatalf("wrong inspect status: got %v want %v; diagnostics=%v", got, want, inspectResp.Diagnostics)
 	}
 }
 

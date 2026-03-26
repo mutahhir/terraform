@@ -4,6 +4,7 @@
 package runbookplan
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,73 @@ import (
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
 	"github.com/zclconf/go-cty/cty"
 )
+
+func TestBuildPreservesActionOutputBackedOutputsForDownstreamScopes(t *testing.T) {
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "invoke" {
+  for_each = {
+    primary = "primary"
+    shadow  = "shadow"
+  }
+
+  output "invoke_target" {
+    value = each.key
+  }
+
+  output "invocation_output" {
+    value = trimspace(action.simple_action.smoke.output)
+  }
+}
+
+step "summary" {
+  output "primary_output" {
+    value = one([for step in values(steps.invoke) : step.invocation_output if step.invoke_target == "primary"])
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, diags := runbookconfig.LoadConfigDir(configPath)
+	if diags.HasErrors() {
+		t.Fatal(diags.Err())
+	}
+
+	_, diags, err = Build(cfg, configPath, "default", []string{"invoke", "summary"}, map[string][]string{"summary": {"invoke"}}, cty.EmptyObjectVal, cty.EmptyObjectVal, func(stepName string, scope runbookconfig.EvalScope) (StepPlanResult, error) {
+		switch stepName {
+		case "invoke":
+			return StepPlanResult{
+				Outputs: cty.ObjectVal(map[string]cty.Value{
+					"invoke_target": scope.Each.GetAttr("key"),
+				}),
+				OutputNames: []string{"invoke_target", "invocation_output"},
+			}, nil
+		case "summary":
+			step := cfg.Files[filepath.Join(configPath, "main.tfrun.hcl")].Steps["summary"]
+			val, evalDiags := runbookconfig.EvalExpr(step.Outputs["primary_output"].Value, scope, cty.DynamicPseudoType)
+			if evalDiags.HasErrors() {
+				return StepPlanResult{}, evalDiags.Err()
+			}
+			if got, want := val.Type(), cty.String; !got.Equals(want) {
+				return StepPlanResult{}, fmt.Errorf("wrong summary output type: got %s want %s", got.FriendlyName(), want.FriendlyName())
+			}
+			return StepPlanResult{OutputNames: []string{"primary_output"}}, nil
+		default:
+			return StepPlanResult{}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diags.HasErrors() {
+		t.Fatal(diags.Err())
+	}
+}
 
 func TestBuildExpandsForEachFromQueryDerivedOutputs(t *testing.T) {
 	configPath := t.TempDir()

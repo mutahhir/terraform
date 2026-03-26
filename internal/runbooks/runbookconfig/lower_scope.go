@@ -21,11 +21,13 @@ const (
 	lowerVarSteps     = "__runbook_steps"
 	lowerVarWorkspace = "__runbook_workspace"
 	lowerVarActions   = "__runbook_actions"
+	lowerVarActionOut = "__runbook_action_output__"
 )
 
 type LowerScope struct {
-	scope         EvalScope
-	syntheticVars map[string]cty.Value
+	scope              EvalScope
+	syntheticVars      map[string]cty.Value
+	requiredStringVars map[string]struct{}
 }
 
 type lowerExprReplacement struct {
@@ -36,8 +38,9 @@ type lowerExprReplacement struct {
 
 func NewLowerScope(scope EvalScope) *LowerScope {
 	return &LowerScope{
-		scope:         scope,
-		syntheticVars: map[string]cty.Value{},
+		scope:              scope,
+		syntheticVars:      map[string]cty.Value{},
+		requiredStringVars: map[string]struct{}{},
 	}
 }
 
@@ -59,22 +62,36 @@ func (s *LowerScope) RewriteExpr(expr hcl.Expression, exprSrc []byte) ([]byte, t
 		var (
 			varName string
 			varVal  cty.Value
+			suffix  string
 		)
-		switch ref.Subject.(type) {
+		switch subj := ref.Subject.(type) {
 		case addrs.Step, addrs.StepInstance:
 			varName = lowerVarSteps
 			varVal = normalizeScopeValue(s.scope.Steps)
+			suffix = strings.TrimPrefix(string(exprSrc[traversal.SourceRange().Start.Byte-exprRange.Start.Byte:traversal.SourceRange().End.Byte-exprRange.Start.Byte]), traversal.RootName())
 		case addrs.RunbookAction:
-			varName = lowerVarActions
-			varVal = normalizeScopeValue(s.scope.Actions)
+			if len(ref.Remaining) == 0 {
+				continue
+			}
+			if attr, ok := ref.Remaining[0].(hcl.TraverseAttr); ok && attr.Name == "output" {
+				varName = actionOutputVarName(subj.Type, subj.Name)
+				s.requiredStringVars[varName] = struct{}{}
+				varVal = cty.NilVal
+				suffix = ""
+				break
+			}
+			continue
 		case addrs.WorkspaceOutput:
 			varName = lowerVarWorkspace
 			varVal = normalizeScopeValue(s.scope.Workspace)
+			suffix = strings.TrimPrefix(string(exprSrc[traversal.SourceRange().Start.Byte-exprRange.Start.Byte:traversal.SourceRange().End.Byte-exprRange.Start.Byte]), traversal.RootName())
 		default:
 			continue
 		}
 
-		s.syntheticVars[varName] = varVal
+		if varVal != cty.NilVal {
+			s.syntheticVars[varName] = varVal
+		}
 
 		rng := traversal.SourceRange()
 		start := rng.Start.Byte - exprRange.Start.Byte
@@ -83,11 +100,13 @@ func (s *LowerScope) RewriteExpr(expr hcl.Expression, exprSrc []byte) ([]byte, t
 			continue
 		}
 		original := string(exprSrc[start:end])
-		root := traversal.RootName()
+		if suffix == "" && varName != "" && varVal != cty.NilVal {
+			suffix = strings.TrimPrefix(original, traversal.RootName())
+		}
 		replacements = append(replacements, lowerExprReplacement{
 			start: start,
 			end:   end,
-			src:   "var." + varName + strings.TrimPrefix(original, root),
+			src:   "var." + varName + suffix,
 		})
 	}
 
@@ -108,7 +127,7 @@ func (s *LowerScope) RewriteExpr(expr hcl.Expression, exprSrc []byte) ([]byte, t
 
 func (s *LowerScope) AppendVariableBlocks(body *hclwrite.Body) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
-	if s == nil || body == nil || len(s.syntheticVars) == 0 {
+	if s == nil || body == nil || (len(s.syntheticVars) == 0 && len(s.requiredStringVars) == 0) {
 		return diags
 	}
 
@@ -119,12 +138,34 @@ func (s *LowerScope) AppendVariableBlocks(body *hclwrite.Body) tfdiags.Diagnosti
 	sort.Strings(names)
 
 	for _, name := range names {
+		if _, ok := s.requiredStringVars[name]; ok {
+			continue
+		}
 		block := body.AppendNewBlock("variable", []string{name})
 		block.Body().SetAttributeRaw("default", hclwrite.TokensForValue(sanitizeValueForLowering(s.syntheticVars[name])))
 		body.AppendNewline()
 	}
 
+	requiredNames := make([]string, 0, len(s.requiredStringVars))
+	for name := range s.requiredStringVars {
+		requiredNames = append(requiredNames, name)
+	}
+	sort.Strings(requiredNames)
+	for _, name := range requiredNames {
+		block := body.AppendNewBlock("variable", []string{name})
+		toks, moreDiags := expressionTokens([]byte("string"))
+		diags = diags.Append(moreDiags)
+		if !moreDiags.HasErrors() {
+			block.Body().SetAttributeRaw("type", toks)
+		}
+		body.AppendNewline()
+	}
+
 	return diags
+}
+
+func actionOutputVarName(actionType, actionName string) string {
+	return lowerVarActionOut + actionType + "__" + actionName
 }
 
 func sanitizeValueForLowering(v cty.Value) cty.Value {

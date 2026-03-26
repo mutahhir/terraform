@@ -4,9 +4,6 @@
 package runbookconfig
 
 import (
-	"fmt"
-
-	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/lang"
 	"github.com/zclconf/go-cty/cty"
 
@@ -48,6 +45,7 @@ func EvaluateStepForPlan(step *Step, scope EvalScope) StepEvaluation {
 		}
 	}
 	scope = ScopeWithStepLists(step, scope)
+	scope = ScopeWithStepLocals(step, scope)
 	return evaluateConditions(step.Preconditions, scope, true)
 }
 
@@ -60,6 +58,8 @@ func EvaluateStepForExecution(step *Step, preScope, postScope EvalScope) StepEva
 	}
 	preScope = ScopeWithStepLists(step, preScope)
 	postScope = ScopeWithStepLists(step, postScope)
+	preScope = ScopeWithStepLocals(step, preScope)
+	postScope = ScopeWithStepLocals(step, postScope)
 
 	pre := evaluateConditions(step.Preconditions, preScope, true)
 	if pre.Status == StepStatusSkipped || pre.Status == StepStatusFailed {
@@ -86,13 +86,16 @@ func evaluateConditions(conditions []*Condition, scope EvalScope, allowSkip bool
 	}
 
 	for _, condition := range conditions {
-		result, diags := evaluateCondition(condition, scope)
+		result, known, diags := evaluateConditionKnown(condition, scope)
 		if diags.HasErrors() {
 			return StepEvaluation{
 				Status: StepStatusFailed,
 				Detail: "condition evaluation failed",
 				Diags:  diags,
 			}
+		}
+		if !known {
+			continue
 		}
 		if result {
 			continue
@@ -102,7 +105,6 @@ func evaluateConditions(conditions []*Condition, scope EvalScope, allowSkip bool
 			return StepEvaluation{
 				Status: StepStatusSkipped,
 				Detail: "step skipped by precondition",
-				Diags:  conditionFailureDiagnostics(condition, scope),
 			}
 		}
 
@@ -120,25 +122,25 @@ func evaluateConditions(conditions []*Condition, scope EvalScope, allowSkip bool
 }
 
 func evaluateCondition(condition *Condition, scope EvalScope) (bool, tfdiags.Diagnostics) {
+	result, _, diags := evaluateConditionKnown(condition, scope)
+	return result, diags
+}
+
+func evaluateConditionKnown(condition *Condition, scope EvalScope) (bool, bool, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if condition == nil || condition.Condition == nil {
-		return true, diags
+		return true, true, diags
 	}
 	resultVal, evalDiags := EvalExpr(condition.Condition, scope, cty.Bool)
 	diags = diags.Append(evalDiags)
 	if evalDiags.HasErrors() {
-		return false, diags
+		return false, false, diags
 	}
 	if !resultVal.IsKnown() || resultVal.IsNull() {
-		return false, diags.Append(&hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("Unknown %s result", condition.Kind),
-			Detail:   fmt.Sprintf("The %s condition must evaluate to a known boolean value.", condition.Kind),
-			Subject:  condition.Condition.Range().Ptr(),
-		})
+		return false, false, diags
 	}
 
-	return resultVal.True(), diags
+	return resultVal.True(), true, diags
 }
 
 func conditionFailureDiagnostics(condition *Condition, scope EvalScope) tfdiags.Diagnostics {
@@ -176,4 +178,36 @@ func normalizeScopeValue(v cty.Value) cty.Value {
 		return cty.EmptyObjectVal
 	}
 	return v
+}
+
+func ScopeWithStepLocals(step *Step, scope EvalScope) EvalScope {
+	if step == nil || len(step.Locals) == 0 {
+		return scope
+	}
+	vals := map[string]cty.Value{}
+	if scope.Locals != cty.NilVal && scope.Locals.Type().IsObjectType() {
+		for k, v := range scope.Locals.AsValueMap() {
+			vals[k] = v
+		}
+	}
+	for name, expr := range step.Locals {
+		if expr == nil {
+			continue
+		}
+		localScope := scope
+		if len(vals) > 0 {
+			localScope.Locals = cty.ObjectVal(vals)
+		}
+		val, diags := EvalExpr(expr, localScope, cty.DynamicPseudoType)
+		if diags.HasErrors() {
+			vals[name] = cty.DynamicVal
+			continue
+		}
+		vals[name] = val
+	}
+	if len(vals) == 0 {
+		return scope
+	}
+	scope.Locals = cty.ObjectVal(vals)
+	return scope
 }

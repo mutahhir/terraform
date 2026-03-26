@@ -509,6 +509,9 @@ func applyTerraformDrivenConditions(eval *runbookconfig.StepEvaluation, conds []
 		if cond == nil {
 			continue
 		}
+		if eval.Status == runbookconfig.StepStatusSkipped && allowSkip {
+			return
+		}
 		result, ok := outputs[fmt.Sprintf("__runbook_%s_%d_condition", kind, i)]
 		if !ok || !result.IsKnown() || result.IsNull() || result.Type() != cty.Bool {
 			continue
@@ -710,6 +713,10 @@ func rootModuleInputValues(decls map[string]*configs.Variable, provided terrafor
 				ret[name] = value
 				continue
 			}
+		}
+		if strings.HasPrefix(name, "__runbook_action_output__") {
+			ret[name] = &terraform.InputValue{Value: cty.UnknownVal(cty.String), SourceType: terraform.ValueFromCaller}
+			continue
 		}
 		ret[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
 	}

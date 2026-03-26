@@ -151,6 +151,8 @@ func buildMainTF(cfg *Config, step *Step, scope EvalScope) ([]byte, map[string][
 		rootBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		rootBody.AppendNewline()
 	}
+	localDiags := appendStepLocalBlocks(rootBody, step, lowerScope, &snippets)
+	diags = diags.Append(localDiags)
 	outputDiags := appendStepOutputBlocks(rootBody, step, lowerScope, &snippets)
 	diags = diags.Append(outputDiags)
 	conditionDiags := appendConditionOutputBlocks(rootBody, step, lowerScope, &snippets)
@@ -159,6 +161,52 @@ func buildMainTF(cfg *Config, step *Step, scope EvalScope) ([]byte, map[string][
 	diags = diags.Append(syntheticVarDiags)
 	formatted := hclwrite.Format(mainFile.Bytes())
 	return formatted, buildSourceMapsForFormattedFile("main.tf", snippets), diags
+}
+
+func appendStepLocalBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerScope, snippets *[]sourceMappedSnippet) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if body == nil || step == nil || len(step.Locals) == 0 {
+		return diags
+	}
+	var src strings.Builder
+	src.WriteString("locals {\n")
+	names := make([]string, 0, len(step.Locals))
+	for name := range step.Locals {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		expr := step.Locals[name]
+		if expr == nil {
+			continue
+		}
+		exprSrc := step.LocalSrcs[name]
+		if len(bytes.TrimSpace(exprSrc)) == 0 {
+			continue
+		}
+		rewritten, moreDiags := lowerScope.RewriteExpr(expr, exprSrc)
+		diags = diags.Append(moreDiags)
+		if moreDiags.HasErrors() {
+			continue
+		}
+		src.WriteString(fmt.Sprintf("  %s = %s\n", name, strings.TrimSpace(string(rewritten))))
+	}
+	src.WriteString("}\n")
+	parsed, parseDiags := hclwrite.ParseConfig([]byte(src.String()), step.DeclRange.Filename, hcl.InitialPos)
+	diags = diags.Append(parseDiags)
+	if parseDiags.HasErrors() || parsed == nil {
+		return diags
+	}
+	if snippets != nil {
+		formatted := hclwrite.Format(parsed.Bytes())
+		current := hclwrite.Format(body.BuildTokens(nil).Bytes())
+		startLine := countLines(current) + 1
+		lineCount := countLines(formatted)
+		*snippets = append(*snippets, sourceMappedSnippet{GeneratedFile: "main.tf", Snippet: formatted, OriginalRange: step.DeclRange, GeneratedStartLine: startLine, GeneratedEndLine: startLine + lineCount - 1})
+	}
+	body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
+	body.AppendNewline()
+	return diags
 }
 
 func buildQueryTF(step *Step) ([]byte, map[string][]SourceMapEntry, tfdiags.Diagnostics) {
@@ -427,7 +475,7 @@ func rewriteRepetitionReferences(src []byte, each cty.Value, count cty.Value) []
 		ret = strings.ReplaceAll(ret, "each.key", hclQuotedLiteral(each.GetAttr("key")))
 	}
 	if each != cty.NilVal && each.Type().IsObjectType() && each.Type().HasAttribute("value") {
-		ret = strings.ReplaceAll(ret, "each.value", hclQuotedLiteral(each.GetAttr("value")))
+		ret = strings.ReplaceAll(ret, "each.value", hclLiteral(each.GetAttr("value")))
 	}
 	if count != cty.NilVal && count.Type().IsObjectType() && count.Type().HasAttribute("index") {
 		ret = strings.ReplaceAll(ret, "count.index", hclLiteral(count.GetAttr("index")))

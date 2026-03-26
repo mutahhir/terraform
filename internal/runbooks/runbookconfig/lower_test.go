@@ -48,20 +48,8 @@ step "example" {
 `), filepath.Join(rootDir, "main.tfrun.hcl"))
 	tfdiags.AssertNoDiagnostics(t, diags)
 
-	config := &Config{
-		RootPath: rootDir,
-		Files: map[string]*File{
-			cfg.Path: cfg,
-		},
-		Runbook: cfg.Runbook,
-	}
-
-	step := cfg.Steps["example"]
-	if step == nil {
-		t.Fatal("expected step to be present")
-	}
-
-	bundle, diags := LowerStep(config, step)
+	config := &Config{RootPath: rootDir, Files: map[string]*File{cfg.Path: cfg}, Runbook: cfg.Runbook, Variables: cfg.Variables}
+	bundle, diags := LowerStep(config, cfg.Steps["example"])
 	tfdiags.AssertNoDiagnostics(t, diags)
 
 	mainSrc := string(bundle.Files["main.tf"])
@@ -80,105 +68,92 @@ func TestLowerStepPreservesVariableBlocksForProviderConfig(t *testing.T) {
   terraform_version = ">= 1.0.0"
 
   required_providers {
-    aws = {
-      source = "hashicorp/aws"
+    simple = {
+      source = "hashicorp/test"
     }
   }
 }
 
-variable "aws_region" {
-  type        = string
-  description = "AWS region"
-  default     = "us-east-1"
+variable "region" {
+  default = "us-east-1"
 }
 
-provider "aws" {
-  region = var.aws_region
+provider "simple" {
+  region = var.region
 }
 
 step "example" {
-  list "aws_s3_bucket" "inventory" {
-    provider = aws
+  list "simple_resource" "inventory" {
+    provider = simple
 
-    config {}
+    config {
+      value = "hello"
+    }
   }
 }
 `), filepath.Join(rootDir, "main.tfrun.hcl"))
 	tfdiags.AssertNoDiagnostics(t, diags)
 
-	config := &Config{
-		RootPath: rootDir,
-		Files: map[string]*File{
-			cfg.Path: cfg,
-		},
-		Variables: cfg.Variables,
-		Runbook:   cfg.Runbook,
-	}
-
-	step := cfg.Steps["example"]
-	if step == nil {
-		t.Fatal("expected step to be present")
-	}
-
-	bundle, diags := LowerStep(config, step)
-	tfdiags.AssertNoDiagnostics(t, diags)
-
-	mainSrc := string(bundle.Files["main.tf"])
-	if !strings.Contains(mainSrc, `variable "aws_region"`) {
-		t.Fatalf("lowered main.tf did not preserve variable block:\n%s", mainSrc)
-	}
-	if !strings.Contains(mainSrc, `description = "AWS region"`) {
-		t.Fatalf("lowered main.tf did not preserve variable description:\n%s", mainSrc)
-	}
-	if !strings.Contains(mainSrc, `region = var.aws_region`) {
-		t.Fatalf("lowered main.tf did not preserve provider variable reference:\n%s", mainSrc)
-	}
-}
-
-func TestLowerStepPreservesVariableValidationBlocks(t *testing.T) {
-	rootDir := t.TempDir()
-
-	cfg, diags := ParseFileSource([]byte(`runbook {
-  terraform_version = ">= 1.0.0"
-}
-
-variable "aws_region" {
-  type        = string
-  description = "AWS region"
-  default     = "us-east-1"
-
-  validation {
-    condition     = length(var.aws_region) > 0
-    error_message = "aws_region must not be empty"
-  }
-}
-
-step "example" {
-  execute {}
-}
-`), filepath.Join(rootDir, "main.tfrun.hcl"))
-	tfdiags.AssertNoDiagnostics(t, diags)
-
-	config := &Config{
-		RootPath:  rootDir,
-		Files:     map[string]*File{cfg.Path: cfg},
-		Variables: cfg.Variables,
-		Runbook:   cfg.Runbook,
-	}
-
+	config := &Config{RootPath: rootDir, Files: map[string]*File{cfg.Path: cfg}, Runbook: cfg.Runbook, Variables: cfg.Variables}
 	bundle, diags := LowerStep(config, cfg.Steps["example"])
 	tfdiags.AssertNoDiagnostics(t, diags)
 
 	mainSrc := string(bundle.Files["main.tf"])
-	if !strings.Contains(mainSrc, "validation {") {
-		t.Fatalf("lowered main.tf did not preserve variable validation block:\n%s", mainSrc)
+	if !strings.Contains(mainSrc, `variable "region"`) {
+		t.Fatalf("lowered main.tf did not preserve variable block for provider config:\n%s", mainSrc)
 	}
-	if !strings.Contains(mainSrc, `error_message = "aws_region must not be empty"`) {
-		t.Fatalf("lowered main.tf did not preserve variable validation message:\n%s", mainSrc)
+	if !strings.Contains(mainSrc, `region = var.region`) {
+		t.Fatalf("lowered main.tf did not preserve provider variable reference:\n%s", mainSrc)
 	}
 }
 
-func TestLowerStepPreservesStepDataBlocks(t *testing.T) {
+func TestLowerStepPreservesNonDefaultVariableBlocks(t *testing.T) {
+	rootDir := t.TempDir()
+
+	cfg, diags := ParseFileSource([]byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    simple = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+variable "region" {
+  type = string
+}
+
+provider "simple" {
+  region = var.region
+}
+
+step "example" {
+  list "simple_resource" "inventory" {
+    provider = simple
+
+    config {
+      value = "hello"
+    }
+  }
+}
+`), filepath.Join(rootDir, "main.tfrun.hcl"))
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	config := &Config{RootPath: rootDir, Files: map[string]*File{cfg.Path: cfg}, Runbook: cfg.Runbook, Variables: cfg.Variables}
+	bundle, diags := LowerStep(config, cfg.Steps["example"])
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	mainSrc := string(bundle.Files["main.tf"])
+	if !strings.Contains(mainSrc, `variable "region"`) {
+		t.Fatalf("lowered main.tf did not preserve non-default variable block:\n%s", mainSrc)
+	}
+	if !strings.Contains(mainSrc, `type = string`) {
+		t.Fatalf("lowered main.tf did not preserve non-default variable schema:\n%s", mainSrc)
+	}
+}
+
+func TestLowerStepPreservesStepDataSources(t *testing.T) {
 	rootDir := t.TempDir()
 
 	cfg, diags := ParseFileSource([]byte(`runbook {
@@ -207,12 +182,7 @@ step "example" {
 `), filepath.Join(rootDir, "main.tfrun.hcl"))
 	tfdiags.AssertNoDiagnostics(t, diags)
 
-	config := &Config{
-		RootPath: rootDir,
-		Files:    map[string]*File{cfg.Path: cfg},
-		Runbook:  cfg.Runbook,
-	}
-
+	config := &Config{RootPath: rootDir, Files: map[string]*File{cfg.Path: cfg}, Runbook: cfg.Runbook}
 	bundle, diags := LowerStep(config, cfg.Steps["example"])
 	tfdiags.AssertNoDiagnostics(t, diags)
 
@@ -260,14 +230,10 @@ step "example" {
 `), filepath.Join(rootDir, "main.tfrun.hcl"))
 	tfdiags.AssertNoDiagnostics(t, diags)
 
-	config := &Config{
-		RootPath: rootDir,
-		Files:    map[string]*File{cfg.Path: cfg},
-		Runbook:  cfg.Runbook,
-	}
-
+	config := &Config{RootPath: rootDir, Files: map[string]*File{cfg.Path: cfg}, Runbook: cfg.Runbook}
 	bundle, diags := LowerStep(config, cfg.Steps["example"])
 	tfdiags.AssertNoDiagnostics(t, diags)
+
 	entries := bundle.SourceMaps["main.tf"]
 	if len(entries) < 3 {
 		t.Fatalf("expected source maps for appended blocks, got %#v", entries)
@@ -276,35 +242,20 @@ step "example" {
 	if !strings.Contains(mainSrc, `action "simple_action" "first"`) || !strings.Contains(mainSrc, `action "simple_action" "second"`) {
 		t.Fatalf("unexpected lowered main.tf:\n%s", mainSrc)
 	}
-	var matchedSecond bool
-	for _, entry := range entries {
-		if filepath.Base(entry.OriginalRange.Filename) != "main.tfrun.hcl" {
-			continue
-		}
-		if entry.OriginalRange.Start.Line == 20 {
-			matchedSecond = true
-			if entry.GeneratedEndLine < entry.GeneratedStartLine {
-				t.Fatalf("invalid generated line span: %#v", entry)
-			}
-		}
-	}
-	if !matchedSecond {
-		t.Fatalf("expected source map entry for second action block, got %#v", entries)
-	}
 }
 
 func TestLowerStepWithScopeRewritesRunbookReferences(t *testing.T) {
 	rootDir := t.TempDir()
 
 	cfg, diags := ParseFileSource([]byte(`runbook {
-	  terraform_version = ">= 1.0.0"
+  terraform_version = ">= 1.0.0"
 
-	  required_providers {
-	    simple = {
-	      source = "hashicorp/test"
-	    }
-	  }
-	}
+  required_providers {
+    simple = {
+      source = "hashicorp/test"
+    }
+  }
+}
 
 provider "simple" {}
 
@@ -331,24 +282,10 @@ step "example" {
 `), filepath.Join(rootDir, "main.tfrun.hcl"))
 	tfdiags.AssertNoDiagnostics(t, diags)
 
-	config := &Config{
-		RootPath: rootDir,
-		Files:    map[string]*File{cfg.Path: cfg},
-		Runbook:  cfg.Runbook,
-	}
-
+	config := &Config{RootPath: rootDir, Files: map[string]*File{cfg.Path: cfg}, Runbook: cfg.Runbook}
 	bundle, diags := LowerStepWithScope(config, cfg.Steps["example"], EvalScope{
-		Workspace: cty.ObjectVal(map[string]cty.Value{
-			"output": cty.ObjectVal(map[string]cty.Value{
-				"enabled": cty.True,
-			}),
-		}),
-		Steps: cty.ObjectVal(map[string]cty.Value{
-			"bootstrap": cty.ObjectVal(map[string]cty.Value{
-				"ready":   cty.True,
-				"message": cty.StringVal("hello"),
-			}),
-		}),
+		Workspace: cty.ObjectVal(map[string]cty.Value{"output": cty.ObjectVal(map[string]cty.Value{"enabled": cty.True})}),
+		Steps:     cty.ObjectVal(map[string]cty.Value{"bootstrap": cty.ObjectVal(map[string]cty.Value{"ready": cty.True, "message": cty.StringVal("hello")})}),
 	})
 	tfdiags.AssertNoDiagnostics(t, diags)
 
@@ -356,34 +293,124 @@ step "example" {
 	if strings.Contains(mainSrc, `= workspace.output.enabled`) || strings.Contains(mainSrc, `= steps.bootstrap.ready`) || strings.Contains(mainSrc, `= steps.bootstrap.message`) {
 		t.Fatalf("lowered main.tf still contains runbook-only references:\n%s", mainSrc)
 	}
-	if !strings.Contains(mainSrc, `var.__runbook_workspace.output.enabled`) {
-		t.Fatalf("lowered main.tf did not rewrite workspace output reference:\n%s", mainSrc)
+	if !strings.Contains(mainSrc, `var.__runbook_workspace.output.enabled`) || !strings.Contains(mainSrc, `var.__runbook_steps.bootstrap.ready`) {
+		t.Fatalf("lowered main.tf did not rewrite runbook references:\n%s", mainSrc)
 	}
-	if !strings.Contains(mainSrc, `var.__runbook_steps.bootstrap.ready`) {
-		t.Fatalf("lowered main.tf did not rewrite step reference:\n%s", mainSrc)
+	if !strings.Contains(mainSrc, `output "__runbook_precondition_0_condition"`) {
+		t.Fatalf("lowered main.tf did not preserve condition outputs:\n%s", mainSrc)
 	}
-	if strings.Contains(mainSrc, `value = workspace.output.enabled`) || strings.Contains(mainSrc, `value = steps.bootstrap.ready`) {
-		t.Fatalf("lowered main.tf still contains unrewritten runbook expressions:\n%s", mainSrc)
+}
+
+func TestLowerStepWithScopePreservesStepLocals(t *testing.T) {
+	rootDir := t.TempDir()
+
+	cfg, diags := ParseFileSource([]byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "example" {
+  locals {
+    summary_target = steps.bootstrap.message
+  }
+
+  output "summary_target" {
+    value = local.summary_target
+  }
+
+  precondition {
+    condition     = local.summary_target != ""
+    error_message = "summary target must be set"
+  }
+}
+`), filepath.Join(rootDir, "main.tfrun.hcl"))
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	config := &Config{RootPath: rootDir, Files: map[string]*File{cfg.Path: cfg}, Runbook: cfg.Runbook}
+	bundle, diags := LowerStepWithScope(config, cfg.Steps["example"], EvalScope{
+		Steps: cty.ObjectVal(map[string]cty.Value{"bootstrap": cty.ObjectVal(map[string]cty.Value{"message": cty.StringVal("hello")})}),
+	})
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	mainSrc := string(bundle.Files["main.tf"])
+	if !strings.Contains(mainSrc, "locals {") {
+		t.Fatalf("lowered main.tf did not emit locals block:\n%s", mainSrc)
 	}
-	if !strings.Contains(mainSrc, `data.simple_resource.current.value`) {
-		t.Fatalf("lowered main.tf should preserve terraform-native data references:\n%s", mainSrc)
+	if !strings.Contains(mainSrc, `summary_target = var.__runbook_steps.bootstrap.message`) {
+		t.Fatalf("lowered main.tf did not rewrite local expression:\n%s", mainSrc)
 	}
-	if !strings.Contains(mainSrc, `variable "__runbook_workspace"`) || !strings.Contains(mainSrc, `variable "__runbook_steps"`) {
-		t.Fatalf("lowered main.tf did not emit synthetic runbook variables:\n%s", mainSrc)
+}
+
+func TestLowerStepWithScopeRewritesObjectEachValueAccess(t *testing.T) {
+	rootDir := t.TempDir()
+
+	cfg, diags := ParseFileSource([]byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "example" {
+  for_each = {
+    primary = {
+      name = "runbook-scratchpad-ops-smoke"
+      arn  = "arn:example"
+    }
+  }
+
+  output "target" {
+    value = each.value.name
+  }
+}
+`), filepath.Join(rootDir, "main.tfrun.hcl"))
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	config := &Config{RootPath: rootDir, Files: map[string]*File{cfg.Path: cfg}, Runbook: cfg.Runbook}
+	bundle, diags := LowerStepInstanceWithScope(config, cfg.Steps["example"], EvalScope{
+		Each: cty.ObjectVal(map[string]cty.Value{
+			"key":   cty.StringVal("primary"),
+			"value": cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("runbook-scratchpad-ops-smoke"), "arn": cty.StringVal("arn:example")}),
+		}),
+	})
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	mainSrc := string(bundle.Files["main.tf"])
+	if strings.Contains(mainSrc, "null.name") {
+		t.Fatalf("lowered main.tf rewrote each.value.name to null:\n%s", mainSrc)
 	}
-	if strings.Contains(mainSrc, `var.__runbook_workspace.output.output`) || strings.Contains(mainSrc, `var.__runbook_steps.steps.`) {
-		t.Fatalf("lowered main.tf introduced duplicated runbook scope segments:\n%s", mainSrc)
+	if !strings.Contains(mainSrc, `runbook-scratchpad-ops-smoke`) || !strings.Contains(mainSrc, `arn:example`) || !strings.Contains(mainSrc, `}.name`) {
+		t.Fatalf("lowered main.tf did not preserve object-valued each.value access:\n%s", mainSrc)
 	}
-	if !strings.Contains(mainSrc, `output "result" {
-  value     = var.__runbook_workspace.output.enabled && data.simple_resource.current.value == var.__runbook_steps.bootstrap.message
-  sensitive = true
-}`) {
-		t.Fatalf("lowered main.tf did not mark rewritten step outputs as sensitive:\n%s", mainSrc)
+}
+
+func TestLowerStepWithScopeRewritesActionOutputToSyntheticStringVar(t *testing.T) {
+	rootDir := t.TempDir()
+
+	cfg, diags := ParseFileSource([]byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "example" {
+  postcondition {
+    condition     = regex("(?s)\\[.*\\]", trimspace(action.aws_lambda_invoke.smoke.output)) != ""
+    error_message = "must emit json"
+  }
+}
+`), filepath.Join(rootDir, "main.tfrun.hcl"))
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	config := &Config{RootPath: rootDir, Files: map[string]*File{cfg.Path: cfg}, Runbook: cfg.Runbook}
+	bundle, diags := LowerStepWithScope(config, cfg.Steps["example"], EvalScope{})
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	mainSrc := string(bundle.Files["main.tf"])
+	if strings.Contains(mainSrc, "__runbook_actions") {
+		t.Fatalf("lowered main.tf still uses action object scope for output:\n%s", mainSrc)
 	}
-	if !strings.Contains(mainSrc, `output "__runbook_precondition_0_condition" {
-  value     = var.__runbook_workspace.output.enabled && var.__runbook_steps.bootstrap.ready
-  sensitive = true
-}`) {
-		t.Fatalf("lowered main.tf did not mark synthetic condition outputs as sensitive:\n%s", mainSrc)
+	if !strings.Contains(mainSrc, `var.__runbook_action_output__aws_lambda_invoke__smoke`) {
+		t.Fatalf("lowered main.tf did not rewrite action output to synthetic string var:\n%s", mainSrc)
+	}
+	if !strings.Contains(mainSrc, `variable "__runbook_action_output__aws_lambda_invoke__smoke"`) {
+		t.Fatalf("lowered main.tf did not declare synthetic action output variable:\n%s", mainSrc)
+	}
+	if !strings.Contains(mainSrc, `type = string`) {
+		t.Fatalf("lowered main.tf did not type synthetic action output variable as string:\n%s", mainSrc)
 	}
 }

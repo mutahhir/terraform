@@ -64,6 +64,7 @@ func Build(cfg *runbookconfig.Config, configPath, workspace string, stepOrder []
 				return nil, diags, err
 			}
 			result.Outputs = mergeOutputs(result.Outputs, StepOutputsFromQueriesWithScope(step, result.Queries, baseScope))
+			result.Outputs = ensureDeclaredOutputs(step, result.Outputs, result.OutputNames)
 			expandedStep := singletonStepManifest(step, stepName, deps[stepName], result)
 			expandedStep.SourceMaps = encodeSourceMaps(result.SourceMaps)
 			manifest.StepOrder = append(manifest.StepOrder, expandedStep.Name)
@@ -94,6 +95,7 @@ func Build(cfg *runbookconfig.Config, configPath, workspace string, stepOrder []
 				return nil, diags, err
 			}
 			result.Outputs = mergeOutputs(result.Outputs, StepOutputsFromQueriesWithScope(step, result.Queries, instanceScope))
+			result.Outputs = ensureDeclaredOutputs(step, result.Outputs, result.OutputNames)
 			expandedStep.After = append([]string(nil), deps[stepName]...)
 			expandedStep.KnownSkipped = result.KnownSkipped
 			expandedStep.SkipReason = result.SkipReason
@@ -485,4 +487,29 @@ func mergeOutputs(primary, fallback cty.Value) cty.Value {
 		return cty.EmptyObjectVal
 	}
 	return cty.ObjectVal(ret)
+}
+
+func ensureDeclaredOutputs(step *runbookconfig.Step, outputs cty.Value, outputNames []string) cty.Value {
+	vals := map[string]cty.Value{}
+	if outputs != cty.NilVal && outputs.Type().IsObjectType() {
+		for name, val := range outputs.AsValueMap() {
+			vals[name] = val
+		}
+	}
+	for _, name := range outputNames {
+		if _, exists := vals[name]; exists {
+			continue
+		}
+		if step != nil {
+			if output := step.Outputs[name]; output != nil && runbookconfig.ExprReferencesRunbookActionOutput(output.Value) {
+				vals[name] = cty.UnknownVal(cty.String)
+				continue
+			}
+		}
+		vals[name] = cty.NullVal(cty.DynamicPseudoType)
+	}
+	if len(vals) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return cty.ObjectVal(vals)
 }

@@ -136,7 +136,7 @@ func stepOutputDependencies(expr hcl.Expression) []string {
 	}
 	var deps []string
 	for _, traversal := range expr.Variables() {
-		if len(traversal) < 3 {
+		if len(traversal) < 2 {
 			continue
 		}
 		root, ok := traversal[0].(hcl.TraverseRoot)
@@ -147,8 +147,8 @@ func stepOutputDependencies(expr hcl.Expression) []string {
 		if !ok {
 			continue
 		}
-		_, ok = traversal[2].(hcl.TraverseAttr)
-		if !ok {
+		if len(traversal) == 2 {
+			deps = append(deps, stepAttr.Name)
 			continue
 		}
 		deps = append(deps, stepAttr.Name)

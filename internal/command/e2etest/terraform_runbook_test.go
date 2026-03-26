@@ -228,6 +228,9 @@ func TestRunbookExecuteMultiStep(t *testing.T) {
 	if bootstrapIdx > dependentIdx {
 		t.Fatalf("dependent step completed before bootstrap:\n%s", stdout)
 	}
+	if !strings.Contains(stdout, `seen_seed_output = "Hello world!\nDone."`) {
+		t.Fatalf("missing propagated action output across steps:\n%s", stdout)
+	}
 	if !strings.Contains(stdout, "Runbook apply complete.") {
 		t.Fatalf("missing execute completion footer:\n%s", stdout)
 	}

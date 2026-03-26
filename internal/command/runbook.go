@@ -568,6 +568,9 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 			if preEval.Detail != "" {
 				c.Ui.Output(fmt.Sprintf("reason = %q", preEval.Detail))
 			}
+			if len(preEval.Diags) != 0 {
+				c.showDiagnostics(preEval.Diags)
+			}
 			c.Ui.Output("")
 			continue
 		}
@@ -1804,6 +1807,10 @@ func rootModuleInputValues(decls map[string]*configs.Variable, provided terrafor
 				ret[name] = value
 				continue
 			}
+		}
+		if strings.HasPrefix(name, "__runbook_action_output__") {
+			ret[name] = &terraform.InputValue{Value: cty.UnknownVal(cty.String), SourceType: terraform.ValueFromCaller}
+			continue
 		}
 		ret[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
 	}

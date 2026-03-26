@@ -80,6 +80,7 @@ type Step struct {
 	Lists          []*List
 	ExecuteInvokes []*ExecuteActionInvoke
 	Locals         map[string]hcl.Expression
+	LocalSrcs      map[string][]byte
 	Outputs        map[string]*Output
 	Preconditions  []*Condition
 	Postconditions []*Condition
@@ -682,6 +683,7 @@ func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[s
 	ret := &Step{
 		Name:      block.Labels[0],
 		Locals:    make(map[string]hcl.Expression),
+		LocalSrcs: make(map[string][]byte),
 		Outputs:   make(map[string]*Output),
 		DeclRange: tfdiags.SourceRangeFromHCL(block.DefRange),
 	}
@@ -715,6 +717,7 @@ func decodeStepBlock(src []byte, block *hcl.Block, syntaxBlocks map[string]map[s
 			diags = diags.Append(moreDiags)
 			for name, attr := range attrs {
 				ret.Locals[name] = attr.Expr
+				ret.LocalSrcs[name] = sourceSlice(src, attr.Expr.Range())
 			}
 		case "action":
 			ret.ActionCount++
