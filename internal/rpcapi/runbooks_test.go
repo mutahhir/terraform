@@ -19,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform/internal/providers"
 	provider_testing "github.com/hashicorp/terraform/internal/providers/testing"
 	"github.com/hashicorp/terraform/internal/rpcapi/terraform1/runbooks"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
 	ctymsgpack "github.com/zclconf/go-cty/cty/msgpack"
 	"google.golang.org/grpc/codes"
@@ -777,6 +778,85 @@ step "invoke" {
 		t.Fatal("expected diagnostics")
 	}
 	if got := resp.Diagnostics[0].Summary; got != "Unsupported argument" {
+		t.Fatalf("wrong diagnostic summary: %q", got)
+	}
+}
+
+func TestRunbooksPlanRunbookStepRejectsPlanTimeActionErrorOnActionOnlyStep(t *testing.T) {
+	ctx := context.Background()
+	handles := newHandleTable()
+	server := newRunbooksServer(handles, disco.New())
+	provider := testRunbookProvider()
+	provider.PlanActionFn = func(req providers.PlanActionRequest) providers.PlanActionResponse {
+		var resp providers.PlanActionResponse
+		resp.Diagnostics = resp.Diagnostics.Append(tfdiags.Sourceless(tfdiags.Error, "Invalid action plan", "step-local action failed during plan"))
+		return resp
+	}
+	server.providerCacheOverride = map[addrs.Provider]providers.Factory{
+		addrs.NewDefaultProvider("test"): fixedMockProviderFactory(provider),
+	}
+
+	configPath := t.TempDir()
+	locks := handles.NewDependencyLocks(depsfile.NewLocks())
+	cache := handles.NewProviderPluginCache(providercache.NewDir(configPath))
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "invoke" {
+  action "test_action" "broken" {
+    config {
+      attr = "value"
+    }
+  }
+
+  execute {
+    action_invoke {
+      action = action.test_action.broken
+    }
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openResp, err := server.OpenRunbookConfiguration(ctx, &runbooks.OpenRunbookConfiguration_Request{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeResp, err := server.OpenRunbookRuntime(ctx, &runbooks.OpenRunbookRuntime_Request{
+		DependencyLocksHandle: locks.ForProtobuf(),
+		ProviderCacheHandle:   cache.ForProtobuf(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := server.PlanRunbookStep(ctx, &runbooks.PlanRunbookStep_Request{
+		RunbookConfigHandle:  openResp.RunbookConfigHandle,
+		RunbookRuntimeHandle: runtimeResp.RunbookRuntimeHandle,
+		StepName:             "invoke",
+		Scope:                &runbooks.EvalScope{Variables: &runbooks.DynamicValue{Msgpack: mustMsgpackValue(t, cty.EmptyObjectVal)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resp.Status, runbooks.StepStatus_STEP_STATUS_FAILED; got != want {
+		t.Fatalf("wrong status: got %v want %v; diagnostics=%v", got, want, resp.Diagnostics)
+	}
+	if len(resp.Diagnostics) == 0 {
+		t.Fatal("expected diagnostics")
+	}
+	if got := resp.Diagnostics[0].Summary; got != "Invalid action plan" {
 		t.Fatalf("wrong diagnostic summary: %q", got)
 	}
 }

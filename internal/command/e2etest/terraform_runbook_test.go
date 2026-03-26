@@ -16,12 +16,16 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
 	version "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/e2e"
 	"github.com/hashicorp/terraform/internal/grpcwrap"
 	tfplugin "github.com/hashicorp/terraform/internal/plugin6"
 	simple "github.com/hashicorp/terraform/internal/provider-simple-v6"
+	"github.com/hashicorp/terraform/internal/providers"
+	provider_testing "github.com/hashicorp/terraform/internal/providers/testing"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/states/statefile"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 	proto "github.com/hashicorp/terraform/internal/tfplugin6"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -628,6 +632,170 @@ func TestRunbookPlanFailsFastOnStepPlanningError(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Unsupported argument") {
 		t.Fatalf("missing step planning diagnostic:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if strings.Contains(stderr, "terraform-runbook-step-") || strings.Contains(stderr, "terraform-runbook-execute-") {
+		t.Fatalf("unexpected lowered temp path in diagnostic:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if strings.Contains(stdout, "Saved runbook plan:") {
+		t.Fatalf("unexpected saved plan output after planning failure:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if _, statErr := os.Stat(tf.Path(".terraform", "runbook.tfrunplan")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no saved runbook plan after planning failure: %v", statErr)
+	}
+
+	cancel()
+	<-closeCh
+}
+
+func TestRunbookPlanFailsFastOnActionOnlyStepPlanningError(t *testing.T) {
+	if !canRunGoBuild {
+		t.Skip("can't run without building a new provider executable")
+	}
+
+	t.Parallel()
+	os.Setenv(e2e.TestExperimentFlag, "true")
+	terraformBin := e2e.GoBuild("github.com/hashicorp/terraform", "terraform")
+
+	fixturePath := filepath.Join("testdata", "runbook-provider-invalid-action-only")
+	tf := e2e.NewBinary(t, terraformBin, fixturePath)
+
+	reattachCh := make(chan *plugin.ReattachConfig)
+	closeCh := make(chan struct{})
+	provider6 := &providerServer{ProviderServer: grpcwrap.Provider6(simple.Provider())}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go plugin.Serve(&plugin.ServeConfig{
+		Logger:     hclog.New(&hclog.LoggerOptions{Name: "plugintest", Level: hclog.Trace, Output: io.Discard}),
+		Test:       &plugin.ServeTestConfig{Context: ctx, ReattachConfigCh: reattachCh, CloseCh: closeCh},
+		GRPCServer: plugin.DefaultGRPCServer,
+		VersionedPlugins: map[int]plugin.PluginSet{
+			6: {
+				"provider": &tfplugin.GRPCProviderPlugin{GRPCProvider: func() proto.ProviderServer { return provider6 }},
+			},
+		},
+	})
+	config := <-reattachCh
+	reattachStr, err := json.Marshal(map[string]reattachConfig{
+		"hashicorp/test": {
+			Protocol:        string(config.Protocol),
+			ProtocolVersion: 6,
+			Pid:             config.Pid,
+			Test:            true,
+			Addr:            reattachConfigAddr{Network: config.Addr.Network(), String: config.Addr.String()},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tf.AddEnv("TF_REATTACH_PROVIDERS=" + string(reattachStr))
+
+	if _, stderr, err := tf.Run("init"); err != nil {
+		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
+	}
+	stdout, stderr, err := tf.Run("runbook", "plan")
+	if err == nil {
+		t.Fatalf("expected runbook plan error\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Planning step:") || !strings.Contains(stdout, "invoke") {
+		t.Fatalf("missing plan progress output:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "Unsupported argument") {
+		t.Fatalf("missing step planning diagnostic:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if strings.Contains(stderr, "terraform-runbook-step-") || strings.Contains(stderr, "terraform-runbook-execute-") {
+		t.Fatalf("unexpected lowered temp path in diagnostic:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if strings.Contains(stdout, "Saved runbook plan:") {
+		t.Fatalf("unexpected saved plan output after planning failure:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if _, statErr := os.Stat(tf.Path(".terraform", "runbook.tfrunplan")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no saved runbook plan after planning failure: %v", statErr)
+	}
+
+	cancel()
+	<-closeCh
+}
+
+func TestRunbookPlanFailsFastOnActionOnlyStepPlanActionError(t *testing.T) {
+	if !canRunGoBuild {
+		t.Skip("can't run without building a new provider executable")
+	}
+
+	t.Parallel()
+	os.Setenv(e2e.TestExperimentFlag, "true")
+	terraformBin := e2e.GoBuild("github.com/hashicorp/terraform", "terraform")
+
+	fixturePath := filepath.Join("testdata", "runbook-provider-plan-action-error")
+	tf := e2e.NewBinary(t, terraformBin, fixturePath)
+
+	reattachCh := make(chan *plugin.ReattachConfig)
+	closeCh := make(chan struct{})
+	provider := &provider_testing.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			Actions: map[string]providers.ActionSchema{
+				"simple_action": {
+					ConfigSchema: &configschema.Block{
+						Attributes: map[string]*configschema.Attribute{
+							"value": {
+								Type:     cty.String,
+								Optional: true,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	provider.PlanActionFn = func(req providers.PlanActionRequest) providers.PlanActionResponse {
+		var resp providers.PlanActionResponse
+		resp.Diagnostics = resp.Diagnostics.Append(tfdiags.Sourceless(tfdiags.Error, "Invalid action plan", "step-local action failed during plan"))
+		return resp
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go plugin.Serve(&plugin.ServeConfig{
+		Logger:     hclog.New(&hclog.LoggerOptions{Name: "plugintest", Level: hclog.Trace, Output: io.Discard}),
+		Test:       &plugin.ServeTestConfig{Context: ctx, ReattachConfigCh: reattachCh, CloseCh: closeCh},
+		GRPCServer: plugin.DefaultGRPCServer,
+		VersionedPlugins: map[int]plugin.PluginSet{
+			6: {
+				"provider": &tfplugin.GRPCProviderPlugin{GRPCProvider: func() proto.ProviderServer { return grpcwrap.Provider6(provider) }},
+			},
+		},
+	})
+	config := <-reattachCh
+	reattachStr, err := json.Marshal(map[string]reattachConfig{
+		"hashicorp/test": {
+			Protocol:        string(config.Protocol),
+			ProtocolVersion: 6,
+			Pid:             config.Pid,
+			Test:            true,
+			Addr:            reattachConfigAddr{Network: config.Addr.Network(), String: config.Addr.String()},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tf.AddEnv("TF_REATTACH_PROVIDERS=" + string(reattachStr))
+
+	if _, stderr, err := tf.Run("init"); err != nil {
+		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
+	}
+	stdout, stderr, err := tf.Run("runbook", "plan")
+	if err == nil {
+		t.Fatalf("expected runbook plan error\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Planning step:") || !strings.Contains(stdout, "invoke") {
+		t.Fatalf("missing plan progress output:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "Invalid action plan") {
+		t.Fatalf("missing action plan-time diagnostic:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if strings.Contains(stderr, "terraform-runbook-step-") || strings.Contains(stderr, "terraform-runbook-execute-") {
+		t.Fatalf("unexpected lowered temp path in diagnostic:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 	if strings.Contains(stdout, "Saved runbook plan:") {
 		t.Fatalf("unexpected saved plan output after planning failure:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
