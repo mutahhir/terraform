@@ -225,7 +225,7 @@ step "example" {
 	}
 }
 
-func TestLowerStepWithScopeRewritesRunbookReferences(t *testing.T) {
+func TestLowerStepBuildsSourceMapsForAppendedBlocks(t *testing.T) {
 	rootDir := t.TempDir()
 
 	cfg, diags := ParseFileSource([]byte(`runbook {
@@ -237,6 +237,74 @@ func TestLowerStepWithScopeRewritesRunbookReferences(t *testing.T) {
     }
   }
 }
+
+provider "simple" {}
+
+step "example" {
+  action "simple_action" "first" {
+    config {
+      value = "one"
+    }
+  }
+
+  action "simple_action" "second" {
+    config {
+      value = "two"
+    }
+  }
+
+  output "result" {
+    value = true
+  }
+}
+`), filepath.Join(rootDir, "main.tfrun.hcl"))
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	config := &Config{
+		RootPath: rootDir,
+		Files:    map[string]*File{cfg.Path: cfg},
+		Runbook:  cfg.Runbook,
+	}
+
+	bundle, diags := LowerStep(config, cfg.Steps["example"])
+	tfdiags.AssertNoDiagnostics(t, diags)
+	entries := bundle.SourceMaps["main.tf"]
+	if len(entries) < 3 {
+		t.Fatalf("expected source maps for appended blocks, got %#v", entries)
+	}
+	mainSrc := string(bundle.Files["main.tf"])
+	if !strings.Contains(mainSrc, `action "simple_action" "first"`) || !strings.Contains(mainSrc, `action "simple_action" "second"`) {
+		t.Fatalf("unexpected lowered main.tf:\n%s", mainSrc)
+	}
+	var matchedSecond bool
+	for _, entry := range entries {
+		if filepath.Base(entry.OriginalRange.Filename) != "main.tfrun.hcl" {
+			continue
+		}
+		if entry.OriginalRange.Start.Line == 20 {
+			matchedSecond = true
+			if entry.GeneratedEndLine < entry.GeneratedStartLine {
+				t.Fatalf("invalid generated line span: %#v", entry)
+			}
+		}
+	}
+	if !matchedSecond {
+		t.Fatalf("expected source map entry for second action block, got %#v", entries)
+	}
+}
+
+func TestLowerStepWithScopeRewritesRunbookReferences(t *testing.T) {
+	rootDir := t.TempDir()
+
+	cfg, diags := ParseFileSource([]byte(`runbook {
+	  terraform_version = ">= 1.0.0"
+
+	  required_providers {
+	    simple = {
+	      source = "hashicorp/test"
+	    }
+	  }
+	}
 
 provider "simple" {}
 

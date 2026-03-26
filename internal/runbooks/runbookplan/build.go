@@ -30,6 +30,7 @@ type StepPlanResult struct {
 	PlannedData    []string
 	OutputNames    []string
 	LoweredFiles   map[string][]byte
+	SourceMaps     map[string][]runbookconfig.SourceMapEntry
 }
 
 type StepPlanner func(stepName string, scope runbookconfig.EvalScope) (StepPlanResult, error)
@@ -64,6 +65,7 @@ func Build(cfg *runbookconfig.Config, configPath, workspace string, stepOrder []
 			}
 			result.Outputs = mergeOutputs(result.Outputs, StepOutputsFromQueriesWithScope(step, result.Queries, baseScope))
 			expandedStep := singletonStepManifest(step, stepName, deps[stepName], result)
+			expandedStep.SourceMaps = encodeSourceMaps(result.SourceMaps)
 			manifest.StepOrder = append(manifest.StepOrder, expandedStep.Name)
 			manifest.Steps = append(manifest.Steps, expandedStep)
 			stepResults.Set(stepInstanceAddr(expandedStep), decodePlannedOutputsMap(expandedStep.PlannedOutputs))
@@ -100,6 +102,7 @@ func Build(cfg *runbookconfig.Config, configPath, workspace string, stepOrder []
 			expandedStep.PlannedData = append([]string(nil), result.PlannedData...)
 			expandedStep.Outputs = append([]string(nil), result.OutputNames...)
 			expandedStep.PlannedOutputs = encodePlannedOutputs(result.Outputs)
+			expandedStep.SourceMaps = encodeSourceMaps(result.SourceMaps)
 			manifest.StepOrder = append(manifest.StepOrder, expandedStep.Name)
 			manifest.Steps = append(manifest.Steps, expandedStep)
 			stepResults.Set(stepInstanceAddr(expandedStep), decodePlannedOutputsMap(expandedStep.PlannedOutputs))
@@ -314,6 +317,52 @@ func countScopeForExpandedStep(step *runbookplanfile.Step) cty.Value {
 	return cty.ObjectVal(map[string]cty.Value{
 		"index": cty.NumberIntVal(int64(*step.CountIndex)),
 	})
+}
+
+func encodeSourceMaps(sourceMaps map[string][]runbookconfig.SourceMapEntry) map[string][]runbookplanfile.RunbookSourceMapEntry {
+	if len(sourceMaps) == 0 {
+		return nil
+	}
+	ret := make(map[string][]runbookplanfile.RunbookSourceMapEntry, len(sourceMaps))
+	for name, entries := range sourceMaps {
+		mapped := make([]runbookplanfile.RunbookSourceMapEntry, 0, len(entries))
+		for _, entry := range entries {
+			mapped = append(mapped, runbookplanfile.RunbookSourceMapEntry{
+				GeneratedStartLine: entry.GeneratedStartLine,
+				GeneratedEndLine:   entry.GeneratedEndLine,
+				OriginalRange: runbookplanfile.RunbookSourceMapRange{
+					Filename: entry.OriginalRange.Filename,
+					Start:    runbookplanfile.RunbookSourceMapPos{Line: entry.OriginalRange.Start.Line, Column: entry.OriginalRange.Start.Column, Byte: entry.OriginalRange.Start.Byte},
+					End:      runbookplanfile.RunbookSourceMapPos{Line: entry.OriginalRange.End.Line, Column: entry.OriginalRange.End.Column, Byte: entry.OriginalRange.End.Byte},
+				},
+			})
+		}
+		ret[name] = mapped
+	}
+	return ret
+}
+
+func decodeSourceMaps(sourceMaps map[string][]runbookplanfile.RunbookSourceMapEntry) map[string][]runbookconfig.SourceMapEntry {
+	if len(sourceMaps) == 0 {
+		return nil
+	}
+	ret := make(map[string][]runbookconfig.SourceMapEntry, len(sourceMaps))
+	for name, entries := range sourceMaps {
+		mapped := make([]runbookconfig.SourceMapEntry, 0, len(entries))
+		for _, entry := range entries {
+			mapped = append(mapped, runbookconfig.SourceMapEntry{
+				GeneratedStartLine: entry.GeneratedStartLine,
+				GeneratedEndLine:   entry.GeneratedEndLine,
+				OriginalRange: tfdiags.SourceRange{
+					Filename: entry.OriginalRange.Filename,
+					Start:    tfdiags.SourcePos{Line: entry.OriginalRange.Start.Line, Column: entry.OriginalRange.Start.Column, Byte: entry.OriginalRange.Start.Byte},
+					End:      tfdiags.SourcePos{Line: entry.OriginalRange.End.Line, Column: entry.OriginalRange.End.Column, Byte: entry.OriginalRange.End.Byte},
+				},
+			})
+		}
+		ret[name] = mapped
+	}
+	return ret
 }
 
 func evaluateCountExpression(expr hcl.Expression, scope runbookconfig.EvalScope) (int, tfdiags.Diagnostics) {

@@ -25,6 +25,17 @@ func TestCreateAndReadPlan(t *testing.T) {
 				Name:           "first",
 				PlannedActions: []string{"action.simple_action.target"},
 				PlannedData:    []string{"data.simple_resource.current"},
+				SourceMaps: map[string][]RunbookSourceMapEntry{
+					"main.tf": {{
+						GeneratedStartLine: 10,
+						GeneratedEndLine:   12,
+						OriginalRange: RunbookSourceMapRange{
+							Filename: "main.tfrun.hcl",
+							Start:    RunbookSourceMapPos{Line: 20, Column: 3, Byte: 100},
+							End:      RunbookSourceMapPos{Line: 24, Column: 4, Byte: 180},
+						},
+					}},
+				},
 			},
 		},
 	}
@@ -71,6 +82,9 @@ func TestCreateAndReadPlan(t *testing.T) {
 	}
 	if len(got.Steps) != 1 || got.Steps[0].Name != "first" {
 		t.Fatalf("wrong steps: %#v", got.Steps)
+	}
+	if got := got.Steps[0].SourceMaps["main.tf"][0].OriginalRange.Filename; got != "main.tfrun.hcl" {
+		t.Fatalf("wrong source map filename: %q", got)
 	}
 	stateFile, err := r.ReadStateFile()
 	if err != nil {

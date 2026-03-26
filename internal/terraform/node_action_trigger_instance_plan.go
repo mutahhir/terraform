@@ -165,21 +165,25 @@ func (n *nodeActionTriggerPlanInstance) Execute(ctx EvalContext, operation walkO
 	})
 
 	if len(resp.Diagnostics) > 0 {
-		severity := hcl.DiagWarning
-		message := "Warnings when planning action"
-		err := resp.Diagnostics.Warnings().ErrWithWarnings()
-		if resp.Diagnostics.HasErrors() {
-			severity = hcl.DiagError
-			message = "Failed to plan action"
-			err = resp.Diagnostics.ErrWithWarnings()
-		}
+		if n.actionConfig != nil && n.actionConfig.Config != nil {
+			diags = diags.Append(resp.Diagnostics.InConfigBody(n.actionConfig.Config, n.actionAddress.Action.String()))
+		} else {
+			severity := hcl.DiagWarning
+			message := "Warnings when planning action"
+			err := resp.Diagnostics.Warnings().ErrWithWarnings()
+			if resp.Diagnostics.HasErrors() {
+				severity = hcl.DiagError
+				message = "Failed to plan action"
+				err = resp.Diagnostics.ErrWithWarnings()
+			}
 
-		diags = diags.Append(&hcl.Diagnostic{
-			Severity: severity,
-			Summary:  message,
-			Detail:   err.Error(),
-			Subject:  n.lifecycleActionTrigger.invokingSubject,
-		})
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: severity,
+				Summary:  message,
+				Detail:   err.Error(),
+				Subject:  n.lifecycleActionTrigger.invokingSubject,
+			})
+		}
 	}
 	if resp.Deferred != nil {
 		// we always set allow_deferrals to be false for actions, so this

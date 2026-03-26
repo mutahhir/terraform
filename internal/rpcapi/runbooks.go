@@ -6,6 +6,7 @@ package rpcapi
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -176,6 +177,7 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 	if plan.Lowered != nil {
 		providedVars := terraform.InputValuesFromCaller(scope.Variables.AsValueMap())
 		tfPlan, lowerDiags := s.validateAndPlanLoweredStepDir(plan.Lowered.Dir, runtime, providedVars, len(step.Lists) > 0)
+		lowerDiags = remapRunbookLoweredDiagnostics(lowerDiags, plan.Lowered.SourceMaps)
 		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(lowerDiags)
 		if lowerDiags.HasErrors() {
 			plan.Evaluation.Status = runbookconfig.StepStatusFailed
@@ -183,16 +185,18 @@ func (s *runbooksServer) PlanRunbookStep(ctx context.Context, req *runbooks.Plan
 				plan.Evaluation.Detail = lowerDiags.Err().Error()
 			}
 		}
-		if tfPlan != nil && tfPlan.Changes != nil {
-			invokeDiags := s.planRunbookExecuteInvokes(plan.Lowered.Dir, runtime, providedVars, step, tfPlan)
-			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(invokeDiags)
-			if invokeDiags.HasErrors() {
-				plan.Evaluation.Status = runbookconfig.StepStatusFailed
-				if plan.Evaluation.Detail == "" || plan.Evaluation.Detail == "conditions satisfied" {
-					plan.Evaluation.Detail = invokeDiags.Err().Error()
-				}
+		invokeDiags := s.planRunbookExecuteInvokes(plan.Lowered.Dir, runtime, providedVars, step, tfPlan)
+		invokeDiags = remapRunbookLoweredDiagnostics(invokeDiags, plan.Lowered.SourceMaps)
+		plan.Evaluation.Diags = plan.Evaluation.Diags.Append(invokeDiags)
+		if invokeDiags.HasErrors() {
+			plan.Evaluation.Status = runbookconfig.StepStatusFailed
+			if plan.Evaluation.Detail == "" || plan.Evaluation.Detail == "conditions satisfied" {
+				plan.Evaluation.Detail = invokeDiags.Err().Error()
 			}
+		}
+		if tfPlan != nil && tfPlan.Changes != nil {
 			schemas, schemaDiags := s.schemasForRunbookPlan(plan.Lowered.Dir, runtime, providedVars)
+			schemaDiags = remapRunbookLoweredDiagnostics(schemaDiags, plan.Lowered.SourceMaps)
 			plan.Evaluation.Diags = plan.Evaluation.Diags.Append(schemaDiags)
 			for _, q := range tfPlan.Changes.Queries {
 				count := int64(0)
@@ -588,7 +592,7 @@ func (s *runbooksServer) validateAndPlanLoweredStepDir(dir string, runtime *runb
 		Query:        query,
 		SetVariables: inputValues,
 	})
-	if plan != nil && plan.Changes != nil && len(plan.Changes.Queries) == 0 {
+	if query && plan != nil && plan.Changes != nil && len(plan.Changes.Queries) == 0 {
 		diags = diags.Append(tfdiags.Sourceless(
 			tfdiags.Warning,
 			"Lowered step produced no query changes",
@@ -710,6 +714,74 @@ func rootModuleInputValues(decls map[string]*configs.Variable, provided terrafor
 		ret[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
 	}
 	return ret
+}
+
+func remapRunbookLoweredDiagnostics(diags tfdiags.Diagnostics, sourceMaps map[string][]runbookconfig.SourceMapEntry) tfdiags.Diagnostics {
+	if len(diags) == 0 || len(sourceMaps) == 0 {
+		return diags
+	}
+	ret := make(tfdiags.Diagnostics, 0, len(diags))
+	for _, diag := range diags {
+		ret = append(ret, remapRunbookLoweredDiagnostic(diag, sourceMaps))
+	}
+	return ret
+}
+
+func remapRunbookLoweredDiagnostic(diag tfdiags.Diagnostic, sourceMaps map[string][]runbookconfig.SourceMapEntry) tfdiags.Diagnostic {
+	if diag == nil {
+		return diag
+	}
+	src := diag.Source()
+	changed := false
+	if mapped := remapRunbookLoweredSourceRange(src.Subject, sourceMaps); mapped != nil {
+		src.Subject = mapped
+		changed = true
+	}
+	if mapped := remapRunbookLoweredSourceRange(src.Context, sourceMaps); mapped != nil {
+		src.Context = mapped
+		changed = true
+	}
+	if !changed {
+		return diag
+	}
+	return &runbookRemappedDiagnostic{Diagnostic: diag, source: src}
+}
+
+func remapRunbookLoweredSourceRange(rng *tfdiags.SourceRange, sourceMaps map[string][]runbookconfig.SourceMapEntry) *tfdiags.SourceRange {
+	if rng == nil || rng.Filename == "" {
+		return nil
+	}
+	entries := sourceMaps[filepath.Base(rng.Filename)]
+	if len(entries) == 0 {
+		return nil
+	}
+	line := rng.Start.Line
+	var nearest *runbookconfig.SourceMapEntry
+	for _, entry := range entries {
+		if line < entry.GeneratedStartLine || line > entry.GeneratedEndLine {
+			if line >= entry.GeneratedStartLine {
+				entryCopy := entry
+				nearest = &entryCopy
+			}
+			continue
+		}
+		mapped := entry.OriginalRange
+		return &mapped
+	}
+	if nearest != nil {
+		mapped := nearest.OriginalRange
+		return &mapped
+	}
+	return nil
+}
+
+type runbookRemappedDiagnostic struct {
+	tfdiags.Diagnostic
+	source tfdiags.Source
+}
+
+func (d *runbookRemappedDiagnostic) Source() tfdiags.Source {
+	return d.source
 }
 
 func (s *runbooksServer) planRunbookExecuteInvokes(dir string, runtime *runbookRuntime, provided terraform.InputValues, step *runbookconfig.Step, tfPlan *plans.Plan) tfdiags.Diagnostics {

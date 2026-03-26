@@ -60,11 +60,12 @@ type runbookExecuteArgs struct {
 }
 
 type builtRunbookPlan struct {
-	Manifest  *runbookplanfile.Plan
-	Lowered   map[string]map[string][]byte
-	Sources   map[string][]byte
-	StateFile *statefile.File
-	Config    *runbookconfig.Config
+	Manifest   *runbookplanfile.Plan
+	Lowered    map[string]map[string][]byte
+	SourceMaps map[string]map[string][]runbookconfig.SourceMapEntry
+	Sources    map[string][]byte
+	StateFile  *statefile.File
+	Config     *runbookconfig.Config
 }
 
 type runbookActionOutputHook struct {
@@ -307,6 +308,7 @@ func (c *RunbookCommand) buildRunbookPlan(ctx context.Context) (*builtRunbookPla
 			return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
 		}
 		loweredFiles := copyLoweredFiles(planResp)
+		var loweredSourceMaps map[string][]runbookconfig.SourceMapEntry
 		if rawStep != nil && len(loweredFiles) == 0 {
 			loweredBundle, lowerDiags := runbookconfig.LowerStep(rawCfg, rawStep)
 			if lowerDiags.HasErrors() {
@@ -314,6 +316,7 @@ func (c *RunbookCommand) buildRunbookPlan(ctx context.Context) (*builtRunbookPla
 			}
 			if loweredBundle != nil {
 				loweredFiles = loweredBundle.Files
+				loweredSourceMaps = loweredBundle.SourceMaps
 			}
 		}
 		outputs, outputDiags := plannedOutputsFromResponse(planResp)
@@ -331,6 +334,7 @@ func (c *RunbookCommand) buildRunbookPlan(ctx context.Context) (*builtRunbookPla
 			PlannedData:    staticPlannedData(rawStep),
 			OutputNames:    step.Outputs,
 			LoweredFiles:   loweredFiles,
+			SourceMaps:     loweredSourceMaps,
 		}, nil
 	})
 	if buildErr != nil {
@@ -353,7 +357,7 @@ func (c *RunbookCommand) buildRunbookPlan(ctx context.Context) (*builtRunbookPla
 		c.Ui.Error(fmt.Sprintf("Failed to read runbook source files: %s", sourceErr))
 		return nil, false
 	}
-	return &builtRunbookPlan{Manifest: manifest, Lowered: lowered, Sources: sources, StateFile: stateFile, Config: rawCfg}, true
+	return &builtRunbookPlan{Manifest: manifest, Lowered: lowered, SourceMaps: collectManifestSourceMaps(manifest), Sources: sources, StateFile: stateFile, Config: rawCfg}, true
 }
 
 func (c *RunbookCommand) runExecute(args []string) int {
@@ -381,7 +385,7 @@ func (c *RunbookCommand) runExecute(args []string) int {
 			c.Ui.Output(line)
 		}
 		c.Ui.Output("")
-		return c.executeRunbookPlanData(built.Manifest, built.Sources, built.StateFile, func(stepName string) (map[string][]byte, error) {
+		return c.executeRunbookPlanData(built.Manifest, built.Sources, built.StateFile, collectManifestSourceMaps(built.Manifest), func(stepName string) (map[string][]byte, error) {
 			return built.Lowered[stepName], nil
 		})
 	}
@@ -411,10 +415,10 @@ func (c *RunbookCommand) runExecute(args []string) int {
 		c.Ui.Error(fmt.Sprintf("Failed to read embedded runbook state: %s", err))
 		return 1
 	}
-	return c.executeRunbookPlanData(manifest, sources, stateFile, r.ReadLoweredStepFiles)
+	return c.executeRunbookPlanData(manifest, sources, stateFile, collectManifestSourceMaps(manifest), r.ReadLoweredStepFiles)
 }
 
-func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, sources map[string][]byte, stateFile *statefile.File, loweredReader func(string) (map[string][]byte, error)) int {
+func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, sources map[string][]byte, stateFile *statefile.File, sourceMaps map[string]map[string][]runbookconfig.SourceMapEntry, loweredReader func(string) (map[string][]byte, error)) int {
 	rawCfg, loadDiags := runbookconfig.LoadConfigSources(manifest.ConfigPath, sources)
 	if loadDiags.HasErrors() {
 		c.Ui.Error(loadDiags.Err().Error())
@@ -482,10 +486,14 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 			Each:      eachScopeForManifestStep(manifestStep),
 			Count:     countScopeForManifestStep(manifestStep),
 		}); lowerDiags.HasErrors() {
-			c.Ui.Error(lowerDiags.Err().Error())
+			c.showDiagnostics(lowerDiags)
 			return 1
 		} else if loweredBundle != nil {
 			loweredFiles = loweredBundle.Files
+			if sourceMaps == nil {
+				sourceMaps = map[string]map[string][]runbookconfig.SourceMapEntry{}
+			}
+			sourceMaps[stepName] = loweredBundle.SourceMaps
 		}
 		planFiles := loweredFiles
 		if len(loweredFiles) == 0 {
@@ -529,8 +537,10 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 		}
 
 		planConfig, inputValues, configDiags := loadLoweredStepConfig(planFiles, runbookInputs)
+		if len(configDiags) != 0 {
+			c.showRemappedDiagnostics(configDiags, sourceMaps[stepName])
+		}
 		if configDiags.HasErrors() {
-			c.Ui.Error(configDiags.Err().Error())
 			return 1
 		}
 		plannedStepNames := append([]string(nil), manifest.StepOrder...)
@@ -542,15 +552,19 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 			Query:        hasQueries,
 			SetVariables: inputValues,
 		})
+		if len(planDiags) != 0 {
+			c.showRemappedDiagnostics(planDiags, sourceMaps[stepName])
+		}
 		if planDiags.HasErrors() {
-			c.Ui.Error(planDiags.Err().Error())
 			return 1
 		}
 		applyFiles := stripExecuteUnsafeFiles(planFiles)
 		if hasApplyableConfig(applyFiles) {
 			applyConfig, _, applyConfigDiags := loadLoweredStepConfig(applyFiles, runbookInputs)
+			if len(applyConfigDiags) != 0 {
+				c.showRemappedDiagnostics(applyConfigDiags, sourceMaps[stepName])
+			}
 			if applyConfigDiags.HasErrors() {
-				c.Ui.Error(applyConfigDiags.Err().Error())
 				return 1
 			}
 			applyPlan, applyPlanDiags := tfCtx.Plan(applyConfig, stepState, &terraform.PlanOpts{
@@ -558,8 +572,10 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 				Query:        false,
 				SetVariables: inputValues,
 			})
+			if len(applyPlanDiags) != 0 {
+				c.showRemappedDiagnostics(applyPlanDiags, sourceMaps[stepName])
+			}
 			if applyPlanDiags.HasErrors() {
-				c.Ui.Error(applyPlanDiags.Err().Error())
 				return 1
 			}
 			newState, applyDiags := tfCtx.Apply(applyPlan, applyConfig, &terraform.ApplyOpts{})
@@ -583,8 +599,10 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 				return 1
 			}
 			planConfig, invokeInputValues, invokeConfigDiags := loadLoweredStepConfig(invokeFiles, runbookInputs)
+			if len(invokeConfigDiags) != 0 {
+				c.showRemappedDiagnostics(invokeConfigDiags, sourceMaps[stepName])
+			}
 			if invokeConfigDiags.HasErrors() {
-				c.Ui.Error(invokeConfigDiags.Err().Error())
 				return 1
 			}
 			invokePlan, invokePlanDiags := tfCtx.Plan(planConfig, states.NewState(), &terraform.PlanOpts{
@@ -592,8 +610,10 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 				ActionTargets: []addrs.Targetable{target},
 				SetVariables:  invokeInputValues,
 			})
+			if len(invokePlanDiags) != 0 {
+				c.showRemappedDiagnostics(invokePlanDiags, sourceMaps[stepName])
+			}
 			if invokePlanDiags.HasErrors() {
-				c.Ui.Error(invokePlanDiags.Err().Error())
 				return 1
 			}
 			if invokePlan == nil || invokePlan.Changes == nil || len(invokePlan.Changes.ActionInvocations) == 0 {
@@ -1290,6 +1310,7 @@ func (c *RunbookCommand) planRunbookStepInstance(stepName string, cfg *runbookco
 		PlannedData:    staticPlannedData(rawStep),
 		OutputNames:    protoStep.Outputs,
 		LoweredFiles:   loweredBundle.Files,
+		SourceMaps:     loweredBundle.SourceMaps,
 	}, nil
 }
 
@@ -1373,6 +1394,9 @@ func (c *RunbookCommand) showRunbookProtoDiagnostics(diags []*terraform1.Diagnos
 		if diag.GetDetail() != "" {
 			msg = fmt.Sprintf("%s: %s", diag.GetSummary(), diag.GetDetail())
 		}
+		if loc := formatProtoDiagnosticLocation(diag); loc != "" {
+			msg = fmt.Sprintf("%s (%s)", msg, loc)
+		}
 		switch diag.GetSeverity() {
 		case terraform1.Diagnostic_ERROR:
 			c.Ui.Error(msg)
@@ -1382,6 +1406,165 @@ func (c *RunbookCommand) showRunbookProtoDiagnostics(diags []*terraform1.Diagnos
 			c.Ui.Output(msg)
 		}
 	}
+}
+
+func formatProtoDiagnosticLocation(diag *terraform1.Diagnostic) string {
+	if diag == nil {
+		return ""
+	}
+	rng := diag.GetSubject()
+	if rng == nil {
+		rng = diag.GetContext()
+	}
+	if rng == nil || rng.GetSourceAddr() == "" {
+		return ""
+	}
+	if isGeneratedRunbookSourceAddr(rng.GetSourceAddr()) {
+		return ""
+	}
+	start := rng.GetStart()
+	if start == nil || start.GetLine() <= 0 {
+		return rng.GetSourceAddr()
+	}
+	if start.GetColumn() <= 0 {
+		return fmt.Sprintf("%s:%d", rng.GetSourceAddr(), start.GetLine())
+	}
+	return fmt.Sprintf("%s:%d:%d", rng.GetSourceAddr(), start.GetLine(), start.GetColumn())
+}
+
+func isGeneratedRunbookSourceAddr(sourceAddr string) bool {
+	if sourceAddr == "" {
+		return false
+	}
+	return strings.Contains(sourceAddr, "terraform-runbook-step-") || strings.Contains(sourceAddr, "terraform-runbook-execute-")
+}
+
+func collectManifestSourceMaps(plan *runbookplanfile.Plan) map[string]map[string][]runbookconfig.SourceMapEntry {
+	if plan == nil {
+		return nil
+	}
+	ret := map[string]map[string][]runbookconfig.SourceMapEntry{}
+	for i := range plan.Steps {
+		step := &plan.Steps[i]
+		if step == nil || len(step.SourceMaps) == 0 {
+			continue
+		}
+		ret[step.Name] = decodePlanfileSourceMaps(step.SourceMaps)
+	}
+	if len(ret) == 0 {
+		return nil
+	}
+	return ret
+}
+
+func decodePlanfileSourceMaps(sourceMaps map[string][]runbookplanfile.RunbookSourceMapEntry) map[string][]runbookconfig.SourceMapEntry {
+	if len(sourceMaps) == 0 {
+		return nil
+	}
+	ret := make(map[string][]runbookconfig.SourceMapEntry, len(sourceMaps))
+	for name, entries := range sourceMaps {
+		mapped := make([]runbookconfig.SourceMapEntry, 0, len(entries))
+		for _, entry := range entries {
+			mapped = append(mapped, runbookconfig.SourceMapEntry{
+				GeneratedStartLine: entry.GeneratedStartLine,
+				GeneratedEndLine:   entry.GeneratedEndLine,
+				OriginalRange: tfdiags.SourceRange{
+					Filename: entry.OriginalRange.Filename,
+					Start:    tfdiags.SourcePos{Line: entry.OriginalRange.Start.Line, Column: entry.OriginalRange.Start.Column, Byte: entry.OriginalRange.Start.Byte},
+					End:      tfdiags.SourcePos{Line: entry.OriginalRange.End.Line, Column: entry.OriginalRange.End.Column, Byte: entry.OriginalRange.End.Byte},
+				},
+			})
+		}
+		ret[name] = mapped
+	}
+	return ret
+}
+
+func (c *RunbookCommand) showRemappedDiagnostics(diags tfdiags.Diagnostics, sourceMaps map[string][]runbookconfig.SourceMapEntry) {
+	if len(diags) == 0 {
+		return
+	}
+	if len(sourceMaps) == 0 {
+		c.showDiagnostics(diags)
+		return
+	}
+	c.showDiagnostics(remapDiagnosticsToRunbookSources(diags, sourceMaps))
+}
+
+func remapDiagnosticsToRunbookSources(diags tfdiags.Diagnostics, sourceMaps map[string][]runbookconfig.SourceMapEntry) tfdiags.Diagnostics {
+	if len(diags) == 0 || len(sourceMaps) == 0 {
+		return diags
+	}
+	ret := make(tfdiags.Diagnostics, 0, len(diags))
+	for _, diag := range diags {
+		ret = append(ret, remapDiagnosticToRunbookSources(diag, sourceMaps))
+	}
+	return ret
+}
+
+func remapDiagnosticToRunbookSources(diag tfdiags.Diagnostic, sourceMaps map[string][]runbookconfig.SourceMapEntry) tfdiags.Diagnostic {
+	if diag == nil {
+		return diag
+	}
+	src := diag.Source()
+	changed := false
+	if mapped := remapSourceRange(src.Subject, sourceMaps); mapped != nil {
+		src.Subject = mapped
+		changed = true
+	}
+	if mapped := remapSourceRange(src.Context, sourceMaps); mapped != nil {
+		src.Context = mapped
+		changed = true
+	}
+	if !changed {
+		return diag
+	}
+	return &runbookMappedDiagnostic{Diagnostic: diag, source: src}
+}
+
+func remapSourceRange(rng *tfdiags.SourceRange, sourceMaps map[string][]runbookconfig.SourceMapEntry) *tfdiags.SourceRange {
+	if rng == nil || !isGeneratedRunbookSourceAddr(rng.Filename) {
+		return nil
+	}
+	entries := sourceMaps[filepath.Base(rng.Filename)]
+	if len(entries) == 0 {
+		for name, candidate := range sourceMaps {
+			if name == filepath.Base(rng.Filename) {
+				entries = candidate
+				break
+			}
+		}
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	line := rng.Start.Line
+	var nearest *runbookconfig.SourceMapEntry
+	for _, entry := range entries {
+		if line < entry.GeneratedStartLine || line > entry.GeneratedEndLine {
+			if line >= entry.GeneratedStartLine {
+				entryCopy := entry
+				nearest = &entryCopy
+			}
+			continue
+		}
+		mapped := entry.OriginalRange
+		return &mapped
+	}
+	if nearest != nil {
+		mapped := nearest.OriginalRange
+		return &mapped
+	}
+	return nil
+}
+
+type runbookMappedDiagnostic struct {
+	tfdiags.Diagnostic
+	source tfdiags.Source
+}
+
+func (d *runbookMappedDiagnostic) Source() tfdiags.Source {
+	return d.source
 }
 
 func planRespQueries(resp *runbooks.PlanRunbookStep_Response) []runbookconfig.PlannedQuery {

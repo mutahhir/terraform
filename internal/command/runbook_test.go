@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform/internal/runbooks/runbookeval"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookplanfile"
 	"github.com/hashicorp/terraform/internal/states"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
 	ctymsgpack "github.com/zclconf/go-cty/cty/msgpack"
 )
@@ -115,6 +116,43 @@ func TestMergedWorkspaceScopePrefersWorkspaceStateOutputs(t *testing.T) {
 	got := mergedWorkspaceScope(base, stepState)
 	if gotVal := got.GetAttr("output").GetAttr("smoke_lambda_name"); !gotVal.RawEquals(cty.StringVal("step-name")) {
 		t.Fatalf("wrong merged workspace output: %#v", gotVal)
+	}
+}
+
+func TestRemapDiagnosticsToRunbookSourcesMapsLoweredMainTF(t *testing.T) {
+	diag := tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  "Unsupported argument",
+		Detail:   "bad attr",
+		Subject: &hcl.Range{
+			Filename: "/tmp/terraform-runbook-step-123/main.tf",
+			Start:    hcl.Pos{Line: 12, Column: 5, Byte: 100},
+			End:      hcl.Pos{Line: 12, Column: 16, Byte: 111},
+		},
+	})
+	mapped := remapDiagnosticsToRunbookSources(diag, map[string][]runbookconfig.SourceMapEntry{
+		"main.tf": {{
+			GeneratedStartLine: 10,
+			GeneratedEndLine:   14,
+			OriginalRange: tfdiags.SourceRange{
+				Filename: "runbook.tfrun.hcl",
+				Start:    tfdiags.SourcePos{Line: 21, Column: 5, Byte: 200},
+				End:      tfdiags.SourcePos{Line: 23, Column: 6, Byte: 260},
+			},
+		}},
+	})
+	if len(mapped) != 1 {
+		t.Fatalf("wrong diag count: %d", len(mapped))
+	}
+	src := mapped[0].Source()
+	if src.Subject == nil {
+		t.Fatal("missing remapped subject")
+	}
+	if got, want := src.Subject.Filename, "runbook.tfrun.hcl"; got != want {
+		t.Fatalf("wrong remapped filename: got %q want %q", got, want)
+	}
+	if got, want := src.Subject.Start.Line, 21; got != want {
+		t.Fatalf("wrong remapped line: got %d want %d", got, want)
 	}
 }
 

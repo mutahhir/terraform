@@ -21,9 +21,24 @@ import (
 )
 
 type LoweredStepBundle struct {
-	StepName string
-	Dir      string
-	Files    map[string][]byte
+	StepName   string
+	Dir        string
+	Files      map[string][]byte
+	SourceMaps map[string][]SourceMapEntry
+}
+
+type SourceMapEntry struct {
+	GeneratedStartLine int
+	GeneratedEndLine   int
+	OriginalRange      tfdiags.SourceRange
+}
+
+type sourceMappedSnippet struct {
+	GeneratedFile      string
+	Snippet            []byte
+	OriginalRange      tfdiags.SourceRange
+	GeneratedStartLine int
+	GeneratedEndLine   int
 }
 
 func LowerStep(cfg *Config, step *Step) (*LoweredStepBundle, tfdiags.Diagnostics) {
@@ -50,16 +65,17 @@ func LowerStepInstanceWithScope(cfg *Config, step *Step, scope EvalScope) (*Lowe
 	}
 
 	files := make(map[string][]byte)
-	mainSrc, mainDiags := buildMainTF(cfg, step, scope)
+	mainSrc, mainMaps, mainDiags := buildMainTF(cfg, step, scope)
 	diags = diags.Append(mainDiags)
 	if len(bytes.TrimSpace(mainSrc)) > 0 {
 		files["main.tf"] = mainSrc
 	}
-	querySrc, queryDiags := buildQueryTF(step)
+	querySrc, queryMaps, queryDiags := buildQueryTF(step)
 	diags = diags.Append(queryDiags)
 	if len(bytes.TrimSpace(querySrc)) > 0 {
 		files["main.tfquery.hcl"] = querySrc
 	}
+	sourceMaps := mergeSourceMaps(mainMaps, queryMaps)
 
 	for name, src := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), src, 0644); err != nil {
@@ -74,22 +90,33 @@ func LowerStepInstanceWithScope(cfg *Config, step *Step, scope EvalScope) (*Lowe
 	_, hclDiags := parser.LoadConfigDir(dir)
 	diags = diags.Append(hclDiags)
 
-	return &LoweredStepBundle{StepName: step.Name, Dir: dir, Files: files}, diags
+	return &LoweredStepBundle{StepName: step.Name, Dir: dir, Files: files, SourceMaps: sourceMaps}, diags
 }
 
-func buildMainTF(cfg *Config, step *Step, scope EvalScope) ([]byte, tfdiags.Diagnostics) {
+func buildMainTF(cfg *Config, step *Step, scope EvalScope) ([]byte, map[string][]SourceMapEntry, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	mainFile := hclwrite.NewEmptyFile()
 	rootBody := mainFile.Body()
 	lowerScope := NewLowerScope(scope)
+	snippets := make([]sourceMappedSnippet, 0)
+	appendSnippet := func(filename string, parsed *hclwrite.File, orig tfdiags.SourceRange) {
+		if parsed == nil {
+			return
+		}
+		formatted := hclwrite.Format(parsed.Bytes())
+		current := hclwrite.Format(mainFile.Bytes())
+		startLine := countLines(current) + 1
+		lineCount := countLines(formatted)
+		snippets = append(snippets, sourceMappedSnippet{GeneratedFile: filename, Snippet: formatted, OriginalRange: orig, GeneratedStartLine: startLine, GeneratedEndLine: startLine + lineCount - 1})
+	}
 	if cfg.Runbook != nil {
 		settingsDiags := appendTerraformSettings(rootBody, cfg)
 		diags = diags.Append(settingsDiags)
 		variableDiags := appendVariableBlocks(rootBody, cfg)
 		diags = diags.Append(variableDiags)
-		providerDiags := appendProviderBlocks(rootBody, cfg)
+		providerDiags := appendProviderBlocks(rootBody, cfg, &snippets)
 		diags = diags.Append(providerDiags)
-		actionDiags := appendRootActionBlocks(rootBody, cfg, lowerScope)
+		actionDiags := appendRootActionBlocks(rootBody, cfg, step, lowerScope, &snippets)
 		diags = diags.Append(actionDiags)
 	}
 	for _, action := range step.Actions {
@@ -104,6 +131,7 @@ func buildMainTF(cfg *Config, step *Step, scope EvalScope) ([]byte, tfdiags.Diag
 			continue
 		}
 		diags = diags.Append(lowerScope.RewriteBodyExpressions(parsed.Body()))
+		appendSnippet("main.tf", parsed, action.DeclRange)
 		rootBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		rootBody.AppendNewline()
 	}
@@ -119,32 +147,39 @@ func buildMainTF(cfg *Config, step *Step, scope EvalScope) ([]byte, tfdiags.Diag
 			continue
 		}
 		diags = diags.Append(lowerScope.RewriteBodyExpressions(parsed.Body()))
+		appendSnippet("main.tf", parsed, dataSource.DeclRange)
 		rootBody.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		rootBody.AppendNewline()
 	}
-	outputDiags := appendStepOutputBlocks(rootBody, step, lowerScope)
+	outputDiags := appendStepOutputBlocks(rootBody, step, lowerScope, &snippets)
 	diags = diags.Append(outputDiags)
-	conditionDiags := appendConditionOutputBlocks(rootBody, step, lowerScope)
+	conditionDiags := appendConditionOutputBlocks(rootBody, step, lowerScope, &snippets)
 	diags = diags.Append(conditionDiags)
 	syntheticVarDiags := lowerScope.AppendVariableBlocks(rootBody)
 	diags = diags.Append(syntheticVarDiags)
-	return hclwrite.Format(mainFile.Bytes()), diags
+	formatted := hclwrite.Format(mainFile.Bytes())
+	return formatted, buildSourceMapsForFormattedFile("main.tf", snippets), diags
 }
 
-func buildQueryTF(step *Step) ([]byte, tfdiags.Diagnostics) {
+func buildQueryTF(step *Step) ([]byte, map[string][]SourceMapEntry, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if step == nil || len(step.Lists) == 0 {
-		return nil, diags
+		return nil, nil, diags
 	}
 	var buf bytes.Buffer
+	maps := map[string][]SourceMapEntry{}
+	line := 1
 	for _, list := range step.Lists {
 		if list == nil || len(bytes.TrimSpace(list.Src)) == 0 {
 			continue
 		}
-		buf.Write(bytes.TrimSpace(list.Src))
-		buf.WriteString("\n\n")
+		snippet := append(bytes.TrimSpace(list.Src), []byte("\n\n")...)
+		buf.Write(snippet)
+		lineCount := countLines(snippet)
+		maps["main.tfquery.hcl"] = append(maps["main.tfquery.hcl"], SourceMapEntry{GeneratedStartLine: line, GeneratedEndLine: line + lineCount - 1, OriginalRange: list.DeclRange})
+		line += lineCount
 	}
-	return buf.Bytes(), diags
+	return buf.Bytes(), maps, diags
 }
 
 func appendTerraformSettings(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics {
@@ -187,21 +222,32 @@ func appendTerraformSettings(body *hclwrite.Body, cfg *Config) tfdiags.Diagnosti
 	return diags
 }
 
-func appendRootActionBlocks(body *hclwrite.Body, cfg *Config, lowerScope *LowerScope) tfdiags.Diagnostics {
+func appendRootActionBlocks(body *hclwrite.Body, cfg *Config, step *Step, lowerScope *LowerScope, snippets *[]sourceMappedSnippet) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if cfg == nil {
 		return diags
 	}
+	requiredRefs := requiredRootActionRefs(step)
+	if len(requiredRefs) == 0 {
+		return diags
+	}
+	localRefs := localStepActionRefs(step)
 	actionsByRef, workspaceDiags := WorkspaceActions(cfg)
 	diags = diags.Append(workspaceDiags)
 	for ref, action := range cfg.Actions {
 		if action != nil {
+			if _, shadowed := localRefs[ref]; shadowed {
+				continue
+			}
 			actionsByRef[ref] = action
 		}
 	}
 	actions := make([]*Action, 0, len(actionsByRef))
-	for _, action := range actionsByRef {
+	for ref, action := range actionsByRef {
 		if action != nil {
+			if _, ok := requiredRefs[ref]; !ok {
+				continue
+			}
 			actions = append(actions, action)
 		}
 	}
@@ -223,13 +269,61 @@ func appendRootActionBlocks(body *hclwrite.Body, cfg *Config, lowerScope *LowerS
 		if lowerScope != nil {
 			diags = diags.Append(lowerScope.RewriteBodyExpressions(parsed.Body()))
 		}
+		if snippets != nil {
+			formattedCurrent := hclwrite.Format(body.BuildTokens(nil).Bytes())
+			startLine := countLines(formattedCurrent) + 1
+			formatted := hclwrite.Format(parsed.Bytes())
+			*snippets = append(*snippets, sourceMappedSnippet{GeneratedFile: "main.tf", Snippet: formatted, OriginalRange: action.DeclRange, GeneratedStartLine: startLine, GeneratedEndLine: startLine + countLines(formatted) - 1})
+		}
 		body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		body.AppendNewline()
 	}
 	return diags
 }
 
-func appendStepOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerScope) tfdiags.Diagnostics {
+func requiredRootActionRefs(step *Step) map[string]struct{} {
+	if step == nil || len(step.ExecuteInvokes) == 0 {
+		return nil
+	}
+	ret := map[string]struct{}{}
+	for _, invoke := range step.ExecuteInvokes {
+		if invoke == nil || invoke.ActionRef == "" {
+			continue
+		}
+		if strings.HasPrefix(invoke.ActionRef, "workspace.action.") {
+			ret[invoke.ActionRef] = struct{}{}
+			continue
+		}
+		if strings.HasPrefix(invoke.ActionRef, "action.") {
+			ret[invoke.ActionRef] = struct{}{}
+		}
+	}
+	if len(ret) == 0 {
+		return nil
+	}
+	return ret
+}
+
+func localStepActionRefs(step *Step) map[string]struct{} {
+	if step == nil || len(step.Actions) == 0 {
+		return nil
+	}
+	ret := map[string]struct{}{}
+	for _, action := range step.Actions {
+		if action == nil {
+			continue
+		}
+		if ref := action.Reference(); ref != "" {
+			ret[ref] = struct{}{}
+		}
+	}
+	if len(ret) == 0 {
+		return nil
+	}
+	return ret
+}
+
+func appendStepOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerScope, snippets *[]sourceMappedSnippet) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if step == nil || len(step.Outputs) == 0 {
 		return diags
@@ -257,13 +351,19 @@ func appendStepOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerSc
 			diags = diags.Append(parseDiags)
 			continue
 		}
+		if snippets != nil {
+			formattedCurrent := hclwrite.Format(body.BuildTokens(nil).Bytes())
+			startLine := countLines(formattedCurrent) + 1
+			formatted := hclwrite.Format(parsed.Bytes())
+			*snippets = append(*snippets, sourceMappedSnippet{GeneratedFile: "main.tf", Snippet: formatted, OriginalRange: output.DeclRange, GeneratedStartLine: startLine, GeneratedEndLine: startLine + countLines(formatted) - 1})
+		}
 		body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		body.AppendNewline()
 	}
 	return diags
 }
 
-func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerScope) tfdiags.Diagnostics {
+func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *LowerScope, snippets *[]sourceMappedSnippet) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if step == nil {
 		return diags
@@ -283,6 +383,12 @@ func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *Lo
 				if parseDiags.HasErrors() || parsed == nil {
 					diags = diags.Append(parseDiags)
 				} else {
+					if snippets != nil {
+						formattedCurrent := hclwrite.Format(body.BuildTokens(nil).Bytes())
+						startLine := countLines(formattedCurrent) + 1
+						formatted := hclwrite.Format(parsed.Bytes())
+						*snippets = append(*snippets, sourceMappedSnippet{GeneratedFile: "main.tf", Snippet: formatted, OriginalRange: cond.DeclRange, GeneratedStartLine: startLine, GeneratedEndLine: startLine + countLines(formatted) - 1})
+					}
 					body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 					body.AppendNewline()
 				}
@@ -297,6 +403,12 @@ func appendConditionOutputBlocks(body *hclwrite.Body, step *Step, lowerScope *Lo
 				if parseDiags.HasErrors() || parsed == nil {
 					diags = diags.Append(parseDiags)
 				} else {
+					if snippets != nil {
+						formattedCurrent := hclwrite.Format(body.BuildTokens(nil).Bytes())
+						startLine := countLines(formattedCurrent) + 1
+						formatted := hclwrite.Format(parsed.Bytes())
+						*snippets = append(*snippets, sourceMappedSnippet{GeneratedFile: "main.tf", Snippet: formatted, OriginalRange: cond.DeclRange, GeneratedStartLine: startLine, GeneratedEndLine: startLine + countLines(formatted) - 1})
+					}
 					body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 					body.AppendNewline()
 				}
@@ -337,7 +449,7 @@ func hclQuotedLiteral(v cty.Value) string {
 	return fmt.Sprintf("%q", v.AsString())
 }
 
-func appendProviderBlocks(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics {
+func appendProviderBlocks(body *hclwrite.Body, cfg *Config, snippets *[]sourceMappedSnippet) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if cfg == nil {
 		return diags
@@ -370,10 +482,54 @@ func appendProviderBlocks(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics 
 			diags = diags.Append(parseDiags)
 			continue
 		}
+		if snippets != nil {
+			formattedCurrent := hclwrite.Format(body.BuildTokens(nil).Bytes())
+			startLine := countLines(formattedCurrent) + 1
+			formatted := hclwrite.Format(parsed.Bytes())
+			*snippets = append(*snippets, sourceMappedSnippet{GeneratedFile: "main.tf", Snippet: formatted, OriginalRange: provider.DeclRange, GeneratedStartLine: startLine, GeneratedEndLine: startLine + countLines(formatted) - 1})
+		}
 		body.AppendUnstructuredTokens(parsed.Body().BuildTokens(nil))
 		body.AppendNewline()
 	}
 	return diags
+}
+
+func mergeSourceMaps(maps ...map[string][]SourceMapEntry) map[string][]SourceMapEntry {
+	ret := map[string][]SourceMapEntry{}
+	for _, m := range maps {
+		for name, entries := range m {
+			ret[name] = append(ret[name], entries...)
+		}
+	}
+	if len(ret) == 0 {
+		return nil
+	}
+	return ret
+}
+
+func buildSourceMapsForFormattedFile(filename string, snippets []sourceMappedSnippet) map[string][]SourceMapEntry {
+	if len(snippets) == 0 {
+		return nil
+	}
+	entries := make([]SourceMapEntry, 0, len(snippets))
+	for _, snippet := range snippets {
+		if snippet.GeneratedFile != filename || snippet.GeneratedStartLine <= 0 || snippet.GeneratedEndLine < snippet.GeneratedStartLine {
+			continue
+		}
+		entries = append(entries, SourceMapEntry{GeneratedStartLine: snippet.GeneratedStartLine, GeneratedEndLine: snippet.GeneratedEndLine, OriginalRange: snippet.OriginalRange})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return map[string][]SourceMapEntry{filename: entries}
+}
+
+func countLines(src []byte) int {
+	trimmed := bytes.TrimRight(src, "\n")
+	if len(trimmed) == 0 {
+		return 1
+	}
+	return 1 + bytes.Count(trimmed, []byte("\n"))
 }
 
 func appendVariableBlocks(body *hclwrite.Body, cfg *Config) tfdiags.Diagnostics {
