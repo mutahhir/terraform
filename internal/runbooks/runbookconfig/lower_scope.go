@@ -142,7 +142,9 @@ func (s *LowerScope) AppendVariableBlocks(body *hclwrite.Body) tfdiags.Diagnosti
 			continue
 		}
 		block := body.AppendNewBlock("variable", []string{name})
-		block.Body().SetAttributeRaw("default", hclwrite.TokensForValue(sanitizeValueForLowering(s.syntheticVars[name])))
+		if val := s.syntheticVars[name]; val != cty.NilVal && val.IsWhollyKnown() {
+			block.Body().SetAttributeRaw("default", hclwrite.TokensForValue(sanitizeValueForLowering(val)))
+		}
 		body.AppendNewline()
 	}
 

@@ -24,6 +24,7 @@ type Config struct {
 	RootPath  string
 	Actions   map[string]*Action
 	Files     map[string]*File
+	Outputs   map[string]*Output
 	Variables map[string]*Variable
 	Runbook   *Runbook
 }
@@ -33,6 +34,7 @@ type File struct {
 	Runbook   *Runbook
 	Providers map[string]*ProviderConfig
 	Variables map[string]*Variable
+	Outputs   map[string]*Output
 	Actions   map[string]*Action
 	Steps     map[string]*Step
 }
@@ -185,6 +187,7 @@ func LoadConfigDir(rootPath string) (*Config, tfdiags.Diagnostics) {
 		RootPath:  rootPath,
 		Actions:   make(map[string]*Action),
 		Files:     make(map[string]*File),
+		Outputs:   make(map[string]*Output),
 		Variables: make(map[string]*Variable),
 	}
 
@@ -247,6 +250,19 @@ func LoadConfigDir(rootPath string) (*Config, tfdiags.Diagnostics) {
 			ret.Actions[ref] = action
 		}
 
+		for name, output := range file.Outputs {
+			if existing, exists := ret.Outputs[name]; exists {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate output block",
+					Detail:   fmt.Sprintf("An output named %q was already declared at %s.", name, existing.DeclRange.StartString()),
+					Subject:  output.DeclRange.ToHCL().Ptr(),
+				})
+				continue
+			}
+			ret.Outputs[name] = output
+		}
+
 		ret.Files[file.Path] = file
 	}
 
@@ -268,6 +284,7 @@ func LoadConfigSources(rootPath string, sources map[string][]byte) (*Config, tfd
 		RootPath:  rootPath,
 		Actions:   make(map[string]*Action),
 		Files:     make(map[string]*File),
+		Outputs:   make(map[string]*Output),
 		Variables: make(map[string]*Variable),
 	}
 
@@ -324,6 +341,19 @@ func LoadConfigSources(rootPath string, sources map[string][]byte) (*Config, tfd
 			ret.Actions[ref] = action
 		}
 
+		for name, output := range file.Outputs {
+			if existing, exists := ret.Outputs[name]; exists {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate output block",
+					Detail:   fmt.Sprintf("An output named %q was already declared at %s.", name, existing.DeclRange.StartString()),
+					Subject:  output.DeclRange.ToHCL().Ptr(),
+				})
+				continue
+			}
+			ret.Outputs[name] = output
+		}
+
 		ret.Files[file.Path] = file
 	}
 
@@ -372,6 +402,7 @@ func DecodeFileBody(src []byte, body hcl.Body, path string) (*File, tfdiags.Diag
 		Path:      path,
 		Providers: make(map[string]*ProviderConfig),
 		Variables: make(map[string]*Variable),
+		Outputs:   make(map[string]*Output),
 		Actions:   make(map[string]*Action),
 		Steps:     make(map[string]*Step),
 	}
@@ -463,6 +494,22 @@ func DecodeFileBody(src []byte, body hcl.Body, path string) (*File, tfdiags.Diag
 				continue
 			}
 			ret.Actions[action.Reference()] = action
+		case "output":
+			output, moreDiags := decodeOutputBlock(src, block)
+			diags = diags.Append(moreDiags)
+			if output == nil {
+				continue
+			}
+			if existing, exists := ret.Outputs[output.Name]; exists {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate output block",
+					Detail:   fmt.Sprintf("An output named %q was already declared at %s.", output.Name, existing.DeclRange.StartString()),
+					Subject:  block.DefRange.Ptr(),
+				})
+				continue
+			}
+			ret.Outputs[output.Name] = output
 		}
 	}
 
@@ -1105,6 +1152,7 @@ var rootSchema = &hcl.BodySchema{
 		{Type: "provider", LabelNames: []string{"type"}},
 		{Type: "variable", LabelNames: []string{"name"}},
 		{Type: "action", LabelNames: []string{"type", "name"}},
+		{Type: "output", LabelNames: []string{"name"}},
 		{Type: "step", LabelNames: []string{"name"}},
 	},
 }

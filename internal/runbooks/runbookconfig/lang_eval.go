@@ -33,6 +33,25 @@ func ExprReferencesRunbookActionOutput(expr hcl.Expression) bool {
 	return false
 }
 
+func ExprReferencesStepOutput(expr hcl.Expression) bool {
+	if expr == nil {
+		return false
+	}
+	for _, traversal := range expr.Variables() {
+		ref, diags := addrs.ParseRefFromRunbookScope(traversal)
+		if diags.HasErrors() || ref == nil {
+			continue
+		}
+		if _, ok := ref.Subject.(addrs.Step); ok {
+			return true
+		}
+		if _, ok := ref.Subject.(addrs.StepInstance); ok {
+			return true
+		}
+	}
+	return false
+}
+
 type langData struct {
 	scope EvalScope
 }

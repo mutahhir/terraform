@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/mitchellh/colorstring"
 	"github.com/zclconf/go-cty/cty"
+	ctymsgpack "github.com/zclconf/go-cty/cty/msgpack"
 )
 
 const (
@@ -85,48 +86,49 @@ func formatPlanSummary(color *colorstring.Colorize, manifest *runbookplanfile.Pl
 	executableCount := 0
 	skippedCount := 0
 	for i, step := range manifest.Steps {
-		b.WriteString(color.Color(fmt.Sprintf("[bold][cyan]# Step %d: %s[reset]\n", i+1, step.Name)))
-		if len(step.After) > 0 {
-			b.WriteString(fmt.Sprintf("    after           = [%s]\n", strings.Join(step.After, ", ")))
-		}
 		if step.KnownSkipped {
 			skippedCount++
-			b.WriteString(color.Color("    status          = [yellow]\"skipped\"[reset]\n"))
-			if step.SkipReason != "" {
-				b.WriteString(fmt.Sprintf("    reason          = %q\n", step.SkipReason))
-			}
 		} else {
 			executableCount++
-			b.WriteString(color.Color("    status          = [green]\"planned\"[reset]\n"))
 		}
-		if len(step.PlannedActions) > 0 {
-			b.WriteString("    actions = [\n")
-			for _, action := range step.PlannedActions {
-				b.WriteString(fmt.Sprintf("      %q,\n", action))
+		verb := "will execute"
+		prefix := color.Color("[cyan]~[reset]")
+		if step.KnownSkipped {
+			verb = "will be skipped"
+			prefix = color.Color("[yellow]-[reset]")
+		}
+		b.WriteString(color.Color(fmt.Sprintf("[bold][cyan]# Step %d: %s %s[reset]\n", i+1, step.Name, verb)))
+		b.WriteString(fmt.Sprintf("  %s %s {\n", prefix, colorizedStepRef(color, step.Name)))
+		if step.SkipReason != "" {
+			b.WriteString(fmt.Sprintf("      %s = %s\n", colorizedAttr(color, padRight("reason", 18)), colorizedFormattedValue(color, fmt.Sprintf("%q", step.SkipReason))))
+		}
+		sections := make([]string, 0, len(step.PlannedActionInfo)+len(step.PlannedDataInfo)+len(step.PlannedQueryInfo)+1)
+		for _, info := range step.PlannedActionInfo {
+			if rendered := strings.TrimRight(formatRunbookPlanActionBlock(info), "\n"); rendered != "" {
+				sections = append(sections, rendered)
 			}
-			b.WriteString("    ]\n")
 		}
-		if len(step.PlannedQueries) > 0 {
-			b.WriteString("    queries = [\n")
-			for _, query := range step.PlannedQueries {
-				b.WriteString(fmt.Sprintf("      %q,\n", query))
+		for _, info := range step.PlannedDataInfo {
+			if rendered := strings.TrimRight(formatRunbookPlanDataBlock(info), "\n"); rendered != "" {
+				sections = append(sections, rendered)
 			}
-			b.WriteString("    ]\n")
 		}
-		if len(step.PlannedData) > 0 {
-			b.WriteString("    data_reads = [\n")
-			for _, data := range step.PlannedData {
-				b.WriteString(fmt.Sprintf("      %q,\n", data))
+		for _, info := range step.PlannedQueryInfo {
+			if rendered := strings.TrimRight(formatRunbookPlanQueryBlock(info), "\n"); rendered != "" {
+				sections = append(sections, rendered)
 			}
-			b.WriteString("    ]\n")
 		}
-		if len(step.Outputs) > 0 {
-			b.WriteString("    outputs = [\n")
-			for _, output := range step.Outputs {
-				b.WriteString(fmt.Sprintf("      %q,\n", output))
+		if rendered := formatRunbookPlanOutputs(step.PlannedOutputs); rendered != "" {
+			sections = append(sections, strings.TrimRight(rendered, "\n"))
+		}
+		if len(sections) > 0 {
+			if step.SkipReason != "" {
+				b.WriteString("\n")
 			}
-			b.WriteString("    ]\n")
+			b.WriteString(strings.Join(sections, "\n\n"))
+			b.WriteString("\n")
 		}
+		b.WriteString("  }\n")
 		if i < len(manifest.Steps)-1 {
 			b.WriteString("\n")
 		}
@@ -134,6 +136,179 @@ func formatPlanSummary(color *colorstring.Colorize, manifest *runbookplanfile.Pl
 	b.WriteString("\n")
 	b.WriteString(color.Color(fmt.Sprintf("[bold][green]Plan:[reset] %d to execute, %d to skip.\n", executableCount, skippedCount)))
 	return b.String()
+}
+
+func formatRunbookPlanActionBlock(info runbookplanfile.PlannedActionInfo) string {
+	if info.Address == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("      %s\n", colorizedComment(nil, fmt.Sprintf("# %s will invoke", info.Address))))
+	b.WriteString(fmt.Sprintf("      %s %s {\n", colorizedKeyword(nil, "action"), colorizedBlockLabels(nil, info.Type, info.Name)))
+	b.WriteString(formatRunbookPlanConfigAttrs(info.Config, "        "))
+	b.WriteString("      }\n")
+	return b.String()
+}
+
+func formatRunbookPlanDataBlock(info runbookplanfile.PlannedDataInfo) string {
+	if info.Address == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("      %s\n", colorizedComment(nil, fmt.Sprintf("# %s will be read during execute", info.Address))))
+	b.WriteString(fmt.Sprintf("      %s %s {\n", colorizedKeyword(nil, "data"), colorizedBlockLabels(nil, info.Type, info.Name)))
+	b.WriteString(formatRunbookPlanConfigAttrs(info.Config, "        "))
+	b.WriteString("      }\n")
+	return b.String()
+}
+
+func formatRunbookPlanQueryBlock(info runbookplanfile.PlannedQueryInfo) string {
+	if info.Address == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("      %s\n", colorizedComment(nil, fmt.Sprintf("# %s will query during execute", info.Address))))
+	b.WriteString(fmt.Sprintf("      %s %s {\n", colorizedKeyword(nil, "list"), colorizedBlockLabels(nil, info.Type, info.Name)))
+	b.WriteString(formatRunbookPlanConfigAttrs(info.Config, "        "))
+	if info.Count > 0 {
+		b.WriteString(fmt.Sprintf("        %s = %s\n", colorizedAttr(nil, padRight("result_count", 18)), colorizedFormattedValue(nil, fmt.Sprintf("%d", info.Count))))
+	}
+	b.WriteString("      }\n")
+	return b.String()
+}
+
+func formatRunbookPlanOutputs(raw map[string][]byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(raw))
+	for name := range raw {
+		if strings.HasPrefix(name, "__runbook_") {
+			continue
+		}
+		keys = append(keys, name)
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("      %s = {\n", colorizedKeyword(nil, "outputs")))
+	for _, name := range keys {
+		b.WriteString(fmt.Sprintf("        %s = %s\n", colorizedAttr(nil, padRight(name, 18)), colorizedFormattedValue(nil, formatRunbookPlanValueBytes(raw[name]))))
+	}
+	b.WriteString("      }\n")
+	return b.String()
+}
+
+func formatRunbookPlanConfigAttrs(raw map[string][]byte, indent string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(raw))
+	for name := range raw {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, name := range keys {
+		formatted := formatRunbookPlanValueBytes(raw[name])
+		if formatted == "null" {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("%s%s = %s\n", indent, colorizedAttr(nil, padRight(name, 18)), colorizedFormattedValue(nil, formatted)))
+	}
+	return b.String()
+}
+
+func formatRunbookPlanValueBytes(raw []byte) string {
+	if len(raw) == 0 {
+		return "null"
+	}
+	val, err := ctymsgpack.Unmarshal(raw, cty.DynamicPseudoType)
+	if err != nil {
+		return "(known after execute)"
+	}
+	if !val.IsKnown() {
+		return "(known after execute)"
+	}
+	if val.IsNull() {
+		return "null"
+	}
+	return tfdiags.CompactValueStr(val)
+}
+
+func quoteAndJoin(vals []string) string {
+	quoted := make([]string, 0, len(vals))
+	for _, val := range vals {
+		quoted = append(quoted, fmt.Sprintf("%q", val))
+	}
+	return strings.Join(quoted, ", ")
+}
+
+func colorizedKeyword(color *colorstring.Colorize, value string) string {
+	return colorized(color, "[cyan][bold]", value)
+}
+
+func colorizedAttr(color *colorstring.Colorize, value string) string {
+	return colorized(color, "[white][bold]", value)
+}
+
+func colorizedComment(color *colorstring.Colorize, value string) string {
+	return colorized(color, "[dark_gray]", value)
+}
+
+func colorizedStepRef(color *colorstring.Colorize, stepName string) string {
+	return colorizedKeyword(color, "step") + "." + colorized(color, "[white][bold]", stepName)
+}
+
+func colorizedBlockLabels(color *colorstring.Colorize, typeName, name string) string {
+	return colorizedString(color, typeName) + " " + colorizedString(color, name)
+}
+
+func colorizedString(color *colorstring.Colorize, value string) string {
+	return colorized(color, "[green]", fmt.Sprintf("%q", value))
+}
+
+func colorizedFormattedValue(color *colorstring.Colorize, value string) string {
+	style := "[green]"
+	switch {
+	case value == "null":
+		style = "[dark_gray]"
+	case strings.HasPrefix(value, "("):
+		style = "[yellow]"
+	case value == "true" || value == "false":
+		style = "[green][bold]"
+	case isNumericLiteral(value):
+		style = "[green][bold]"
+	}
+	return colorized(color, style, value)
+}
+
+func colorized(color *colorstring.Colorize, style, value string) string {
+	if color == nil {
+		return value
+	}
+	return color.Color(style + value + "[reset]")
+}
+
+func isNumericLiteral(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i, r := range value {
+		if (r < '0' || r > '9') && r != '.' && !(i == 0 && r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func padRight(value string, width int) string {
+	if len(value) >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-len(value))
 }
 
 func formatStepOutputs(color *colorstring.Colorize, stepName string, outputs cty.Value) string {
@@ -149,32 +324,17 @@ func formatStepOutputs(color *colorstring.Colorize, stepName string, outputs cty
 	}
 	keys := make([]string, 0, len(vals))
 	for name := range vals {
+		if strings.HasPrefix(name, "__runbook_") {
+			continue
+		}
 		keys = append(keys, name)
 	}
 	sort.Strings(keys)
 
 	var b strings.Builder
-	b.WriteString(color.Color(fmt.Sprintf("[bold]Outputs for %s:[reset]\n", stepName)))
+	b.WriteString(color.Color(fmt.Sprintf("[bold]%s outputs:[reset]\n", stepName)))
 	for _, name := range keys {
 		b.WriteString(fmt.Sprintf("  %s = %s\n", name, tfdiags.CompactValueStr(vals[name])))
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func formatActionInvocations(color *colorstring.Colorize, actions []string) string {
-	if len(actions) == 0 {
-		return ""
-	}
-	if color == nil {
-		color = &colorstring.Colorize{Disable: true}
-	}
-	vals := append([]string(nil), actions...)
-	sort.Strings(vals)
-
-	var b strings.Builder
-	b.WriteString(color.Color("[bold]Action invocations:[reset]\n"))
-	for _, action := range vals {
-		b.WriteString(fmt.Sprintf("  - %s\n", action))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

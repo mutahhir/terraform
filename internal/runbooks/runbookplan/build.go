@@ -25,6 +25,9 @@ type StepPlanResult struct {
 	Queries        []runbookconfig.PlannedQuery
 	KnownSkipped   bool
 	SkipReason     string
+	ActionInfo     []runbookplanfile.PlannedActionInfo
+	QueryInfo      []runbookplanfile.PlannedQueryInfo
+	DataInfo       []runbookplanfile.PlannedDataInfo
 	PlannedActions []string
 	PlannedQueries []string
 	PlannedData    []string
@@ -99,6 +102,9 @@ func Build(cfg *runbookconfig.Config, configPath, workspace string, stepOrder []
 			expandedStep.After = append([]string(nil), deps[stepName]...)
 			expandedStep.KnownSkipped = result.KnownSkipped
 			expandedStep.SkipReason = result.SkipReason
+			expandedStep.PlannedActionInfo = append([]runbookplanfile.PlannedActionInfo(nil), result.ActionInfo...)
+			expandedStep.PlannedQueryInfo = append([]runbookplanfile.PlannedQueryInfo(nil), result.QueryInfo...)
+			expandedStep.PlannedDataInfo = append([]runbookplanfile.PlannedDataInfo(nil), result.DataInfo...)
 			expandedStep.PlannedActions = append([]string(nil), result.PlannedActions...)
 			expandedStep.PlannedQueries = append([]string(nil), result.PlannedQueries...)
 			expandedStep.PlannedData = append([]string(nil), result.PlannedData...)
@@ -242,16 +248,19 @@ func expandCountInstances(step *runbookconfig.Step, stepName string, count int) 
 
 func singletonStepManifest(step *runbookconfig.Step, stepName string, after []string, result StepPlanResult) runbookplanfile.Step {
 	return runbookplanfile.Step{
-		Name:           stepName,
-		BaseName:       stepName,
-		PlannedOutputs: encodePlannedOutputs(result.Outputs),
-		After:          append([]string(nil), after...),
-		KnownSkipped:   result.KnownSkipped,
-		SkipReason:     result.SkipReason,
-		PlannedActions: append([]string(nil), result.PlannedActions...),
-		PlannedQueries: append([]string(nil), result.PlannedQueries...),
-		PlannedData:    append([]string(nil), result.PlannedData...),
-		Outputs:        append([]string(nil), result.OutputNames...),
+		Name:              stepName,
+		BaseName:          stepName,
+		PlannedOutputs:    encodePlannedOutputs(result.Outputs),
+		After:             append([]string(nil), after...),
+		KnownSkipped:      result.KnownSkipped,
+		SkipReason:        result.SkipReason,
+		PlannedActionInfo: append([]runbookplanfile.PlannedActionInfo(nil), result.ActionInfo...),
+		PlannedQueryInfo:  append([]runbookplanfile.PlannedQueryInfo(nil), result.QueryInfo...),
+		PlannedDataInfo:   append([]runbookplanfile.PlannedDataInfo(nil), result.DataInfo...),
+		PlannedActions:    append([]string(nil), result.PlannedActions...),
+		PlannedQueries:    append([]string(nil), result.PlannedQueries...),
+		PlannedData:       append([]string(nil), result.PlannedData...),
+		Outputs:           append([]string(nil), result.OutputNames...),
 	}
 }
 
@@ -497,14 +506,21 @@ func ensureDeclaredOutputs(step *runbookconfig.Step, outputs cty.Value, outputNa
 		}
 	}
 	for _, name := range outputNames {
-		if _, exists := vals[name]; exists {
-			continue
-		}
 		if step != nil {
 			if output := step.Outputs[name]; output != nil && runbookconfig.ExprReferencesRunbookActionOutput(output.Value) {
+				if existing, exists := vals[name]; exists && existing != cty.NilVal && existing.IsKnown() && existing.IsNull() {
+					vals[name] = cty.UnknownVal(cty.String)
+					continue
+				}
+				if _, exists := vals[name]; exists {
+					continue
+				}
 				vals[name] = cty.UnknownVal(cty.String)
 				continue
 			}
+		}
+		if _, exists := vals[name]; exists {
+			continue
 		}
 		vals[name] = cty.NullVal(cty.DynamicPseudoType)
 	}
@@ -512,4 +528,8 @@ func ensureDeclaredOutputs(step *runbookconfig.Step, outputs cty.Value, outputNa
 		return cty.EmptyObjectVal
 	}
 	return cty.ObjectVal(vals)
+}
+
+func EnsureDeclaredOutputs(step *runbookconfig.Step, outputs cty.Value, outputNames []string) cty.Value {
+	return ensureDeclaredOutputs(step, outputs, outputNames)
 }

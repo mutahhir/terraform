@@ -718,6 +718,10 @@ func rootModuleInputValues(decls map[string]*configs.Variable, provided terrafor
 			ret[name] = &terraform.InputValue{Value: cty.UnknownVal(cty.String), SourceType: terraform.ValueFromCaller}
 			continue
 		}
+		if strings.HasPrefix(name, "__runbook_") {
+			ret[name] = &terraform.InputValue{Value: cty.DynamicVal, SourceType: terraform.ValueFromCaller}
+			continue
+		}
 		ret[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
 	}
 	return ret

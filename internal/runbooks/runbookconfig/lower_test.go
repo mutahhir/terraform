@@ -414,3 +414,35 @@ step "example" {
 		t.Fatalf("lowered main.tf did not type synthetic action output variable as string:\n%s", mainSrc)
 	}
 }
+
+func TestLowerStepWithScopePreservesUnknownStepOutputsInDefaults(t *testing.T) {
+	rootDir := t.TempDir()
+
+	file, diags := ParseFileSource([]byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "dependent" {
+  output "seen_seed_output" {
+    value = steps.bootstrap.seed_output
+  }
+}
+`), filepath.Join(rootDir, "main.tfrun.hcl"))
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	cfg := &Config{RootPath: rootDir, Files: map[string]*File{file.Path: file}, Runbook: file.Runbook}
+	bundle, diags := LowerStepWithScope(cfg, file.Steps["dependent"], EvalScope{Steps: cty.ObjectVal(map[string]cty.Value{
+		"bootstrap": cty.ObjectVal(map[string]cty.Value{
+			"seed_output": cty.UnknownVal(cty.String),
+		}),
+	})})
+	tfdiags.AssertNoDiagnostics(t, diags)
+
+	mainSrc := string(bundle.Files["main.tf"])
+	if !strings.Contains(mainSrc, `variable "__runbook_steps"`) {
+		t.Fatalf("missing synthetic steps variable in lowered main.tf:\n%s", mainSrc)
+	}
+	if strings.Contains(mainSrc, `seed_output = null`) {
+		t.Fatalf("unknown step output collapsed to null in lowered main.tf:\n%s", mainSrc)
+	}
+}

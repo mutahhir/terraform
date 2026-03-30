@@ -21,8 +21,11 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/backend/backendrun"
 	"github.com/hashicorp/terraform/internal/command/arguments"
+	commandviews "github.com/hashicorp/terraform/internal/command/views"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configload"
+	"github.com/hashicorp/terraform/internal/configs/configschema"
+	"github.com/hashicorp/terraform/internal/lang"
 	"github.com/hashicorp/terraform/internal/plans"
 	"github.com/hashicorp/terraform/internal/providers"
 	"github.com/hashicorp/terraform/internal/rpcapi"
@@ -73,6 +76,91 @@ type builtRunbookPlan struct {
 type runbookActionOutputHook struct {
 	terraform.NilHook
 	outputs map[string]*strings.Builder
+}
+
+type runbookPlanLangData struct {
+	scope runbookconfig.EvalScope
+}
+
+func (d *runbookPlanLangData) StaticValidateReferences(refs []*addrs.Reference, self addrs.Referenceable, source addrs.Referenceable) tfdiags.Diagnostics {
+	return nil
+}
+
+func (d *runbookPlanLangData) GetCountAttr(addr addrs.CountAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return runbookPlanAttrFromObject(d.scope.Count, addr.Name), nil
+}
+
+func (d *runbookPlanLangData) GetForEachAttr(addr addrs.ForEachAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return runbookPlanAttrFromObject(d.scope.Each, addr.Name), nil
+}
+
+func (d *runbookPlanLangData) GetResource(addr addrs.Resource, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	if addr.Mode == addrs.ListResourceMode {
+		return runbookPlanNestedAttr(d.scope.List, addr.Type, addr.Name), nil
+	}
+	return cty.DynamicVal, nil
+}
+
+func (d *runbookPlanLangData) GetLocalValue(addr addrs.LocalValue, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return runbookPlanAttrFromObject(d.scope.Locals, addr.Name), nil
+}
+
+func (d *runbookPlanLangData) GetModule(addr addrs.ModuleCall, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (d *runbookPlanLangData) GetPathAttr(addr addrs.PathAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (d *runbookPlanLangData) GetTerraformAttr(addr addrs.TerraformAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (d *runbookPlanLangData) GetInputVariable(addr addrs.InputVariable, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return runbookPlanAttrFromObject(d.scope.Variables, addr.Name), nil
+}
+
+func (d *runbookPlanLangData) GetOutput(addr addrs.OutputValue, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (d *runbookPlanLangData) GetCheckBlock(addr addrs.Check, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (d *runbookPlanLangData) GetRunBlock(addr addrs.Run, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (d *runbookPlanLangData) GetStep(addr addrs.Step, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return runbookPlanAttrFromObject(d.scope.Steps, addr.Name), nil
+}
+
+func (d *runbookPlanLangData) GetWorkspaceOutput(addr addrs.WorkspaceOutput, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return runbookPlanNestedAttr(d.scope.Workspace, "output", addr.Name), nil
+}
+
+func (d *runbookPlanLangData) GetRunbookAction(addr addrs.RunbookAction, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return runbookPlanNestedAttr(d.scope.Actions, addr.Type, addr.Name), nil
+}
+
+func runbookPlanAttrFromObject(obj cty.Value, name string) cty.Value {
+	if obj == cty.NilVal || !obj.Type().IsObjectType() || !obj.Type().HasAttribute(name) {
+		return cty.DynamicVal
+	}
+	return obj.GetAttr(name)
+}
+
+func runbookPlanNestedAttr(obj cty.Value, first, second string) cty.Value {
+	if obj == cty.NilVal || !obj.Type().IsObjectType() || !obj.Type().HasAttribute(first) {
+		return cty.DynamicVal
+	}
+	inner := obj.GetAttr(first)
+	if !inner.Type().IsObjectType() || !inner.Type().HasAttribute(second) {
+		return cty.DynamicVal
+	}
+	return inner.GetAttr(second)
 }
 
 func (e runbookStepPlanningFailedError) Error() string {
@@ -286,6 +374,7 @@ func (c *RunbookCommand) buildRunbookPlan(ctx context.Context) (*builtRunbookPla
 		c.Ui.Error(fmt.Sprintf("Failed to initialize providers for runbook plan: %s", providerErr))
 		return nil, false
 	}
+	providerSchemas := collectRunbookProviderSchemas(providerFactories)
 	stateFile, stateFileDiags := c.buildWorkspaceStateFile(ctx)
 	if stateFileDiags.HasErrors() {
 		c.Ui.Error(stateFileDiags.Err().Error())
@@ -336,6 +425,9 @@ func (c *RunbookCommand) buildRunbookPlan(ctx context.Context) (*builtRunbookPla
 			Queries:        queries,
 			KnownSkipped:   planResp.GetStatus() == runbooks.StepStatus_STEP_STATUS_SKIPPED,
 			SkipReason:     firstDiagnosticDetail(planResp.Diagnostics),
+			ActionInfo:     staticPlannedActionInfo(rawCfg, rawStep, providerSchemas, scope),
+			QueryInfo:      staticPlannedQueryInfo(rawStep, queries, providerSchemas, scope),
+			DataInfo:       staticPlannedDataInfo(rawStep, providerSchemas, scope),
 			PlannedActions: staticActionAddresses(rawCfg, rawStep),
 			PlannedQueries: staticQueryAddresses(rawStep),
 			PlannedData:    staticPlannedData(rawStep),
@@ -502,6 +594,9 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 	c.Ui.Output("")
 	c.Ui.Output(c.Colorize().Color("[cyan]Applying saved runbook plan in dependency order:[reset]"))
 	c.Ui.Output("")
+	executedSteps := 0
+	skippedSteps := 0
+	invokedActions := 0
 	for _, stepName := range manifest.StepOrder {
 		manifestStep := persistedRunbookStep(manifest, stepName)
 		baseStepName := stepName
@@ -563,6 +658,7 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 		}
 		preEval := runbookconfig.EvaluateStepForPlan(step, preScope)
 		if preEval.Status == runbookconfig.StepStatusSkipped {
+			skippedSteps++
 			c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][cyan]# %s[reset]", stepName)))
 			c.Ui.Output(c.Colorize().Color("status = [yellow]\"skipped\"[reset]"))
 			if preEval.Detail != "" {
@@ -579,7 +675,7 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 			return 1
 		}
 
-		planConfig, inputValues, configDiags := loadLoweredStepConfig(planFiles, runbookInputs)
+		planConfig, inputValues, configDiags := loadLoweredStepConfig(planFiles, mergeInputValues(runbookInputs, runbookScopeInputValues(preScope)))
 		if len(configDiags) != 0 {
 			c.showRemappedDiagnostics(configDiags, sourceMaps[stepName])
 		}
@@ -625,7 +721,7 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 		}
 		applyFiles := stripExecuteUnsafeFiles(planFiles)
 		if hasApplyableConfig(applyFiles) {
-			applyConfig, _, applyConfigDiags := loadLoweredStepConfig(applyFiles, runbookInputs)
+			applyConfig, _, applyConfigDiags := loadLoweredStepConfig(applyFiles, mergeInputValues(runbookInputs, runbookScopeInputValues(preScope)))
 			if len(applyConfigDiags) != 0 {
 				c.showRemappedDiagnostics(applyConfigDiags, sourceMaps[stepName])
 			}
@@ -658,12 +754,13 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 			invokeFiles = stripInvokeUnsafeFiles(planFiles)
 		}
 		for _, actionRef := range manifestStep.PlannedActions {
+			invokedActions++
 			target, targetDiags := runbookActionTarget(actionRefForManifestStep(manifestStep, actionRef))
 			if targetDiags.HasErrors() {
 				c.Ui.Error(targetDiags.Err().Error())
 				return 1
 			}
-			planConfig, invokeInputValues, invokeConfigDiags := loadLoweredStepConfig(invokeFiles, runbookInputs)
+			planConfig, invokeInputValues, invokeConfigDiags := loadLoweredStepConfig(invokeFiles, mergeInputValues(runbookInputs, runbookScopeInputValues(preScope)))
 			if len(invokeConfigDiags) != 0 {
 				c.showRemappedDiagnostics(invokeConfigDiags, sourceMaps[stepName])
 			}
@@ -735,13 +832,9 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 		}
 		stepOutputs = mergeStepOutputs(evaluateStepOutputsFromSourceWithExecuteActions(step, postScope), stepOutputs)
 		stepResults.Set(stepInstanceAddrFromManifestStep(manifestStep), stepOutputs)
+		executedSteps++
 		c.Ui.Output(c.Colorize().Color(fmt.Sprintf("[bold][cyan]# %s[reset]", stepName)))
 		c.Ui.Output(c.Colorize().Color("status = [green]\"complete\"[reset]"))
-		if formatted := formatActionInvocations(c.Colorize(), manifestStep.PlannedActions); formatted != "" {
-			for _, line := range strings.Split(formatted, "\n") {
-				c.Ui.Output(line)
-			}
-		}
 		if formatted := formatStepOutputs(c.Colorize(), stepName, stepOutputs); formatted != "" {
 			for _, line := range strings.Split(formatted, "\n") {
 				c.Ui.Output(line)
@@ -755,7 +848,17 @@ func (c *RunbookCommand) executeRunbookPlanData(manifest *runbookplanfile.Plan, 
 		return 1
 	}
 
-	c.Ui.Output(c.Colorize().Color("[bold][green]Runbook apply complete.[reset]"))
+	summary := fmt.Sprintf("[bold][green]Runbook apply complete![reset] Steps: %d executed, %d skipped.", executedSteps, skippedSteps)
+	if invokedActions > 0 {
+		summary += fmt.Sprintf(" Actions: %d invoked.", invokedActions)
+	}
+	c.Ui.Output(c.Colorize().Color(summary))
+	if runbookOutputs := evaluateRunbookOutputs(rawCfg, runbookconfig.EvalScope{Variables: varScope, Steps: stepResults.ScopeValue(), Actions: actionOutputHook.ScopeValue(), Workspace: mergedWorkspaceScope(baseWorkspaceScope, originalWorkspaceState)}); len(runbookOutputs) > 0 {
+		c.Ui.Output("")
+		c.Ui.Output(c.Colorize().Color("[bold][green]Outputs:[reset]"))
+		c.Ui.Output("")
+		commandviews.NewOutput(arguments.ViewHuman, c.View).Output("", runbookOutputs)
+	}
 	return 0
 }
 
@@ -1081,11 +1184,118 @@ func staticActionAddresses(cfg *runbookconfig.Config, step *runbookconfig.Step) 
 	return ret
 }
 
+func staticPlannedActionInfo(cfg *runbookconfig.Config, step *runbookconfig.Step, providerSchemas map[string]providers.GetProviderSchemaResponse, scope runbookconfig.EvalScope) []runbookplanfile.PlannedActionInfo {
+	return staticPlannedActionInfoWithInvocations(cfg, step, providerSchemas, scope, nil)
+}
+
+func staticPlannedActionInfoWithInvocations(cfg *runbookconfig.Config, step *runbookconfig.Step, providerSchemas map[string]providers.GetProviderSchemaResponse, scope runbookconfig.EvalScope, invocations []*plans.ActionInvocationInstanceSrc) []runbookplanfile.PlannedActionInfo {
+	planned := staticPlannedActions(cfg, step)
+	if len(planned) == 0 {
+		return nil
+	}
+	actionsByRef := map[string]*runbookconfig.Action{}
+	if cfg != nil {
+		workspaceActions, _ := runbookconfig.WorkspaceActions(cfg)
+		for ref, action := range workspaceActions {
+			if action != nil {
+				actionsByRef[ref] = action
+			}
+		}
+		for ref, action := range cfg.Actions {
+			if action != nil {
+				actionsByRef[ref] = action
+			}
+		}
+	}
+	for _, action := range step.Actions {
+		if action != nil {
+			actionsByRef[action.Reference()] = action
+		}
+	}
+	configsByAddress := map[string]map[string][]byte{}
+	for _, invocation := range invocations {
+		if invocation == nil {
+			continue
+		}
+		if config := actionInvocationConfigBytes(invocation, providerSchemas); len(config) != 0 {
+			configsByAddress[invocation.Addr.ContainingAction().String()] = config
+		}
+	}
+	ret := make([]runbookplanfile.PlannedActionInfo, 0, len(planned))
+	for _, plannedAction := range planned {
+		if plannedAction == nil {
+			continue
+		}
+		info := runbookplanfile.PlannedActionInfo{Address: plannedAction.GetAddress(), Type: plannedAction.GetActionType(), Name: plannedAction.GetActionName()}
+		if config := configsByAddress[plannedAction.GetAddress()]; len(config) != 0 {
+			info.Config = config
+		} else if action := actionsByRef[plannedAction.GetAddress()]; action != nil {
+			if schema, ok := actionSchemaForType(providerSchemas, action.Type); ok {
+				info.Config = evalBodyAttributeBytes(action.Config, schema.ConfigSchema, scope)
+			}
+		}
+		ret = append(ret, info)
+	}
+	return ret
+}
+
+func actionInvocationConfigBytes(invocation *plans.ActionInvocationInstanceSrc, providerSchemas map[string]providers.GetProviderSchemaResponse) map[string][]byte {
+	if invocation == nil {
+		return nil
+	}
+	schema, ok := actionSchemaForType(providerSchemas, invocation.Addr.Action.Action.Type)
+	if !ok || schema.ConfigSchema == nil {
+		return nil
+	}
+	val, err := invocation.ConfigValue.Decode(schema.ConfigSchema.ImpliedType())
+	if err != nil || val == cty.NilVal {
+		return nil
+	}
+	val, _ = val.UnmarkDeep()
+	if !val.Type().IsObjectType() {
+		return nil
+	}
+	ret := map[string][]byte{}
+	for name, attr := range val.AsValueMap() {
+		raw, err := ctymsgpack.Marshal(attr, cty.DynamicPseudoType)
+		if err != nil {
+			continue
+		}
+		ret[name] = raw
+	}
+	if len(ret) == 0 {
+		return nil
+	}
+	return ret
+}
+
 func staticQueryAddresses(step *runbookconfig.Step) []string {
 	planned := staticPlannedQueries(step)
 	ret := make([]string, 0, len(planned))
 	for _, query := range planned {
 		ret = append(ret, query.GetAddress())
+	}
+	return ret
+}
+
+func staticPlannedQueryInfo(step *runbookconfig.Step, queries []runbookconfig.PlannedQuery, providerSchemas map[string]providers.GetProviderSchemaResponse, scope runbookconfig.EvalScope) []runbookplanfile.PlannedQueryInfo {
+	if step == nil || len(step.Lists) == 0 {
+		return nil
+	}
+	queryCounts := map[string]int{}
+	for _, query := range queries {
+		queryCounts[query.Address] = query.Count
+	}
+	ret := make([]runbookplanfile.PlannedQueryInfo, 0, len(step.Lists))
+	for _, list := range step.Lists {
+		if list == nil {
+			continue
+		}
+		info := runbookplanfile.PlannedQueryInfo{Address: fmt.Sprintf("list.%s.%s", list.Type, list.Name), Type: list.Type, Name: list.Name, Count: queryCounts[fmt.Sprintf("list.%s.%s", list.Type, list.Name)]}
+		if schema, ok := listSchemaForType(providerSchemas, list.Provider, list.Type); ok {
+			info.Config = evalBodyAttributeBytes(list.Config, schema.Body, scope)
+		}
+		ret = append(ret, info)
 	}
 	return ret
 }
@@ -1176,6 +1386,104 @@ func staticPlannedData(step *runbookconfig.Step) []string {
 			continue
 		}
 		ret = append(ret, data.Reference())
+	}
+	return ret
+}
+
+func staticPlannedDataInfo(step *runbookconfig.Step, providerSchemas map[string]providers.GetProviderSchemaResponse, scope runbookconfig.EvalScope) []runbookplanfile.PlannedDataInfo {
+	if step == nil || len(step.DataSources) == 0 {
+		return nil
+	}
+	ret := make([]runbookplanfile.PlannedDataInfo, 0, len(step.DataSources))
+	for _, data := range step.DataSources {
+		if data == nil {
+			continue
+		}
+		info := runbookplanfile.PlannedDataInfo{Address: data.Reference(), Type: data.Type, Name: data.Name}
+		if schema, ok := dataSchemaForType(providerSchemas, data.Type); ok {
+			info.Config = evalBodyAttributeBytes(data.Config, schema.Body, scope)
+		}
+		ret = append(ret, info)
+	}
+	return ret
+}
+
+func collectRunbookProviderSchemas(factories map[addrs.Provider]providers.Factory) map[string]providers.GetProviderSchemaResponse {
+	if len(factories) == 0 {
+		return nil
+	}
+	ret := map[string]providers.GetProviderSchemaResponse{}
+	for addr, factory := range factories {
+		if factory == nil {
+			continue
+		}
+		provider, err := factory()
+		if err != nil {
+			continue
+		}
+		schema := provider.GetProviderSchema()
+		_ = provider.Close()
+		ret[addr.Type] = schema
+	}
+	return ret
+}
+
+func actionSchemaForType(schemas map[string]providers.GetProviderSchemaResponse, actionType string) (providers.ActionSchema, bool) {
+	for _, schema := range schemas {
+		if action, ok := schema.Actions[actionType]; ok {
+			return action, true
+		}
+	}
+	return providers.ActionSchema{}, false
+}
+
+func listSchemaForType(schemas map[string]providers.GetProviderSchemaResponse, providerName, listType string) (providers.Schema, bool) {
+	if providerName != "" {
+		if schema, ok := schemas[providerName]; ok {
+			list, ok := schema.ListResourceTypes[listType]
+			return list, ok
+		}
+	}
+	for _, schema := range schemas {
+		if list, ok := schema.ListResourceTypes[listType]; ok {
+			return list, true
+		}
+	}
+	return providers.Schema{}, false
+}
+
+func dataSchemaForType(schemas map[string]providers.GetProviderSchemaResponse, dataType string) (providers.Schema, bool) {
+	for _, schema := range schemas {
+		if data, ok := schema.DataSources[dataType]; ok {
+			return data, true
+		}
+	}
+	return providers.Schema{}, false
+}
+
+func evalBodyAttributeBytes(body hcl.Body, schema *configschema.Block, scope runbookconfig.EvalScope) map[string][]byte {
+	if body == nil || schema == nil {
+		return nil
+	}
+	lscope := &lang.Scope{Data: &runbookPlanLangData{scope: scope}, ParseRef: addrs.ParseRefFromRunbookScope, ExternalFuncs: scope.ExternalFuncs}
+	expanded, diags := lscope.ExpandBlock(body, schema)
+	if diags.HasErrors() {
+		return nil
+	}
+	val, diags := lscope.EvalBlock(expanded, schema)
+	if diags.HasErrors() || val == cty.NilVal || !val.Type().IsObjectType() {
+		return nil
+	}
+	ret := map[string][]byte{}
+	for name, attr := range val.AsValueMap() {
+		raw, err := ctymsgpack.Marshal(attr, cty.DynamicPseudoType)
+		if err != nil {
+			continue
+		}
+		ret[name] = raw
+	}
+	if len(ret) == 0 {
+		return nil
 	}
 	return ret
 }
@@ -1283,7 +1591,7 @@ func (c *RunbookCommand) planRunbookStepInstance(stepName string, cfg *runbookco
 	if loweredBundle == nil {
 		return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
 	}
-	planConfig, inputValues, configDiags := loadLoweredStepConfig(loweredBundle.Files, runbookInputs)
+	planConfig, inputValues, configDiags := loadLoweredStepConfig(loweredBundle.Files, mergeInputValues(runbookInputs, runbookScopeInputValues(scope)))
 	if len(configDiags) != 0 {
 		c.showDiagnostics(configDiags)
 		if configDiags.HasErrors() {
@@ -1318,6 +1626,7 @@ func (c *RunbookCommand) planRunbookStepInstance(stepName string, cfg *runbookco
 	}
 	plannedOutputs := map[string]cty.Value{}
 	queries := []runbookconfig.PlannedQuery{}
+	providerSchemas := collectRunbookProviderSchemas(providerFactories)
 	if tfPlan != nil && tfPlan.Changes != nil {
 		schemas, schemaDiags := tfCtx.Schemas(planConfig, states.NewState())
 		if len(schemaDiags) != 0 {
@@ -1357,6 +1666,7 @@ func (c *RunbookCommand) planRunbookStepInstance(stepName string, cfg *runbookco
 		}
 	}
 	plannedOutputs = mergeOutputMaps(plannedOutputs, outputsMapFromValue(runbookplan.StepOutputsFromQueriesWithScope(rawStep, queries, scope)))
+	plannedOutputs = outputsMapFromValue(runbookplan.EnsureDeclaredOutputs(rawStep, valueFromOutputMap(plannedOutputs), protoStep.Outputs))
 	knownSkipped, skipReason, conditionErr := terraformDrivenStepConditionStatus(rawStep, plannedOutputs)
 	if conditionErr != nil {
 		c.Ui.Error(conditionErr.Error())
@@ -1374,7 +1684,7 @@ func (c *RunbookCommand) planRunbookStepInstance(stepName string, cfg *runbookco
 				return runbookplan.StepPlanResult{}, runbookStepPlanningFailedError{stepName: stepName}
 			}
 		}
-		invokeConfig, invokeInputs, invokeConfigDiags := loadLoweredStepConfig(invokeFiles, runbookInputs)
+		invokeConfig, invokeInputs, invokeConfigDiags := loadLoweredStepConfig(invokeFiles, mergeInputValues(runbookInputs, runbookScopeInputValues(scope)))
 		if len(invokeConfigDiags) != 0 {
 			c.showDiagnostics(invokeConfigDiags)
 			if invokeConfigDiags.HasErrors() {
@@ -1403,6 +1713,9 @@ func (c *RunbookCommand) planRunbookStepInstance(stepName string, cfg *runbookco
 		Queries:        queries,
 		KnownSkipped:   knownSkipped,
 		SkipReason:     skipReason,
+		ActionInfo:     staticPlannedActionInfoWithInvocations(cfg, rawStep, providerSchemas, scope, tfPlan.Changes.ActionInvocations),
+		QueryInfo:      staticPlannedQueryInfo(rawStep, queries, providerSchemas, scope),
+		DataInfo:       staticPlannedDataInfo(rawStep, providerSchemas, scope),
 		PlannedActions: staticActionAddresses(cfg, rawStep),
 		PlannedQueries: staticQueryAddresses(rawStep),
 		PlannedData:    staticPlannedData(rawStep),
@@ -1812,7 +2125,42 @@ func rootModuleInputValues(decls map[string]*configs.Variable, provided terrafor
 			ret[name] = &terraform.InputValue{Value: cty.UnknownVal(cty.String), SourceType: terraform.ValueFromCaller}
 			continue
 		}
+		if strings.HasPrefix(name, "__runbook_") {
+			ret[name] = &terraform.InputValue{Value: cty.DynamicVal, SourceType: terraform.ValueFromCaller}
+			continue
+		}
 		ret[name] = &terraform.InputValue{Value: cty.NilVal, SourceType: terraform.ValueFromCaller}
+	}
+	return ret
+}
+
+func runbookScopeInputValues(scope runbookconfig.EvalScope) terraform.InputValues {
+	ret := terraform.InputValues{}
+	if scope.Steps != cty.NilVal {
+		ret["__runbook_steps"] = &terraform.InputValue{Value: scope.Steps, SourceType: terraform.ValueFromCaller}
+	}
+	if scope.Workspace != cty.NilVal {
+		ret["__runbook_workspace"] = &terraform.InputValue{Value: scope.Workspace, SourceType: terraform.ValueFromCaller}
+	}
+	if scope.Actions != cty.NilVal {
+		ret["__runbook_actions"] = &terraform.InputValue{Value: scope.Actions, SourceType: terraform.ValueFromCaller}
+	}
+	if len(ret) == 0 {
+		return nil
+	}
+	return ret
+}
+
+func mergeInputValues(base, extra terraform.InputValues) terraform.InputValues {
+	if len(extra) == 0 {
+		return base
+	}
+	ret := terraform.InputValues{}
+	for name, val := range base {
+		ret[name] = val
+	}
+	for name, val := range extra {
+		ret[name] = val
 	}
 	return ret
 }
@@ -1968,6 +2316,9 @@ func evaluateStepOutputsFromSource(step *runbookconfig.Step, scope runbookconfig
 		if diags.HasErrors() {
 			continue
 		}
+		if val.IsKnown() && val.IsNull() && runbookconfig.ExprReferencesStepOutput(output.Value) {
+			val = cty.UnknownVal(cty.DynamicPseudoType)
+		}
 		vals[name] = val
 	}
 	if len(vals) == 0 {
@@ -1999,6 +2350,27 @@ func evaluateStepOutputsFromSourceWithExecuteActions(step *runbookconfig.Step, s
 		return cty.EmptyObjectVal
 	}
 	return cty.ObjectVal(vals)
+}
+
+func evaluateRunbookOutputs(cfg *runbookconfig.Config, scope runbookconfig.EvalScope) map[string]*states.OutputValue {
+	if cfg == nil || len(cfg.Outputs) == 0 {
+		return nil
+	}
+	ret := map[string]*states.OutputValue{}
+	for name, output := range cfg.Outputs {
+		if output == nil || output.Value == nil {
+			continue
+		}
+		val, diags := runbookconfig.EvalExpr(output.Value, scope, cty.DynamicPseudoType)
+		if diags.HasErrors() {
+			continue
+		}
+		ret[name] = &states.OutputValue{Value: val}
+	}
+	if len(ret) == 0 {
+		return nil
+	}
+	return ret
 }
 
 func stripOutputBlocks(files map[string][]byte, names []string) map[string][]byte {

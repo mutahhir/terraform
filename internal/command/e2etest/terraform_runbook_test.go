@@ -112,14 +112,44 @@ func TestRunbookPlan(t *testing.T) {
 	if !strings.Contains(stdout, "# Step 1: invoke_resource") {
 		t.Fatalf("missing runbook step in output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "actions = [") || !strings.Contains(stdout, "action.simple_action.target") {
-		t.Fatalf("missing planned action address in output:\n%s", stdout)
+	if !strings.Contains(stdout, `# Step 1: invoke_resource will execute`) {
+		t.Fatalf("missing terraform-like runbook step header:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "queries = [") || !strings.Contains(stdout, "list.simple_resource.inventory") {
-		t.Fatalf("missing planned query address in output:\n%s", stdout)
+	if !strings.Contains(stdout, `invoke_resource`) || !strings.Contains(stdout, `{`) {
+		t.Fatalf("missing terraform-like step block:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "data_reads = [") || !strings.Contains(stdout, "data.simple_resource.current") {
-		t.Fatalf("missing planned data address in output:\n%s", stdout)
+	if !strings.Contains(stdout, `~`) {
+		t.Fatalf("missing execute marker for runbook step:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `# action.simple_action.target will invoke`) {
+		t.Fatalf("missing action invocation block heading in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `action "simple_action" "target" {`) {
+		t.Fatalf("missing action invocation block in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `# list.simple_resource.inventory will query during execute`) {
+		t.Fatalf("missing planned query heading in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `list "simple_resource" "inventory" {`) {
+		t.Fatalf("missing planned query block in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `result_count`) || !strings.Contains(stdout, `1`) {
+		t.Fatalf("missing query result count in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `# data.simple_resource.current will be read during execute`) {
+		t.Fatalf("missing planned data heading in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `data "simple_resource" "current" {`) {
+		t.Fatalf("missing planned data block in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `value`) || !strings.Contains(stdout, `"hello"`) {
+		t.Fatalf("missing planned data attributes in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `invoked`) || !strings.Contains(stdout, `true`) {
+		t.Fatalf("missing rendered planned output values:\n%s", stdout)
+	}
+	if strings.Contains(stdout, `action_output = null`) {
+		t.Fatalf("action-derived outputs should remain unknown during plan:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "Plan:") || !strings.Contains(stdout, "1 to execute, 0 to skip.") {
 		t.Fatalf("missing runbook plan footer summary:\n%s", stdout)
@@ -145,10 +175,16 @@ func TestRunbookPlan(t *testing.T) {
 	if !strings.Contains(stdout, "Runbook Apply") {
 		t.Fatalf("missing runbook execute header:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "# invoke_resource") || !strings.Contains(stdout, "Runbook apply complete.") {
+	if strings.Contains(stdout, "Action invocations:") || strings.Contains(stdout, "Outputs for invoke_resource:") {
+		t.Fatalf("execute output should no longer use legacy per-step summary sections:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "invoke_resource outputs:") {
+		t.Fatalf("missing slimmer per-step outputs heading:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "# invoke_resource") || !strings.Contains(stdout, "Runbook apply complete!") {
 		t.Fatalf("missing runbook execute step completion:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "Runbook apply complete.") {
+	if !strings.Contains(stdout, "Runbook apply complete!") || !strings.Contains(stdout, "Steps: 1 executed, 0 skipped.") || !strings.Contains(stdout, "Actions: 1 invoked.") {
 		t.Fatalf("missing runbook execute completion:\n%s", stdout)
 	}
 
@@ -212,8 +248,14 @@ func TestRunbookExecuteMultiStep(t *testing.T) {
 	if !strings.Contains(stdout, "# Step 1: bootstrap") || !strings.Contains(stdout, "# Step 2: dependent") {
 		t.Fatalf("missing multi-step plan output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "after           = [bootstrap]") {
-		t.Fatalf("missing dependency metadata in plan output:\n%s", stdout)
+	if strings.Contains(stdout, `after = [`) {
+		t.Fatalf("unexpected dependency metadata in plan output:\n%s", stdout)
+	}
+	if strings.Contains(stdout, `seen_seed_output = null`) || strings.Contains(stdout, `seed_output = null`) {
+		t.Fatalf("action-derived outputs should remain unknown during plan:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `seed_output = (known after execute)`) || !strings.Contains(stdout, `seen_seed_output = (known after execute)`) {
+		t.Fatalf("missing deferred action-derived outputs in plan:\n%s", stdout)
 	}
 
 	stdout, stderr, err = tf.Run("runbook", "execute", "-auto-approve")
@@ -228,10 +270,19 @@ func TestRunbookExecuteMultiStep(t *testing.T) {
 	if bootstrapIdx > dependentIdx {
 		t.Fatalf("dependent step completed before bootstrap:\n%s", stdout)
 	}
+	if strings.Contains(stdout, "__runbook_") {
+		t.Fatalf("execute output should hide internal runbook outputs:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "bootstrap outputs:") || !strings.Contains(stdout, "dependent outputs:") {
+		t.Fatalf("missing per-step output headings:\n%s", stdout)
+	}
 	if !strings.Contains(stdout, `seen_seed_output = "Hello world!\nDone."`) {
 		t.Fatalf("missing propagated action output across steps:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "Runbook apply complete.") {
+	if !strings.Contains(stdout, "Outputs:") || !strings.Contains(stdout, "all_done = true") || !strings.Contains(stdout, `final_seed_output = <<EOT`) {
+		t.Fatalf("missing runbook outputs footer:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "Runbook apply complete!") || !strings.Contains(stdout, "Steps: 2 executed, 0 skipped.") || !strings.Contains(stdout, "Actions: 2 invoked.") {
 		t.Fatalf("missing execute completion footer:\n%s", stdout)
 	}
 

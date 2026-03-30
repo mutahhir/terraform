@@ -82,3 +82,11 @@ step "dependent" {
     value = steps.bootstrap.seed_output
   }
 }
+
+output "all_done" {
+  value = steps.dependent.done
+}
+
+output "final_seed_output" {
+  value = steps.dependent.seen_seed_output
+}

@@ -46,11 +46,36 @@ type Step struct {
 	After             []string                           `json:"after,omitempty"`
 	KnownSkipped      bool                               `json:"known_skipped,omitempty"`
 	SkipReason        string                             `json:"skip_reason,omitempty"`
+	PlannedActionInfo []PlannedActionInfo                `json:"planned_action_info,omitempty"`
+	PlannedQueryInfo  []PlannedQueryInfo                 `json:"planned_query_info,omitempty"`
+	PlannedDataInfo   []PlannedDataInfo                  `json:"planned_data_info,omitempty"`
 	PlannedActions    []string                           `json:"planned_actions,omitempty"`
 	PlannedQueries    []string                           `json:"planned_queries,omitempty"`
 	PlannedData       []string                           `json:"planned_data,omitempty"`
 	Outputs           []string                           `json:"outputs,omitempty"`
 	SourceMaps        map[string][]RunbookSourceMapEntry `json:"source_maps,omitempty"`
+}
+
+type PlannedActionInfo struct {
+	Address string            `json:"address"`
+	Type    string            `json:"type,omitempty"`
+	Name    string            `json:"name,omitempty"`
+	Config  map[string][]byte `json:"config,omitempty"`
+}
+
+type PlannedQueryInfo struct {
+	Address string            `json:"address"`
+	Type    string            `json:"type,omitempty"`
+	Name    string            `json:"name,omitempty"`
+	Config  map[string][]byte `json:"config,omitempty"`
+	Count   int               `json:"count,omitempty"`
+}
+
+type PlannedDataInfo struct {
+	Address string            `json:"address"`
+	Type    string            `json:"type,omitempty"`
+	Name    string            `json:"name,omitempty"`
+	Config  map[string][]byte `json:"config,omitempty"`
 }
 
 type RunbookSourceMapEntry struct {

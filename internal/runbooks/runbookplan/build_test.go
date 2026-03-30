@@ -11,8 +11,11 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform/internal/addrs"
+	"github.com/hashicorp/terraform/internal/plans"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookplanfile"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -80,6 +83,92 @@ step "summary" {
 	}
 	if diags.HasErrors() {
 		t.Fatal(diags.Err())
+	}
+}
+
+func TestBuildPreservesUnknownDerivedOutputsFromForEachSteps(t *testing.T) {
+	configPath := t.TempDir()
+	err := os.WriteFile(filepath.Join(configPath, "main.tfrun.hcl"), []byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "invoke" {
+  for_each = {
+    primary = "primary"
+    shadow  = "shadow"
+  }
+
+  output "invoke_target" {
+    value = each.key
+  }
+
+  output "invocation_output" {
+    value = trimspace(action.simple_action.smoke.output)
+  }
+}
+
+step "summary" {
+  output "primary_output" {
+    value = one([for step in values(steps.invoke) : step.invocation_output if step.invoke_target == "primary"])
+  }
+}
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, diags := runbookconfig.LoadConfigDir(configPath)
+	if diags.HasErrors() {
+		t.Fatal(diags.Err())
+	}
+
+	plan, diags, err := Build(cfg, configPath, "default", []string{"invoke", "summary"}, map[string][]string{"summary": {"invoke"}}, cty.EmptyObjectVal, cty.EmptyObjectVal, func(stepName string, scope runbookconfig.EvalScope) (StepPlanResult, error) {
+		switch stepName {
+		case "invoke":
+			return StepPlanResult{
+				Outputs: cty.ObjectVal(map[string]cty.Value{
+					"invoke_target": scope.Each.GetAttr("key"),
+				}),
+				OutputNames: []string{"invoke_target", "invocation_output"},
+			}, nil
+		case "summary":
+			step := cfg.Files[filepath.Join(configPath, "main.tfrun.hcl")].Steps["summary"]
+			val, evalDiags := runbookconfig.EvalExpr(step.Outputs["primary_output"].Value, scope, cty.DynamicPseudoType)
+			if evalDiags.HasErrors() {
+				return StepPlanResult{}, evalDiags.Err()
+			}
+			return StepPlanResult{Outputs: cty.ObjectVal(map[string]cty.Value{"primary_output": val}), OutputNames: []string{"primary_output"}}, nil
+		default:
+			return StepPlanResult{}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diags.HasErrors() {
+		t.Fatal(diags.Err())
+	}
+
+	var summary *runbookplanfile.Step
+	for i := range plan.Manifest.Steps {
+		if plan.Manifest.Steps[i].Name == "summary" {
+			summary = &plan.Manifest.Steps[i]
+			break
+		}
+	}
+	if summary == nil {
+		t.Fatal("missing summary step")
+	}
+	raw, ok := summary.PlannedOutputs["primary_output"]
+	if !ok {
+		t.Fatal("missing derived summary output")
+	}
+	val, err := plans.DynamicValue(raw).Decode(cty.DynamicPseudoType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val.IsKnown() || val.IsNull() {
+		t.Fatalf("expected unknown derived output, got %s", tfdiags.CompactValueStr(val))
 	}
 }
 

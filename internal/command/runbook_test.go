@@ -4,6 +4,7 @@
 package command
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,6 +192,138 @@ func TestShowRunbookPlanSummaryWritesPlanText(t *testing.T) {
 	}
 }
 
+func TestRunbookTopLevelOutputsParse(t *testing.T) {
+	rootDir := t.TempDir()
+	cfg, diags := runbookconfig.ParseFileSource([]byte(`runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "first" {
+  output "done" {
+    value = true
+  }
+}
+
+output "all_done" {
+  value = steps.first.done
+}
+`), filepath.Join(rootDir, "main.tfrun.hcl"))
+	if diags.HasErrors() {
+		t.Fatal(diags.Err())
+	}
+	if cfg.Outputs["all_done"] == nil {
+		t.Fatal("missing top-level runbook output")
+	}
+}
+
+func TestFormatPlanSummaryUsesTerraformLikeBlocks(t *testing.T) {
+	known, err := ctymsgpack.Marshal(cty.StringVal("python3.12"), cty.DynamicPseudoType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := ctymsgpack.Marshal(cty.UnknownVal(cty.String), cty.DynamicPseudoType)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := formatPlanSummary(nil, &runbookplanfile.Plan{Steps: []runbookplanfile.Step{{
+		Name: "inspect_workspace_lambda",
+		PlannedActionInfo: []runbookplanfile.PlannedActionInfo{{
+			Address: "action.aws_lambda_invoke.smoke",
+			Type:    "aws_lambda_invoke",
+			Name:    "smoke",
+			Config:  map[string][]byte{"function_name": known},
+		}},
+		PlannedQueryInfo: []runbookplanfile.PlannedQueryInfo{{
+			Address: "list.aws_lambda_function.managed",
+			Type:    "aws_lambda_function",
+			Name:    "managed",
+			Config:  map[string][]byte{"limit": mustMsgpackDynamicValue(t, cty.NumberIntVal(10))},
+			Count:   2,
+		}},
+		PlannedDataInfo: []runbookplanfile.PlannedDataInfo{{
+			Address: "data.aws_lambda_function.target",
+			Type:    "aws_lambda_function",
+			Name:    "target",
+			Config:  map[string][]byte{"function_name": known},
+		}},
+		PlannedOutputs: map[string][]byte{"runtime": known, "invocation_output": unknown},
+	}}})
+
+	if !strings.Contains(got, `# Step 1: inspect_workspace_lambda will execute`) {
+		t.Fatalf("missing execute header: %s", got)
+	}
+	if !strings.Contains(got, `inspect_workspace_lambda[reset] {`) {
+		t.Fatalf("missing terraform-like step block: %s", got)
+	}
+	if !strings.Contains(got, `~`) {
+		t.Fatalf("missing execute marker for planned step: %s", got)
+	}
+	if strings.Contains(got, `after = [`) {
+		t.Fatalf("unexpected after metadata in plan output: %s", got)
+	}
+	if !strings.Contains(got, `# action.aws_lambda_invoke.smoke will invoke`) {
+		t.Fatalf("missing action invocation heading: %s", got)
+	}
+	if !strings.Contains(got, "}\n\n      # data.aws_lambda_function.target will be read during execute") {
+		t.Fatalf("missing blank line between action and data blocks: %s", got)
+	}
+	if !strings.Contains(got, `function_name`) || !strings.Contains(got, `"python3.12"`) {
+		t.Fatalf("missing action config rendering: %s", got)
+	}
+	if !strings.Contains(got, `# action.aws_lambda_invoke.smoke will invoke`) {
+		t.Fatalf("missing provider-backed action heading: %s", got)
+	}
+	if !strings.Contains(got, `# data.aws_lambda_function.target will be read during execute`) {
+		t.Fatalf("missing terraform-like data heading: %s", got)
+	}
+	if !strings.Contains(got, `data "aws_lambda_function" "target" {`) {
+		t.Fatalf("missing terraform-like data block: %s", got)
+	}
+	if strings.Count(got, `function_name`) < 2 {
+		t.Fatalf("missing data/action config rendering: %s", got)
+	}
+	if !strings.Contains(got, `# list.aws_lambda_function.managed will query during execute`) {
+		t.Fatalf("missing terraform-like list heading: %s", got)
+	}
+	if !strings.Contains(got, `list "aws_lambda_function" "managed" {`) {
+		t.Fatalf("missing terraform-like list block: %s", got)
+	}
+	if !strings.Contains(got, `limit`) || !strings.Contains(got, `10`) {
+		t.Fatalf("missing query config rendering: %s", got)
+	}
+	if !strings.Contains(got, `result_count`) || !strings.Contains(got, `2`) {
+		t.Fatalf("missing query result count summary: %s", got)
+	}
+	if !strings.Contains(got, `runtime`) || !strings.Contains(got, `"python3.12"`) {
+		t.Fatalf("missing concrete planned output: %s", got)
+	}
+	if !strings.Contains(got, `invocation_output`) || !strings.Contains(got, `(known after execute)`) {
+		t.Fatalf("missing deferred planned output marker: %s", got)
+	}
+	if !strings.Contains(got, `1 to execute, 0 to skip.`) {
+		t.Fatalf("missing plan footer: %s", got)
+	}
+}
+
+func TestFormatPlanSummaryShowsSkippedStepReason(t *testing.T) {
+	got := formatPlanSummary(nil, &runbookplanfile.Plan{Steps: []runbookplanfile.Step{{
+		Name:         "summarize_workflow",
+		KnownSkipped: true,
+		SkipReason:   "step skipped by precondition",
+	}}})
+
+	if !strings.Contains(got, `# Step 1: summarize_workflow will be skipped`) {
+		t.Fatalf("missing skipped header: %s", got)
+	}
+	if !strings.Contains(got, `reason = "step skipped by precondition"`) {
+		t.Fatalf("missing skipped reason: %s", got)
+	}
+	if !strings.Contains(got, `0 to execute, 1 to skip.`) {
+		t.Fatalf("missing skipped footer summary: %s", got)
+	}
+}
+
 func mustParseExpr(t *testing.T, src string) hcl.Expression {
 	t.Helper()
 	expr, diags := hclsyntax.ParseExpression([]byte(src), "test.hcl", hcl.InitialPos)
@@ -198,4 +331,13 @@ func mustParseExpr(t *testing.T, src string) hcl.Expression {
 		t.Fatal(diags)
 	}
 	return expr
+}
+
+func mustMsgpackDynamicValue(t *testing.T, val cty.Value) []byte {
+	t.Helper()
+	raw, err := ctymsgpack.Marshal(val, cty.DynamicPseudoType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
