@@ -107,7 +107,7 @@ step "deploy" {
 		t.Fatalf("expected no tracked workspace outputs, got %d", len(ctx.UsedWorkspaceOutputs()))
 	}
 	if diags := ctx.Validate(); diags.HasErrors() {
-		t.Fatalf("unexpected validate diagnostics: %s", diags.Error())
+		t.Fatalf("unexpected validate diagnostics: %s", diags.Err())
 	}
 	if len(ctx.UsedWorkspaceOutputs()) != 0 {
 		t.Fatalf("expected no tracked workspace outputs after validate, got %d", len(ctx.UsedWorkspaceOutputs()))
@@ -263,7 +263,7 @@ step "deploy" {}
 		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
 	}
 	if diags := ctx.Validate(); diags.HasErrors() {
-		t.Fatalf("unexpected validation diagnostics: %s", diags.Error())
+		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
 	}
 	want := []runbookaddrs.WorkspaceOutputValue{{
 		Output: addrs.AbsOutputValue{
@@ -330,7 +330,7 @@ step "deploy" {
 		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
 	}
 	if diags := ctx.Validate(); diags.HasErrors() {
-		t.Fatalf("unexpected validation diagnostics: %s", diags.Error())
+		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
 	}
 	want := []string{"prepare"}
 	if !reflect.DeepEqual(ctx.StepDependencies("deploy"), want) {
