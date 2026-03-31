@@ -223,20 +223,26 @@ func (c *RunbookContext) Validate() hcl.Diagnostics {
 
 		for _, output := range step.Outputs {
 			diags = append(diags, c.validateExpressionExternalReferences(step.Name, output.Expr)...)
+			diags = append(diags, c.validateExpressionInStepReferences(step.Name, output.Expr)...)
 		}
 
 		for _, condition := range step.Preconditions {
 			diags = append(diags, c.validateExpressionExternalReferences(step.Name, condition.Condition)...)
 			diags = append(diags, c.validateExpressionExternalReferences(step.Name, condition.ErrorMessage)...)
+			diags = append(diags, c.validateExpressionInStepReferences(step.Name, condition.Condition)...)
+			diags = append(diags, c.validateExpressionInStepReferences(step.Name, condition.ErrorMessage)...)
 		}
 		for _, condition := range step.Postconditions {
 			diags = append(diags, c.validateExpressionExternalReferences(step.Name, condition.Condition)...)
 			diags = append(diags, c.validateExpressionExternalReferences(step.Name, condition.ErrorMessage)...)
+			diags = append(diags, c.validateExpressionInStepReferences(step.Name, condition.Condition)...)
+			diags = append(diags, c.validateExpressionInStepReferences(step.Name, condition.ErrorMessage)...)
 		}
 	}
 
 	for _, output := range c.config.Outputs {
 		diags = append(diags, c.validateExpressionExternalReferences("", output.Expr)...)
+		diags = append(diags, c.validateExpressionInStepReferences("", output.Expr)...)
 	}
 
 	return diags
@@ -351,4 +357,93 @@ func (c *RunbookContext) workspaceOutputExists(addr runbookaddrs.WorkspaceOutput
 	}
 	_, exists := c.config.WorkspaceConfig.Module.Outputs[addr.Output.OutputValue.Name]
 	return exists
+}
+
+func (c *RunbookContext) validateExpressionInStepReferences(currentStepName string, expr hcl.Expression) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	if expr == nil {
+		return diags
+	}
+
+	for _, traversal := range expr.Variables() {
+		rootName := traversal.RootName()
+		if rootName == "step" || rootName == "workspace" {
+			continue
+		}
+
+		ref, refDiags := runbookaddrs.ParseInStepReference(traversal)
+		diags = append(diags, refDiags.ToHCL()...)
+		if refDiags.HasErrors() {
+			continue
+		}
+
+		switch addr := ref.Target.(type) {
+		case addrs.InputVariable:
+			if c.Variable(addr.Name) == nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Reference to undeclared variable",
+					Detail:   fmt.Sprintf("The variable %q is not declared in the runbook configuration.", addr.Name),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
+		case addrs.LocalValue:
+			if currentStepName == "" || c.StepLocal(currentStepName, addr.Name) == nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Reference to undeclared local value",
+					Detail:   fmt.Sprintf("The local value %q is not declared in step %q.", addr.Name, currentStepName),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
+		case runbookaddrs.ActionInstance:
+			if len(ref.Remaining) == 0 {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid action reference",
+					Detail:   "Action values are not directly referenceable in expressions. Use an explicit action attribute such as \".output\".",
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+				continue
+			}
+			firstStep, ok := ref.Remaining[0].(hcl.TraverseAttr)
+			if !ok || firstStep.Name != "output" {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid action reference",
+					Detail:   "Action expressions must access an explicit action attribute, currently \".output\".",
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+				continue
+			}
+			if currentStepName == "" || c.StepAction(currentStepName, addr.Type, addr.Name) == nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Reference to undeclared action",
+					Detail:   fmt.Sprintf("The action %q is not declared in step %q.", addr.String(), currentStepName),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
+		case runbookaddrs.DataSource:
+			if currentStepName == "" || c.StepDataSource(currentStepName, addr.Type, addr.Name) == nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Reference to undeclared data source",
+					Detail:   fmt.Sprintf("The data source %q is not declared in step %q.", addr.String(), currentStepName),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
+		case runbookaddrs.List:
+			if currentStepName == "" || c.StepList(currentStepName, addr.Type, addr.Name) == nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Reference to undeclared list block",
+					Detail:   fmt.Sprintf("The list block %q is not declared in step %q.", addr.String(), currentStepName),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
+		}
+	}
+
+	return diags
 }
