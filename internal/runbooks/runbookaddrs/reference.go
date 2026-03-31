@@ -22,28 +22,19 @@ type CrossStepReference struct {
 	SourceRange tfdiags.SourceRange
 }
 
-// ParseStepExternalReference raises a raw absolute traversal into a higher-level
-// runbook-specific external step reference, or returns diagnostics explaining
-// why it cannot.
+// ParseStepOutputReference raises a raw absolute traversal into a higher-level
+// runbook-specific step output reference, or returns diagnostics explaining why
+// it cannot.
 //
 // The returned traversal is a relative traversal covering the remainder of the
 // given traversal after the part captured into the returned reference.
-func ParseStepExternalReference(traversal hcl.Traversal) (CrossStepReference, hcl.Traversal, tfdiags.Diagnostics) {
+func ParseStepOutputReference(traversal hcl.Traversal) (CrossStepReference, hcl.Traversal, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	var ret CrossStepReference
 
 	switch traversal.RootName() {
 	case "step":
 		target, rng, remain, moreDiags := parseStepOutputRef(traversal)
-		diags = diags.Append(moreDiags)
-		if diags.HasErrors() {
-			return ret, nil, diags
-		}
-		ret.Target = target
-		ret.SourceRange = tfdiags.SourceRangeFromHCL(rng)
-		return ret, remain, diags
-	case "workspace":
-		target, rng, remain, moreDiags := ParseWorkspaceReference(traversal)
 		diags = diags.Append(moreDiags)
 		if diags.HasErrors() {
 			return ret, nil, diags
@@ -60,6 +51,24 @@ func ParseStepExternalReference(traversal hcl.Traversal) (CrossStepReference, hc
 		})
 		return ret, nil, diags
 	}
+}
+
+// ParseStepExternalReference is retained as a compatibility wrapper for the
+// previous mixed step/workspace external parser.
+func ParseStepExternalReference(traversal hcl.Traversal) (CrossStepReference, hcl.Traversal, tfdiags.Diagnostics) {
+	if traversal.RootName() == "workspace" {
+		var diags tfdiags.Diagnostics
+		var ret CrossStepReference
+		target, rng, remain, moreDiags := ParseWorkspaceReference(traversal)
+		diags = diags.Append(moreDiags)
+		if diags.HasErrors() {
+			return ret, nil, diags
+		}
+		ret.Target = target
+		ret.SourceRange = tfdiags.SourceRangeFromHCL(rng)
+		return ret, remain, diags
+	}
+	return ParseStepOutputReference(traversal)
 }
 
 // ParseReference is retained as a compatibility wrapper for the cross-step

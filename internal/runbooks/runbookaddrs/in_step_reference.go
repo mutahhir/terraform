@@ -12,25 +12,28 @@ import (
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
-// InStepReference describes a reference expression found inside a step body.
+// ScopedReference describes a reference expression found inside a step body
+// that is not step-external (`step.*`) or workspace-scoped (`workspace.*`).
 //
 // Unlike [CrossStepReference], this parser is for symbols resolved within the
-// current step's own evaluation scope, such as data sources, list blocks,
-// actions, locals, variables, and contextual references like count.index.
+// current step's evaluation scope or the enclosing runbook scope, such as data
+// sources, list blocks, actions, locals, variables, and contextual references
+// like count.index.
 //
 // This parser reuses Terraform's low-level reference parsing, but then narrows
 // the resulting targets down to only the address kinds that can actually exist
 // in a runbook step.
-type InStepReference struct {
+type ScopedReference struct {
 	Target      any
 	SourceRange tfdiags.SourceRange
 	Remaining   hcl.Traversal
 }
 
-// ParseInStepReference parses a traversal as a reference resolved within the
-// current step's scope.
-func ParseInStepReference(traversal hcl.Traversal) (InStepReference, tfdiags.Diagnostics) {
-	var ret InStepReference
+// ParseScopedReference parses a traversal as a reference resolved from the
+// current runbook/step scope, excluding step-external and workspace-scoped
+// references.
+func ParseScopedReference(traversal hcl.Traversal) (ScopedReference, tfdiags.Diagnostics) {
+	var ret ScopedReference
 
 	ref, diags := addrs.ParseRef(traversal)
 	if diags.HasErrors() {
@@ -47,6 +50,58 @@ func ParseInStepReference(traversal hcl.Traversal) (InStepReference, tfdiags.Dia
 	ret.Target = normalizeInStepReferenceTarget(ref.Subject)
 	ret.SourceRange = ref.SourceRange
 	ret.Remaining = ref.Remaining
+	return ret, diags
+}
+
+// RunbookReference describes a reference expression resolved from the enclosing
+// runbook scope.
+type RunbookReference = ScopedReference
+
+// ParseRunbookReference parses a traversal as a runbook-scoped reference.
+//
+// For now this is limited to references like `var.*`.
+func ParseRunbookReference(traversal hcl.Traversal) (RunbookReference, tfdiags.Diagnostics) {
+	ret, diags := ParseScopedReference(traversal)
+	if diags.HasErrors() {
+		return ret, diags
+	}
+
+	if _, ok := ret.Target.(addrs.InputVariable); ok {
+		return ret, diags
+	}
+
+	var moreDiags tfdiags.Diagnostics
+	moreDiags = moreDiags.Append(&hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  "Invalid runbook reference",
+		Detail:   "Only runbook-scoped variables can be referenced from the runbook scope.",
+		Subject:  traversal.SourceRange().Ptr(),
+	})
+	return RunbookReference{}, diags.Append(moreDiags)
+}
+
+// InStepReference describes a reference expression resolved from the current
+// step's own local scope.
+type InStepReference = ScopedReference
+
+// ParseInStepReference parses a traversal as a step-local reference.
+func ParseInStepReference(traversal hcl.Traversal) (InStepReference, tfdiags.Diagnostics) {
+	ret, diags := ParseScopedReference(traversal)
+	if diags.HasErrors() {
+		return ret, diags
+	}
+
+	if _, ok := ret.Target.(addrs.InputVariable); ok {
+		var moreDiags tfdiags.Diagnostics
+		moreDiags = moreDiags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid in-step reference",
+			Detail:   "Runbook variables are not step-local references. Handle them through the runbook scope instead.",
+			Subject:  traversal.SourceRange().Ptr(),
+		})
+		return InStepReference{}, diags.Append(moreDiags)
+	}
+
 	return ret, diags
 }
 

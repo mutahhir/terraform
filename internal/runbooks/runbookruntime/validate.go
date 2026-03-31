@@ -33,31 +33,34 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 		}
 
 		for _, output := range step.Outputs {
-			diags = diags.Append(c.validateExpressionExternalReferences(step.Name, output.Expr))
-			diags = diags.Append(c.validateExpressionInStepReferences(step.Name, output.Expr))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, output.Expr))
 		}
 
 		for _, condition := range step.Preconditions {
-			diags = diags.Append(c.validateExpressionExternalReferences(step.Name, condition.Condition))
-			diags = diags.Append(c.validateExpressionExternalReferences(step.Name, condition.ErrorMessage))
-			diags = diags.Append(c.validateExpressionInStepReferences(step.Name, condition.Condition))
-			diags = diags.Append(c.validateExpressionInStepReferences(step.Name, condition.ErrorMessage))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, condition.Condition, condition.ErrorMessage))
 		}
 		for _, condition := range step.Postconditions {
-			diags = diags.Append(c.validateExpressionExternalReferences(step.Name, condition.Condition))
-			diags = diags.Append(c.validateExpressionExternalReferences(step.Name, condition.ErrorMessage))
-			diags = diags.Append(c.validateExpressionInStepReferences(step.Name, condition.Condition))
-			diags = diags.Append(c.validateExpressionInStepReferences(step.Name, condition.ErrorMessage))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, condition.Condition, condition.ErrorMessage))
 		}
 	}
 
 	for _, output := range c.config.Outputs {
-		diags = diags.Append(c.validateExpressionExternalReferences("", output.Expr))
-		diags = diags.Append(c.validateExpressionInStepReferences("", output.Expr))
+		diags = diags.Append(c.validateScopedExpressions("", output.Expr))
 	}
 
 	diags = diags.Append(c.validateStepDependencyCycles())
 
+	return diags
+}
+
+func (c *RunbookContext) validateScopedExpressions(currentStepName string, exprs ...hcl.Expression) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	for _, expr := range exprs {
+		diags = diags.Append(c.validateExpressionRunbookScopeReferences(expr))
+		diags = diags.Append(c.validateExpressionStepExternalReferences(currentStepName, expr))
+		diags = diags.Append(c.validateExpressionWorkspaceReferences(expr))
+		diags = diags.Append(c.validateExpressionStepLocalReferences(currentStepName, expr))
+	}
 	return diags
 }
 
@@ -105,7 +108,7 @@ func (c *RunbookContext) workspaceActionExists(addr addrs.AbsAction) bool {
 	return exists
 }
 
-func (c *RunbookContext) validateExpressionExternalReferences(currentStepName string, expr hcl.Expression) tfdiags.Diagnostics {
+func (c *RunbookContext) validateExpressionRunbookScopeReferences(expr hcl.Expression) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if expr == nil {
 		return diags
@@ -113,44 +116,100 @@ func (c *RunbookContext) validateExpressionExternalReferences(currentStepName st
 
 	for _, traversal := range expr.Variables() {
 		rootName := traversal.RootName()
-		if rootName != "step" && rootName != "workspace" {
+		if rootName != "var" {
 			continue
 		}
 
-		ref, _, refDiags := runbookaddrs.ParseStepExternalReference(traversal)
+		ref, refDiags := runbookaddrs.ParseRunbookReference(traversal)
+		diags = diags.Append(refDiags)
+		if refDiags.HasErrors() {
+			continue
+		}
+		if addr, ok := ref.Target.(addrs.InputVariable); ok {
+			if c.Variable(addr.Name) == nil {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Reference to undeclared variable",
+					Detail:   fmt.Sprintf("The variable %q is not declared in the runbook configuration.", addr.Name),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
+		}
+	}
+
+	return diags
+}
+
+func (c *RunbookContext) validateExpressionStepExternalReferences(currentStepName string, expr hcl.Expression) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if expr == nil {
+		return diags
+	}
+
+	for _, traversal := range expr.Variables() {
+		if traversal.RootName() != "step" {
+			continue
+		}
+
+		ref, _, refDiags := runbookaddrs.ParseStepOutputReference(traversal)
 		diags = diags.Append(refDiags)
 		if refDiags.HasErrors() {
 			continue
 		}
 
-		switch addr := ref.Target.(type) {
-		case runbookaddrs.StepOutputValue:
-			cfgAddr := addr.ConfigStepOutputValue()
-			if currentStepName != "" && cfgAddr.Step.Name != currentStepName {
-				if from, ok := c.stepVertices[currentStepName]; ok {
-					if to, ok := c.stepVertices[cfgAddr.Step.Name]; ok {
-						c.stepDependencyGraph.Connect(dag.BasicEdge(from, to))
-					}
+		addr, ok := ref.Target.(runbookaddrs.StepOutputValue)
+		if !ok {
+			continue
+		}
+		cfgAddr := addr.ConfigStepOutputValue()
+		if currentStepName != "" && cfgAddr.Step.Name != currentStepName {
+			if from, ok := c.stepVertices[currentStepName]; ok {
+				if to, ok := c.stepVertices[cfgAddr.Step.Name]; ok {
+					c.stepDependencyGraph.Connect(dag.BasicEdge(from, to))
 				}
 			}
-			if currentStepName != "" && cfgAddr.Step.Name == currentStepName {
-				diags = diags.Append(&hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid self-reference to step output",
-					Detail:   fmt.Sprintf("Step %q cannot reference its own output %q. Reference the underlying values directly instead.", currentStepName, cfgAddr.Name),
-					Subject:  traversal.SourceRange().Ptr(),
-				})
-				continue
-			}
-			if c.StepOutput(cfgAddr.Step.Name, cfgAddr.Name) == nil {
-				diags = diags.Append(&hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Reference to undeclared step output",
-					Detail:   fmt.Sprintf("The step output %q does not exist in the loaded runbook configuration.", addr.String()),
-					Subject:  traversal.SourceRange().Ptr(),
-				})
-			}
-		case runbookaddrs.WorkspaceOutputValue:
+		}
+		if currentStepName != "" && cfgAddr.Step.Name == currentStepName {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid self-reference to step output",
+				Detail:   fmt.Sprintf("Step %q cannot reference its own output %q. Reference the underlying values directly instead.", currentStepName, cfgAddr.Name),
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+			continue
+		}
+		if c.StepOutput(cfgAddr.Step.Name, cfgAddr.Name) == nil {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Reference to undeclared step output",
+				Detail:   fmt.Sprintf("The step output %q does not exist in the loaded runbook configuration.", addr.String()),
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+		}
+	}
+
+	return diags
+}
+
+func (c *RunbookContext) validateExpressionWorkspaceReferences(expr hcl.Expression) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if expr == nil {
+		return diags
+	}
+
+	for _, traversal := range expr.Variables() {
+		if traversal.RootName() != "workspace" {
+			continue
+		}
+
+		target, rng, _, refDiags := runbookaddrs.ParseWorkspaceReference(traversal)
+		diags = diags.Append(refDiags)
+		if refDiags.HasErrors() {
+			continue
+		}
+
+		_ = rng
+		if addr, ok := target.(runbookaddrs.WorkspaceOutputValue); ok {
 			if !c.workspaceOutputExists(addr) {
 				diags = diags.Append(&hcl.Diagnostic{
 					Severity: hcl.DiagError,
@@ -179,7 +238,7 @@ func (c *RunbookContext) workspaceOutputExists(addr runbookaddrs.WorkspaceOutput
 	return exists
 }
 
-func (c *RunbookContext) validateExpressionInStepReferences(currentStepName string, expr hcl.Expression) tfdiags.Diagnostics {
+func (c *RunbookContext) validateExpressionStepLocalReferences(currentStepName string, expr hcl.Expression) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if expr == nil {
 		return diags
@@ -187,7 +246,7 @@ func (c *RunbookContext) validateExpressionInStepReferences(currentStepName stri
 
 	for _, traversal := range expr.Variables() {
 		rootName := traversal.RootName()
-		if rootName == "step" || rootName == "workspace" {
+		if rootName == "step" || rootName == "workspace" || rootName == "var" {
 			continue
 		}
 
@@ -198,15 +257,6 @@ func (c *RunbookContext) validateExpressionInStepReferences(currentStepName stri
 		}
 
 		switch addr := ref.Target.(type) {
-		case addrs.InputVariable:
-			if c.Variable(addr.Name) == nil {
-				diags = diags.Append(&hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Reference to undeclared variable",
-					Detail:   fmt.Sprintf("The variable %q is not declared in the runbook configuration.", addr.Name),
-					Subject:  traversal.SourceRange().Ptr(),
-				})
-			}
 		case addrs.LocalValue:
 			if currentStepName == "" || c.StepLocal(currentStepName, addr.Name) == nil {
 				diags = diags.Append(&hcl.Diagnostic{

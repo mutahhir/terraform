@@ -35,11 +35,12 @@ func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 			var action runbookaddrs.ExecutableAction
 			switch traversal.RootName() {
 			case "workspace":
-				ref, remain, refDiags := runbookaddrs.ParseStepExternalReference(traversal)
+				target, rng, remain, refDiags := runbookaddrs.ParseWorkspaceReference(traversal)
 				diags = append(diags, refDiags.ToHCL()...)
 				if refDiags.HasErrors() {
 					continue
 				}
+				_ = rng
 				if len(remain) > 0 {
 					diags = append(diags, &hcl.Diagnostic{
 						Severity: hcl.DiagError,
@@ -51,7 +52,7 @@ func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 				}
 
 				var ok bool
-				action, ok = ref.Target.(runbookaddrs.ExecutableAction)
+				action, ok = target.(runbookaddrs.ExecutableAction)
 				if !ok {
 					diags = append(diags, &hcl.Diagnostic{
 						Severity: hcl.DiagError,
