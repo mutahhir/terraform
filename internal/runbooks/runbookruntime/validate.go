@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/dag"
@@ -44,10 +45,14 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 
 		for _, action := range step.Actions {
 			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, action.Count, action.ForEach))
+			scope := repetitionValidationScope{countAvailable: action.Count != nil, eachAvailable: action.ForEach != nil}
+			diags = diags.Append(c.validateBodyExpressions(step.Name, scope, action.Config))
 		}
 
 		for _, dataSource := range step.DataSources {
 			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, dataSource.Count, dataSource.ForEach))
+			scope := repetitionValidationScope{countAvailable: dataSource.Count != nil, eachAvailable: dataSource.ForEach != nil}
+			diags = diags.Append(c.validateBodyExpressions(step.Name, scope, dataSource.Config))
 		}
 
 		for _, list := range step.ListResources {
@@ -59,6 +64,7 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 			if list.List != nil {
 				diags = diags.Append(c.validateScopedExpressions(step.Name, scope, list.List.IncludeResource, list.List.Limit))
 			}
+			diags = diags.Append(c.validateBodyExpressions(step.Name, scope, list.Config))
 		}
 
 		for _, execution := range step.Executions {
@@ -97,6 +103,27 @@ func (c *RunbookContext) validateScopedExpressions(currentStepName string, scope
 		diags = diags.Append(c.validateExpressionRepetitionReferences(scope, expr))
 		diags = diags.Append(c.validateExpressionStepLocalReferences(currentStepName, expr))
 	}
+	return diags
+}
+
+func (c *RunbookContext) validateBodyExpressions(currentStepName string, scope repetitionValidationScope, body hcl.Body) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if body == nil {
+		return diags
+	}
+
+	syntaxBody, ok := body.(*hclsyntax.Body)
+	if !ok {
+		return diags
+	}
+
+	for _, attr := range syntaxBody.Attributes {
+		diags = diags.Append(c.validateScopedExpressions(currentStepName, scope, attr.Expr))
+	}
+	for _, block := range syntaxBody.Blocks {
+		diags = diags.Append(c.validateBodyExpressions(currentStepName, scope, block.Body))
+	}
+
 	return diags
 }
 

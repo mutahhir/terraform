@@ -295,6 +295,9 @@ func (d *runbookRepetitionData) GetInputVariable(addr addrs.InputVariable, rng t
 	if d.ctx == nil {
 		return cty.DynamicVal, nil
 	}
+	if val, ok := d.ctx.planTimeInputs.Variables[addr.Name]; ok {
+		return val, nil
+	}
 	variable := d.ctx.Variable(addr.Name)
 	if variable == nil {
 		return cty.DynamicVal, nil
@@ -314,6 +317,9 @@ func (d *runbookRepetitionData) GetInputVariable(addr addrs.InputVariable, rng t
 func (d *runbookRepetitionData) GetOutput(addr addrs.OutputValue, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	if d.ctx == nil || d.ctx.config == nil || d.ctx.config.WorkspaceConfig == nil {
 		return cty.DynamicVal, nil
+	}
+	if val, ok := d.ctx.planTimeInputs.WorkspaceOutputs[addr.Name]; ok {
+		return val, nil
 	}
 	output := d.ctx.config.WorkspaceConfig.Module.Outputs[addr.Name]
 	if output == nil {
@@ -346,4 +352,16 @@ func (d *runbookRepetitionData) evalStepLocal(local *configs.Local) (cty.Value, 
 		PureOnly: true,
 	}
 	return scope.EvalExpr(local.Expr, cty.DynamicPseudoType)
+}
+
+func unknownForEachRepetitionData(step *Step) instances.RepetitionData {
+	if step == nil || step.config == nil || step.config.ForEach == nil {
+		return instances.TotallyUnknownRepetitionData
+	}
+	eval := newRepetitionEvaluator(step.context)
+	val, _, diags := eval.evaluateForEach(step)
+	if diags.HasErrors() {
+		return instances.TotallyUnknownRepetitionData
+	}
+	return instances.UnknownForEachRepetitionData(val.Type())
 }

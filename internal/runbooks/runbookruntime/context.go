@@ -13,10 +13,17 @@ import (
 	"github.com/hashicorp/terraform/internal/dag"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/zclconf/go-cty/cty"
 )
 
 type RunbookContextOpts struct {
-	Config *runbookconfig.RunbookConfig
+	Config         *runbookconfig.RunbookConfig
+	PlanTimeInputs *PlanTimeInputs
+}
+
+type PlanTimeInputs struct {
+	Variables        map[string]cty.Value
+	WorkspaceOutputs map[string]cty.Value
 }
 
 type RunbookContext struct {
@@ -35,6 +42,7 @@ type RunbookContext struct {
 	workspaceOutputsByStep   map[string][]runbookaddrs.WorkspaceOutputValue
 	usedWorkspaceActions     []runbookaddrs.ExecutableAction
 	usedWorkspaceOutputNames []runbookaddrs.WorkspaceOutputValue
+	planTimeInputs           PlanTimeInputs
 }
 
 func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
@@ -65,6 +73,14 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 		workspaceOutputsByStep:   make(map[string][]runbookaddrs.WorkspaceOutputValue, len(opts.Config.Steps)),
 		usedWorkspaceActions:     make([]runbookaddrs.ExecutableAction, 0),
 		usedWorkspaceOutputNames: make([]runbookaddrs.WorkspaceOutputValue, 0),
+		planTimeInputs: PlanTimeInputs{
+			Variables:        map[string]cty.Value{},
+			WorkspaceOutputs: map[string]cty.Value{},
+		},
+	}
+	if opts.PlanTimeInputs != nil {
+		maps.Copy(ctx.planTimeInputs.Variables, opts.PlanTimeInputs.Variables)
+		maps.Copy(ctx.planTimeInputs.WorkspaceOutputs, opts.PlanTimeInputs.WorkspaceOutputs)
 	}
 
 	maps.Copy(ctx.variablesByName, opts.Config.Variables)

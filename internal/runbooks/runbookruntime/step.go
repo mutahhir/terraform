@@ -4,20 +4,18 @@
 package runbookruntime
 
 import (
-	"sort"
-
-	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/instances"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
-	"github.com/zclconf/go-cty/cty/gocty"
 )
 
 type Step struct {
-	context *RunbookContext
-	config  *runbookconfig.Step
+	context          *RunbookContext
+	config           *runbookconfig.Step
+	unknownInstances map[addrs.InstanceKey]*StepInstance
 }
 
 func (s *Step) Config() *runbookconfig.Step {
@@ -39,69 +37,49 @@ func (s *Step) Addr() runbookaddrs.ConfigStep {
 }
 
 func (s *Step) Instances() (map[addrs.InstanceKey]*StepInstance, bool) {
+	insts, unknown, _ := s.CheckInstances()
+	return insts, !unknown
+}
+
+func (s *Step) CheckInstances() (map[addrs.InstanceKey]*StepInstance, bool, tfdiags.Diagnostics) {
 	if s == nil || s.config == nil {
-		return nil, false
+		return nil, false, nil
+	}
+	eval := newRepetitionEvaluator(s.context)
+	return eval.stepInstances(s)
+}
+
+func (s *Step) UnknownInstance(key addrs.InstanceKey) *StepInstance {
+	if s == nil {
+		return nil
+	}
+	if s.unknownInstances == nil {
+		s.unknownInstances = make(map[addrs.InstanceKey]*StepInstance)
+	}
+	if inst, ok := s.unknownInstances[key]; ok {
+		return inst
 	}
 
-	baseAddr := runbookaddrs.StepInstance{Step: s.Addr()}
-	if s.config.Count == nil && s.config.ForEach == nil {
-		return map[addrs.InstanceKey]*StepInstance{
-			addrs.NoKey: {
-				step: s,
-				addr: baseAddr,
-			},
-		}, true
-	}
-
-	if s.config.Count != nil {
-		count, ok := staticCountValue(s.config.Count)
-		if !ok {
-			return nil, false
-		}
-		ret := make(map[addrs.InstanceKey]*StepInstance, count)
-		for i := range count {
-			key := addrs.IntKey(i)
-			ret[key] = &StepInstance{
-				step: s,
-				addr: runbookaddrs.StepInstance{
-					Step: baseAddr.Step,
-					Key:  key,
-				},
-				repetition: instances.RepetitionData{
-					CountIndex: cty.NumberIntVal(int64(i)),
-				},
-			}
-		}
-		return ret, true
-	}
-
-	mapping, ok := staticForEachValue(s.config.ForEach)
-	if !ok {
-		return nil, false
-	}
-
-	keys := make([]string, 0, len(mapping))
-	for key := range mapping {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	ret := make(map[addrs.InstanceKey]*StepInstance, len(keys))
-	for _, keyStr := range keys {
-		key := addrs.StringKey(keyStr)
-		ret[key] = &StepInstance{
-			step: s,
-			addr: runbookaddrs.StepInstance{
-				Step: baseAddr.Step,
-				Key:  key,
-			},
-			repetition: instances.RepetitionData{
-				EachKey:   cty.StringVal(keyStr),
-				EachValue: mapping[keyStr],
-			},
+	repetition := instances.TotallyUnknownRepetitionData
+	if s.config != nil {
+		switch {
+		case s.config.Count != nil:
+			repetition = instances.UnknownCountRepetitionData
+		case s.config.ForEach != nil:
+			repetition = unknownForEachRepetitionData(s)
 		}
 	}
-	return ret, true
+	if key != addrs.WildcardKey && repetition.EachKey != cty.NilVal {
+		repetition.EachKey = key.Value()
+	}
+
+	inst := &StepInstance{
+		step:       s,
+		addr:       runbookaddrs.StepInstance{Step: s.Addr(), Key: key},
+		repetition: repetition,
+	}
+	s.unknownInstances[key] = inst
+	return inst
 }
 
 type StepInstance struct {
@@ -129,44 +107,4 @@ func (s *StepInstance) RepetitionData() instances.RepetitionData {
 		return instances.RepetitionData{}
 	}
 	return s.repetition
-}
-
-func staticCountValue(expr hcl.Expression) (int, bool) {
-	if expr == nil {
-		return 0, false
-	}
-	val, diags := expr.Value(nil)
-	if diags.HasErrors() || !val.IsKnown() || val.IsNull() || val.Type() != cty.Number {
-		return 0, false
-	}
-	var ret int
-	if err := gocty.FromCtyValue(val, &ret); err != nil || ret < 0 {
-		return 0, false
-	}
-	return ret, true
-}
-
-func staticForEachValue(expr hcl.Expression) (map[string]cty.Value, bool) {
-	if expr == nil {
-		return nil, false
-	}
-	val, diags := expr.Value(nil)
-	if diags.HasErrors() || !val.IsKnown() || val.IsNull() {
-		return nil, false
-	}
-
-	ty := val.Type()
-	switch {
-	case ty.IsMapType() || ty.IsObjectType():
-		return val.AsValueMap(), true
-	case ty.IsSetType() && ty.ElementType() == cty.String:
-		elems := val.AsValueSlice()
-		ret := make(map[string]cty.Value, len(elems))
-		for _, elem := range elems {
-			ret[elem.AsString()] = elem
-		}
-		return ret, true
-	default:
-		return nil, false
-	}
 }
