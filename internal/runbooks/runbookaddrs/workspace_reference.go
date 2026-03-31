@@ -85,11 +85,7 @@ func ParseWorkspaceReference(traversal hcl.Traversal) (Referenceable, hcl.Range,
 			}
 
 			var target Referenceable
-			if addr.Action.Key == addrs.NoKey {
-				target = WorkspaceAction{Action: addr.ContainingAction()}
-			} else {
-				target = WorkspaceActionInstance{Action: addr}
-			}
+			target = WorkspaceActionInstance{Action: addr.ContainingAction(), Key: addr.Action.Key}
 
 			rng := hcl.RangeBetween(traversal[0].SourceRange(), prefix[len(prefix)-1].SourceRange())
 			return target, rng, trimmed[i:], diags

@@ -15,7 +15,11 @@ import (
 
 func TestNewContext(t *testing.T) {
 	fs := afero.NewMemMapFs()
-	writeTestFile(t, fs, "/workspace/main.tf", `output "root_value" { value = "hello" }`)
+	writeTestFile(t, fs, "/workspace/main.tf", `
+output "root_value" { value = "hello" }
+
+action "http" "notify" {}
+`)
 	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
 variable "name" {
   type = string
@@ -91,16 +95,19 @@ step "deploy" {
 		t.Fatal("expected indexed step output")
 	}
 	wantActions := []runbookaddrs.ExecutableAction{
-		runbookaddrs.WorkspaceAction{Action: addrs.AbsAction{
+		runbookaddrs.WorkspaceActionInstance{Action: addrs.AbsAction{
 			Module: addrs.RootModuleInstance,
 			Action: addrs.Action{Type: "http", Name: "notify"},
-		}},
+		}, Key: addrs.NoKey},
 	}
 	if !reflect.DeepEqual(ctx.UsedWorkspaceActions(), wantActions) {
 		t.Fatalf("wrong workspace actions\ngot:  %#v\nwant: %#v", ctx.UsedWorkspaceActions(), wantActions)
 	}
 	if len(ctx.UsedWorkspaceOutputs()) != 0 {
 		t.Fatalf("expected no tracked workspace outputs, got %d", len(ctx.UsedWorkspaceOutputs()))
+	}
+	if diags := ctx.Validate(); diags.HasErrors() {
+		t.Fatalf("unexpected validate diagnostics: %s", diags.Error())
 	}
 }
 
@@ -111,6 +118,69 @@ func TestNewContextNilConfig(t *testing.T) {
 	}
 	if ctx != nil {
 		t.Fatal("expected nil context")
+	}
+}
+
+func TestRunbookContextValidateNil(t *testing.T) {
+	var ctx *RunbookContext
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateMissingStepAction(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  execute {
+    invoke_action {
+      action = action.http.notify
+    }
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateMissingWorkspaceAction(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  execute {
+    invoke_action {
+      action = workspace.action.http.notify
+    }
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
 	}
 }
 

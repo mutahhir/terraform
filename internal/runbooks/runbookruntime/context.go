@@ -4,9 +4,11 @@
 package runbookruntime
 
 import (
+	"fmt"
 	"maps"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
@@ -94,7 +96,9 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 
 		for _, execution := range step.Executions {
 			for _, action := range execution.InvokeAction {
-				ctx.usedWorkspaceActions = append(ctx.usedWorkspaceActions, action)
+				if _, ok := action.(runbookaddrs.WorkspaceActionInstance); ok {
+					ctx.usedWorkspaceActions = append(ctx.usedWorkspaceActions, action)
+				}
 			}
 		}
 	}
@@ -197,4 +201,70 @@ func (c *RunbookContext) UsedWorkspaceOutputs() []runbookaddrs.WorkspaceOutputVa
 		return nil
 	}
 	return c.usedWorkspaceOutputNames
+}
+
+func (c *RunbookContext) Validate() hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	if c == nil || c.config == nil {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid runbook context",
+			Detail:   "A runbook runtime context requires a non-nil runbook configuration.",
+		})
+		return diags
+	}
+
+	for _, step := range c.config.Steps {
+		for _, execution := range step.Executions {
+			for _, action := range execution.InvokeAction {
+				diags = append(diags, c.validateExecutableAction(step.Name, action)...)
+			}
+		}
+	}
+
+	return diags
+}
+
+func (c *RunbookContext) validateExecutableAction(stepName string, action runbookaddrs.ExecutableAction) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+
+	switch addr := action.(type) {
+	case runbookaddrs.ActionInstance:
+		if c.StepAction(stepName, addr.Type, addr.Name) == nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Reference to undeclared action",
+				Detail:   fmt.Sprintf("The action %q is not declared in step %q.", addr.String(), stepName),
+			})
+		}
+	case runbookaddrs.WorkspaceActionInstance:
+		if !c.workspaceActionExists(addr.Action) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Reference to undeclared workspace action",
+				Detail:   fmt.Sprintf("The workspace action %q does not exist in the loaded Terraform configuration.", addr.String()),
+			})
+		}
+	default:
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid execute target",
+			Detail:   fmt.Sprintf("%T is not a valid executable action target.", action),
+		})
+	}
+
+	return diags
+}
+
+func (c *RunbookContext) workspaceActionExists(addr addrs.AbsAction) bool {
+	if c == nil || c.config == nil || c.config.WorkspaceConfig == nil {
+		return false
+	}
+
+	moduleCfg := c.config.WorkspaceConfig.DescendantForInstance(addr.Module)
+	if moduleCfg == nil || moduleCfg.Module == nil {
+		return false
+	}
+	_, exists := moduleCfg.Module.Actions[addr.Action.String()]
+	return exists
 }

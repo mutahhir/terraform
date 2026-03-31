@@ -8,46 +8,29 @@ import (
 	"github.com/hashicorp/terraform/internal/collections"
 )
 
-// WorkspaceAction is the address of an action in the Terraform workspace that a
-// runbook expression can reference.
-type WorkspaceAction struct {
-	Action addrs.AbsAction
-}
-
-func (WorkspaceAction) executableActionSigil() {}
-func (WorkspaceAction) referenceableSigil()    {}
-
-func (a WorkspaceAction) String() string {
-	return "workspace." + a.Action.String()
-}
-
-func (a WorkspaceAction) UniqueKey() collections.UniqueKey[WorkspaceAction] {
-	return workspaceActionKey(a.String())
-}
-
-type workspaceActionKey string
-
-// IsUniqueKey implements collections.UniqueKey.
-func (workspaceActionKey) IsUniqueKey(WorkspaceAction) {}
-
-// WorkspaceActionInstance is the address of a concrete action instance in the
-// Terraform workspace that a runbook expression can reference.
+// WorkspaceActionInstance is the address of an action in the Terraform
+// workspace that a runbook expression can reference, optionally including a
+// specific instance key.
 type WorkspaceActionInstance struct {
-	Action addrs.AbsActionInstance
+	Action addrs.AbsAction
+	Key    addrs.InstanceKey
 }
 
 func (WorkspaceActionInstance) executableActionSigil() {}
 func (WorkspaceActionInstance) referenceableSigil()    {}
 
 func (a WorkspaceActionInstance) String() string {
-	return "workspace." + a.Action.String()
+	if a.Key == nil {
+		return "workspace." + a.Action.String()
+	}
+	return "workspace." + addrs.AbsActionInstance{Action: addrs.ActionInstance{Action: a.Action.Action, Key: a.Key}, Module: a.Action.Module}.String()
 }
 
 func (a WorkspaceActionInstance) UniqueKey() collections.UniqueKey[WorkspaceActionInstance] {
-	return workspaceActionInstanceKey(a.String())
+	return workspaceActionKey(a.String())
 }
 
-type workspaceActionInstanceKey string
+type workspaceActionKey string
 
 // IsUniqueKey implements collections.UniqueKey.
-func (workspaceActionInstanceKey) IsUniqueKey(WorkspaceActionInstance) {}
+func (workspaceActionKey) IsUniqueKey(WorkspaceActionInstance) {}

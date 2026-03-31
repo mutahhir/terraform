@@ -18,7 +18,6 @@ type Referenceable interface {
 
 var _ Referenceable = ConfigOutputValue{}
 var _ Referenceable = AbsOutputValue{}
-var _ Referenceable = WorkspaceAction{}
 var _ Referenceable = WorkspaceActionInstance{}
 var _ Referenceable = WorkspaceOutputValue{}
 

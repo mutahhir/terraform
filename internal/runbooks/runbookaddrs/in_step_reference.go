@@ -73,11 +73,12 @@ func normalizeInStepReferenceTarget(subject addrs.Referenceable) any {
 			}
 		}
 	case addrs.Action:
-		return Action{Type: addr.Type, Name: addr.Name}
+		return ActionInstance{Type: addr.Type, Name: addr.Name}
 	case addrs.ActionInstance:
-		return ActionInvocationInstance{
-			Action: Action{Type: addr.Action.Type, Name: addr.Action.Name},
-			Key:    addr.Key,
+		return ActionInstance{
+			Type: addr.Action.Type,
+			Name: addr.Action.Name,
+			Key:  addr.Key,
 		}
 	}
 

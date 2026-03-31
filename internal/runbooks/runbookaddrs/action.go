@@ -16,31 +16,20 @@ type ExecutableAction interface {
 	String() string
 }
 
-// Action is the relative address of an action declared inside the current
-// step.
-type Action struct {
+// ActionInstance is the relative address of an action declared inside the
+// current step, optionally including a specific instance key.
+type ActionInstance struct {
 	Type string
 	Name string
+	Key  addrs.InstanceKey
 }
 
-func (Action) executableActionSigil() {}
+func (ActionInstance) executableActionSigil() {}
 
-func (a Action) String() string {
-	return "action." + a.Type + "." + a.Name
-}
-
-// ActionInvocationInstance is the relative address of a concrete action
-// instance declared inside the current step.
-type ActionInvocationInstance struct {
-	Action Action
-	Key    addrs.InstanceKey
-}
-
-func (ActionInvocationInstance) executableActionSigil() {}
-
-func (a ActionInvocationInstance) String() string {
+func (a ActionInstance) String() string {
+	base := "action." + a.Type + "." + a.Name
 	if a.Key == nil {
-		return a.Action.String()
+		return base
 	}
-	return a.Action.String() + a.Key.String()
+	return base + a.Key.String()
 }

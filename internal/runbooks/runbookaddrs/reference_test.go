@@ -79,10 +79,10 @@ func TestParseStepExternalReference_WorkspaceAction(t *testing.T) {
 		t.Fatalf("expected no remaining traversal, got %d steps", len(remain))
 	}
 
-	want := WorkspaceAction{Action: addrs.AbsAction{
+	want := WorkspaceActionInstance{Action: addrs.AbsAction{
 		Module: addrs.RootModuleInstance,
 		Action: addrs.Action{Type: "http", Name: "notify"},
-	}}
+	}, Key: addrs.NoKey}
 	if !reflect.DeepEqual(got.Target, want) {
 		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", got.Target, want)
 	}
@@ -125,10 +125,10 @@ func TestParseStepExternalReference_WorkspaceModuleAction(t *testing.T) {
 		t.Fatalf("expected no remaining traversal, got %d steps", len(remain))
 	}
 
-	want := WorkspaceAction{Action: addrs.AbsAction{
+	want := WorkspaceActionInstance{Action: addrs.AbsAction{
 		Module: addrs.RootModuleInstance.Child("child", addrs.NoKey),
 		Action: addrs.Action{Type: "http", Name: "notify"},
-	}}
+	}, Key: addrs.NoKey}
 	if !reflect.DeepEqual(got.Target, want) {
 		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", got.Target, want)
 	}
@@ -157,7 +157,7 @@ func TestParseInStepReference_Action(t *testing.T) {
 		t.Fatalf("unexpected reference diagnostics: %s", refDiags.Err())
 	}
 
-	want := Action{Type: "http", Name: "notify"}
+	want := ActionInstance{Type: "http", Name: "notify"}
 	if !reflect.DeepEqual(got.Target, want) {
 		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", got.Target, want)
 	}
