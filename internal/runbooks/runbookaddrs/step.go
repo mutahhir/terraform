@@ -14,25 +14,25 @@ import (
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
-// Step is the address of a "step" block within a runbook config.
-type Step struct {
+// ConfigStep is the address of a "step" block within a runbook config.
+type ConfigStep struct {
 	Name string
 }
 
-func (s Step) String() string {
+func (s ConfigStep) String() string {
 	return "step." + s.Name
 }
 
-func (s Step) UniqueKey() collections.UniqueKey[Step] {
+func (s ConfigStep) UniqueKey() collections.UniqueKey[ConfigStep] {
 	return s
 }
 
-// A Step is its own [collections.UniqueKey].
-func (Step) IsUniqueKey(Step) {}
+// A ConfigStep is its own [collections.UniqueKey].
+func (ConfigStep) IsUniqueKey(ConfigStep) {}
 
 // StepInstance is the address of a dynamic instance of a step.
 type StepInstance struct {
-	Step Step
+	Step ConfigStep
 	Key  addrs.InstanceKey
 }
 
@@ -50,8 +50,8 @@ func (s StepInstance) UniqueKey() collections.UniqueKey[StepInstance] {
 // A StepInstance is its own [collections.UniqueKey].
 func (StepInstance) IsUniqueKey(StepInstance) {}
 
-func ParseStepInstance(traversal hcl.Traversal) (StepInstance, tfdiags.Diagnostics) {
-	inst, remain, diags := ParseStepInstanceOnly(traversal)
+func ParseAbsStepInstance(traversal hcl.Traversal) (StepInstance, tfdiags.Diagnostics) {
+	inst, remain, diags := ParseAbsStepInstanceOnly(traversal)
 	if diags.HasErrors() {
 		return StepInstance{}, diags
 	}
@@ -73,7 +73,7 @@ func ParseStepInstance(traversal hcl.Traversal) (StepInstance, tfdiags.Diagnosti
 	return inst, diags
 }
 
-func ParseStepInstanceStr(s string) (StepInstance, tfdiags.Diagnostics) {
+func ParseAbsStepInstanceStr(s string) (StepInstance, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	traversal, hclDiags := hclsyntax.ParseTraversalAbs([]byte(s), "", hcl.InitialPos)
 	diags = diags.Append(hclDiags)
@@ -81,12 +81,12 @@ func ParseStepInstanceStr(s string) (StepInstance, tfdiags.Diagnostics) {
 		return StepInstance{}, diags
 	}
 
-	ret, moreDiags := ParseStepInstance(traversal)
+	ret, moreDiags := ParseAbsStepInstance(traversal)
 	diags = diags.Append(moreDiags)
 	return ret, diags
 }
 
-func ParsePartialStepInstanceStr(s string) (StepInstance, tfdiags.Diagnostics) {
+func ParsePartialAbsStepInstanceStr(s string) (StepInstance, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	traversal, hclDiags := hclsyntax.ParseTraversalPartial([]byte(s), "", hcl.InitialPos)
 	diags = diags.Append(hclDiags)
@@ -94,12 +94,12 @@ func ParsePartialStepInstanceStr(s string) (StepInstance, tfdiags.Diagnostics) {
 		return StepInstance{}, diags
 	}
 
-	ret, moreDiags := ParseStepInstance(traversal)
+	ret, moreDiags := ParseAbsStepInstance(traversal)
 	diags = diags.Append(moreDiags)
 	return ret, diags
 }
 
-func ParseStepInstanceStrOnly(s string) (StepInstance, hcl.Traversal, tfdiags.Diagnostics) {
+func ParseAbsStepInstanceStrOnly(s string) (StepInstance, hcl.Traversal, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	traversal, hclDiags := hclsyntax.ParseTraversalPartial([]byte(s), "", hcl.InitialPos)
 	diags = diags.Append(hclDiags)
@@ -107,12 +107,12 @@ func ParseStepInstanceStrOnly(s string) (StepInstance, hcl.Traversal, tfdiags.Di
 		return StepInstance{}, traversal, diags
 	}
 
-	ret, rest, moreDiags := ParseStepInstanceOnly(traversal)
+	ret, rest, moreDiags := ParseAbsStepInstanceOnly(traversal)
 	diags = diags.Append(moreDiags)
 	return ret, rest, diags
 }
 
-func ParseStepInstanceOnly(traversal hcl.Traversal) (StepInstance, hcl.Traversal, tfdiags.Diagnostics) {
+func ParseAbsStepInstanceOnly(traversal hcl.Traversal) (StepInstance, hcl.Traversal, tfdiags.Diagnostics) {
 	if traversal.IsRelative() {
 		panic("ParseAbsStepInstanceOnly with relative traversal")
 	}
@@ -144,7 +144,7 @@ func ParseStepInstanceOnly(traversal hcl.Traversal) (StepInstance, hcl.Traversal
 	}
 	remain = remain[1:]
 	stepAddr := StepInstance{
-		Step: Step{Name: nameStep.Name},
+		Step: ConfigStep{Name: nameStep.Name},
 	}
 
 	if len(remain) > 0 {

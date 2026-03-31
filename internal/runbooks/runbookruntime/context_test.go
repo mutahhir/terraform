@@ -352,12 +352,23 @@ step "deploy" {
 	if diags := ctx.Validate(); diags.HasErrors() {
 		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
 	}
-	want := []string{"prepare"}
-	if !reflect.DeepEqual(ctx.StepDependencies("deploy"), want) {
-		t.Fatalf("wrong step dependencies\ngot:  %#v\nwant: %#v", ctx.StepDependencies("deploy"), want)
+	deps := ctx.StepDependencies("deploy")
+	if len(deps) != 1 || deps[0] == nil || deps[0].Name != "prepare" {
+		t.Fatalf("wrong step dependencies\ngot:  %#v", deps)
 	}
 	if len(ctx.StepDependencies("prepare")) != 0 {
 		t.Fatalf("expected no dependencies for prepare, got %#v", ctx.StepDependencies("prepare"))
+	}
+	order := ctx.StepExecutionOrder()
+	if len(order) != 2 {
+		t.Fatalf("expected 2 steps in execution order, got %#v", order)
+	}
+	positions := make(map[string]int, len(order))
+	for i, step := range order {
+		positions[step.Name] = i
+	}
+	if positions["prepare"] > positions["deploy"] {
+		t.Fatalf("prepare should come before deploy, got %#v", order)
 	}
 }
 
@@ -390,6 +401,96 @@ step "deploy" {
 	}
 	if diags := ctx.Validate(); !diags.HasErrors() {
 		t.Fatal("expected validation diagnostics but got none")
+	}
+	if got := ctx.StepExecutionOrder(); got != nil {
+		t.Fatalf("expected nil step execution order for cyclic graph, got %#v", got)
+	}
+}
+
+func TestRunbookContextStepExecutionOrderStable(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "setup" {
+  output "result" {
+    value = "ok"
+  }
+}
+
+step "prepare" {
+  output "result" {
+    value = step.setup.result
+  }
+}
+
+step "verify" {
+  output "result" {
+    value = step.setup.result
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare.result != "" ? step.verify.result : ""
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); diags.HasErrors() {
+		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
+	}
+
+	order := ctx.StepExecutionOrder()
+	if len(order) != 4 {
+		t.Fatalf("expected 4 steps in execution order, got %#v", order)
+	}
+
+	positions := make(map[string]int, len(order))
+	for i, step := range order {
+		positions[step.Name] = i
+	}
+	if positions["setup"] > positions["prepare"] {
+		t.Fatalf("setup should come before prepare, got %#v", order)
+	}
+	if positions["setup"] > positions["verify"] {
+		t.Fatalf("setup should come before verify, got %#v", order)
+	}
+	if positions["prepare"] > positions["deploy"] {
+		t.Fatalf("prepare should come before deploy, got %#v", order)
+	}
+	if positions["verify"] > positions["deploy"] {
+		t.Fatalf("verify should come before deploy, got %#v", order)
+	}
+
+	secondOrder := ctx.StepExecutionOrder()
+	if len(secondOrder) != len(order) {
+		t.Fatalf("expected repeated execution order call to return same number of steps\nfirst:  %#v\nsecond: %#v", order, secondOrder)
+	}
+	secondPositions := make(map[string]int, len(secondOrder))
+	for i, step := range secondOrder {
+		secondPositions[step.Name] = i
+	}
+	if secondPositions["setup"] > secondPositions["prepare"] {
+		t.Fatalf("setup should come before prepare on repeated call, got %#v", secondOrder)
+	}
+	if secondPositions["setup"] > secondPositions["verify"] {
+		t.Fatalf("setup should come before verify on repeated call, got %#v", secondOrder)
+	}
+	if secondPositions["prepare"] > secondPositions["deploy"] {
+		t.Fatalf("prepare should come before deploy on repeated call, got %#v", secondOrder)
+	}
+	if secondPositions["verify"] > secondPositions["deploy"] {
+		t.Fatalf("verify should come before deploy on repeated call, got %#v", secondOrder)
 	}
 }
 

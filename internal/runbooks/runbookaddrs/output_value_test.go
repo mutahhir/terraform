@@ -9,7 +9,7 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 )
 
-func TestParseAbsOutputValueStr(t *testing.T) {
+func TestParseStepOutputValueStr(t *testing.T) {
 	tests := []struct {
 		input string
 		want  StepOutputValue
@@ -17,7 +17,7 @@ func TestParseAbsOutputValueStr(t *testing.T) {
 		{
 			input: "step.deploy.result",
 			want: StepOutputValue{
-				Step: StepInstance{Step: Step{Name: "deploy"}},
+				Step: StepInstance{Step: ConfigStep{Name: "deploy"}},
 				Name: "result",
 			},
 		},
@@ -25,7 +25,7 @@ func TestParseAbsOutputValueStr(t *testing.T) {
 			input: "step.deploy[\"blue\"].result",
 			want: StepOutputValue{
 				Step: StepInstance{
-					Step: Step{Name: "deploy"},
+					Step: ConfigStep{Name: "deploy"},
 					Key:  addrs.StringKey("blue"),
 				},
 				Name: "result",
@@ -35,7 +35,7 @@ func TestParseAbsOutputValueStr(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.input, func(t *testing.T) {
-			got, diags := ParseAbsOutputValueStr(test.input)
+			got, diags := ParseStepOutputValueStr(test.input)
 			if diags.HasErrors() {
 				t.Fatalf("unexpected diagnostics: %s", diags.Err())
 			}

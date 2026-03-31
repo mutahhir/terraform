@@ -52,35 +52,10 @@ func ParseStepOutputReference(traversal hcl.Traversal) (CrossStepReference, hcl.
 		return ret, nil, diags
 	}
 }
-
-// ParseStepExternalReference is retained as a compatibility wrapper for the
-// previous mixed step/workspace external parser.
-func ParseStepExternalReference(traversal hcl.Traversal) (CrossStepReference, hcl.Traversal, tfdiags.Diagnostics) {
-	if traversal.RootName() == "workspace" {
-		var diags tfdiags.Diagnostics
-		var ret CrossStepReference
-		target, rng, remain, moreDiags := ParseWorkspaceReference(traversal)
-		diags = diags.Append(moreDiags)
-		if diags.HasErrors() {
-			return ret, nil, diags
-		}
-		ret.Target = target
-		ret.SourceRange = tfdiags.SourceRangeFromHCL(rng)
-		return ret, remain, diags
-	}
-	return ParseStepOutputReference(traversal)
-}
-
-// ParseReference is retained as a compatibility wrapper for the cross-step
-// parser.
-func ParseReference(traversal hcl.Traversal) (CrossStepReference, hcl.Traversal, tfdiags.Diagnostics) {
-	return ParseStepExternalReference(traversal)
-}
-
 func parseStepOutputRef(traversal hcl.Traversal) (Referenceable, hcl.Range, hcl.Traversal, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
-	stepInst, remain, moreDiags := ParseStepInstanceOnly(traversal)
+	stepInst, remain, moreDiags := ParseAbsStepInstanceOnly(traversal)
 	diags = diags.Append(moreDiags)
 	if diags.HasErrors() {
 		return nil, hcl.Range{}, nil, diags

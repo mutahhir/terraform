@@ -27,7 +27,7 @@ func TestParseStepOutputReference_StepOutput(t *testing.T) {
 	}
 
 	want := StepOutputValue{
-		Step: StepInstance{Step: Step{Name: "deploy"}},
+		Step: StepInstance{Step: ConfigStep{Name: "deploy"}},
 		Name: "result",
 	}
 	if !reflect.DeepEqual(got.Target, want) {
@@ -51,7 +51,7 @@ func TestParseStepOutputReference_IndexedStepOutput(t *testing.T) {
 
 	want := StepOutputValue{
 		Step: StepInstance{
-			Step: Step{Name: "deploy"},
+			Step: ConfigStep{Name: "deploy"},
 			Key:  addrs.StringKey("blue"),
 		},
 		Name: "result",

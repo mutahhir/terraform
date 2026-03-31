@@ -198,7 +198,7 @@ func (c *RunbookContext) validateExpressionStepExternalReferences(currentStepNam
 
 func (c *RunbookContext) validateExpressionWorkspaceReferences(currentStepName string, expr hcl.Expression) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
-	if expr == nil || currentStepName == "" {
+	if expr == nil {
 		return diags
 	}
 
@@ -225,7 +225,9 @@ func (c *RunbookContext) validateExpressionWorkspaceReferences(currentStepName s
 				continue
 			}
 			c.usedWorkspaceOutputNames = append(c.usedWorkspaceOutputNames, addr)
-			c.workspaceOutputsByStep[currentStepName] = append(c.workspaceOutputsByStep[currentStepName], addr)
+			if currentStepName != "" {
+				c.workspaceOutputsByStep[currentStepName] = append(c.workspaceOutputsByStep[currentStepName], addr)
+			}
 		}
 	}
 

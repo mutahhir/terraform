@@ -17,7 +17,7 @@ import (
 // use this for types other than the address types used for objects that can
 // appear directly inside a runbook step.
 type InStep[T InStepable] struct {
-	Step Step
+	Step ConfigStep
 	Item T
 }
 
@@ -51,7 +51,7 @@ func (s InStep[T]) UniqueKey() collections.UniqueKey[InStep[T]] {
 }
 
 type inStepKey[T InStepable] struct {
-	stepKey collections.UniqueKey[Step]
+	stepKey collections.UniqueKey[ConfigStep]
 	itemKey addrs.UniqueKey
 }
 

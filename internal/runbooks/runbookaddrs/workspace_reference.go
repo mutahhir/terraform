@@ -104,9 +104,3 @@ func ParseWorkspaceReference(traversal hcl.Traversal) (Referenceable, hcl.Range,
 		return nil, hcl.Range{}, nil, diags
 	}
 }
-
-// ParseWorkspaceActionReference is retained as a compatibility wrapper for the
-// action-only workspace parser name.
-func ParseWorkspaceActionReference(traversal hcl.Traversal) (Referenceable, hcl.Range, hcl.Traversal, tfdiags.Diagnostics) {
-	return ParseWorkspaceReference(traversal)
-}

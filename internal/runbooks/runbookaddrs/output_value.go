@@ -14,7 +14,7 @@ import (
 // ConfigStepOutputValue is the address of an output value within a step
 // configuration.
 type ConfigStepOutputValue struct {
-	Step Step
+	Step ConfigStep
 	Name string
 }
 
@@ -30,7 +30,7 @@ func (v ConfigStepOutputValue) UniqueKey() collections.UniqueKey[ConfigStepOutpu
 }
 
 type configOutputValueKey struct {
-	stepKey   collections.UniqueKey[Step]
+	stepKey   collections.UniqueKey[ConfigStep]
 	outputKey string
 }
 
@@ -85,7 +85,7 @@ func ParseStepOutputValueStr(s string) (StepOutputValue, tfdiags.Diagnostics) {
 }
 
 func ParseStepOutputValue(traversal hcl.Traversal) (StepOutputValue, tfdiags.Diagnostics) {
-	stepInst, remain, diags := ParseStepInstanceOnly(traversal)
+	stepInst, remain, diags := ParseAbsStepInstanceOnly(traversal)
 	if diags.HasErrors() {
 		return StepOutputValue{}, diags
 	}
@@ -113,24 +113,4 @@ func ParseStepOutputValue(traversal hcl.Traversal) (StepOutputValue, tfdiags.Dia
 		Step: stepInst,
 		Name: nameStep.Name,
 	}, diags
-}
-
-// ParseOutputValueInstanceStr is retained as a compatibility wrapper.
-func ParseOutputValueInstanceStr(s string) (StepOutputValue, tfdiags.Diagnostics) {
-	return ParseStepOutputValueStr(s)
-}
-
-// ParseOutputValueInstance is retained as a compatibility wrapper.
-func ParseOutputValueInstance(traversal hcl.Traversal) (StepOutputValue, tfdiags.Diagnostics) {
-	return ParseStepOutputValue(traversal)
-}
-
-// ParseAbsOutputValueStr is retained as a compatibility wrapper.
-func ParseAbsOutputValueStr(s string) (StepOutputValue, tfdiags.Diagnostics) {
-	return ParseStepOutputValueStr(s)
-}
-
-// ParseAbsOutputValue is retained as a compatibility wrapper.
-func ParseAbsOutputValue(traversal hcl.Traversal) (StepOutputValue, tfdiags.Diagnostics) {
-	return ParseStepOutputValue(traversal)
 }

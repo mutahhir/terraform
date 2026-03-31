@@ -10,7 +10,7 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 )
 
-func TestParseStepInstanceStr(t *testing.T) {
+func TestParseAbsStepInstanceStr(t *testing.T) {
 	tests := []struct {
 		input string
 		want  StepInstance
@@ -18,13 +18,13 @@ func TestParseStepInstanceStr(t *testing.T) {
 		{
 			input: "step.deploy",
 			want: StepInstance{
-				Step: Step{Name: "deploy"},
+				Step: ConfigStep{Name: "deploy"},
 			},
 		},
 		{
 			input: "step.deploy[\"blue\"]",
 			want: StepInstance{
-				Step: Step{Name: "deploy"},
+				Step: ConfigStep{Name: "deploy"},
 				Key:  addrs.StringKey("blue"),
 			},
 		},
@@ -32,7 +32,7 @@ func TestParseStepInstanceStr(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.input, func(t *testing.T) {
-			got, diags := ParseStepInstanceStr(test.input)
+			got, diags := ParseAbsStepInstanceStr(test.input)
 			if diags.HasErrors() {
 				t.Fatalf("unexpected diagnostics: %s", diags.Err())
 			}
@@ -43,12 +43,12 @@ func TestParseStepInstanceStr(t *testing.T) {
 	}
 }
 
-func TestParseStepInstanceStrOnly(t *testing.T) {
-	got, remain, diags := ParseStepInstanceStrOnly("step.deploy.result")
+func TestParseAbsStepInstanceStrOnly(t *testing.T) {
+	got, remain, diags := ParseAbsStepInstanceStrOnly("step.deploy.result")
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
-	if got != (StepInstance{Step: Step{Name: "deploy"}}) {
+	if got != (StepInstance{Step: ConfigStep{Name: "deploy"}}) {
 		t.Fatalf("wrong step instance\ngot:  %#v", got)
 	}
 	if len(remain) != 1 {
@@ -65,7 +65,7 @@ func TestParseStepInstanceStrOnly(t *testing.T) {
 
 func TestInStepString(t *testing.T) {
 	addr := ConfigAction{
-		Step: Step{Name: "deploy"},
+		Step: ConfigStep{Name: "deploy"},
 		Item: addrs.ConfigAction{
 			Action: addrs.Action{Type: "http", Name: "notify"},
 		},
@@ -78,7 +78,7 @@ func TestInStepString(t *testing.T) {
 
 func TestInAbsStepInstanceString(t *testing.T) {
 	addr := AbsActionInvocationInstance{
-		Step: StepInstance{Step: Step{Name: "deploy"}},
+		Step: StepInstance{Step: ConfigStep{Name: "deploy"}},
 		Item: addrs.AbsActionInstance{
 			Action: addrs.ActionInstance{
 				Action: addrs.Action{Type: "http", Name: "notify"},

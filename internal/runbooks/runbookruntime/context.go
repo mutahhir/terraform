@@ -6,6 +6,7 @@ package runbookruntime
 import (
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/configs"
@@ -148,7 +149,7 @@ func (c *RunbookContext) Step(name string) *runbookconfig.Step {
 	return c.stepsByName[name]
 }
 
-func (c *RunbookContext) StepDependencies(stepName string) []string {
+func (c *RunbookContext) StepDependencies(stepName string) []*runbookconfig.Step {
 	if c == nil {
 		return nil
 	}
@@ -157,14 +158,46 @@ func (c *RunbookContext) StepDependencies(stepName string) []string {
 		return nil
 	}
 	deps := c.stepDependencyGraph.DownEdges(v)
-	ret := make([]string, 0, len(deps))
+	ret := make([]*runbookconfig.Step, 0, len(deps))
 	for _, raw := range deps {
 		dep, ok := raw.(stepVertex)
 		if ok {
-			ret = append(ret, dep.Name())
+			if step := c.stepsByName[dep.Name()]; step != nil {
+				ret = append(ret, step)
+			}
 		}
 	}
-	slices.Sort(ret)
+	slices.SortFunc(ret, func(a, b *runbookconfig.Step) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return ret
+}
+
+func (c *RunbookContext) StepExecutionOrder() []*runbookconfig.Step {
+	if c == nil {
+		return nil
+	}
+	if c.stepDependencyGraph == nil || len(c.stepDependencyGraph.Cycles()) != 0 {
+		return nil
+	}
+
+	ordered := c.stepDependencyGraph.ReverseTopologicalOrder()
+	ret := make([]*runbookconfig.Step, 0, len(ordered))
+	for _, raw := range ordered {
+		step, ok := raw.(stepVertex)
+		if !ok {
+			continue
+		}
+		cfg := c.stepsByName[step.Name()]
+		if cfg == nil {
+			return nil
+		}
+		ret = append(ret, cfg)
+	}
+	if len(ret) != len(c.stepsByName) {
+		return nil
+	}
+
 	return ret
 }
 
