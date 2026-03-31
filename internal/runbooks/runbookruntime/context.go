@@ -222,21 +222,21 @@ func (c *RunbookContext) Validate() hcl.Diagnostics {
 		}
 
 		for _, output := range step.Outputs {
-			diags = append(diags, c.validateExpressionExternalReferences(output.Expr)...)
+			diags = append(diags, c.validateExpressionExternalReferences(step.Name, output.Expr)...)
 		}
 
 		for _, condition := range step.Preconditions {
-			diags = append(diags, c.validateExpressionExternalReferences(condition.Condition)...)
-			diags = append(diags, c.validateExpressionExternalReferences(condition.ErrorMessage)...)
+			diags = append(diags, c.validateExpressionExternalReferences(step.Name, condition.Condition)...)
+			diags = append(diags, c.validateExpressionExternalReferences(step.Name, condition.ErrorMessage)...)
 		}
 		for _, condition := range step.Postconditions {
-			diags = append(diags, c.validateExpressionExternalReferences(condition.Condition)...)
-			diags = append(diags, c.validateExpressionExternalReferences(condition.ErrorMessage)...)
+			diags = append(diags, c.validateExpressionExternalReferences(step.Name, condition.Condition)...)
+			diags = append(diags, c.validateExpressionExternalReferences(step.Name, condition.ErrorMessage)...)
 		}
 	}
 
 	for _, output := range c.config.Outputs {
-		diags = append(diags, c.validateExpressionExternalReferences(output.Expr)...)
+		diags = append(diags, c.validateExpressionExternalReferences("", output.Expr)...)
 	}
 
 	return diags
@@ -286,7 +286,7 @@ func (c *RunbookContext) workspaceActionExists(addr addrs.AbsAction) bool {
 	return exists
 }
 
-func (c *RunbookContext) validateExpressionExternalReferences(expr hcl.Expression) hcl.Diagnostics {
+func (c *RunbookContext) validateExpressionExternalReferences(currentStepName string, expr hcl.Expression) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	if expr == nil {
 		return diags
@@ -307,6 +307,15 @@ func (c *RunbookContext) validateExpressionExternalReferences(expr hcl.Expressio
 		switch addr := ref.Target.(type) {
 		case runbookaddrs.StepOutputValue:
 			cfgAddr := addr.ConfigStepOutputValue()
+			if currentStepName != "" && cfgAddr.Step.Name == currentStepName {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid self-reference to step output",
+					Detail:   fmt.Sprintf("Step %q cannot reference its own output %q. Reference the underlying values directly instead.", currentStepName, cfgAddr.Name),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+				continue
+			}
 			if c.StepOutput(cfgAddr.Step.Name, cfgAddr.Name) == nil {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,

@@ -276,6 +276,32 @@ step "deploy" {}
 	}
 }
 
+func TestRunbookContextValidateRejectsSelfStepOutputReference(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  output "result" {
+    value = step.deploy.result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
 func writeTestFile(t *testing.T, fs afero.Fs, path, src string) {
 	t.Helper()
 	if err := afero.WriteFile(fs, path, []byte(src), 0o644); err != nil {
