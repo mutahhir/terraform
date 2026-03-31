@@ -62,13 +62,15 @@ func normalizeInStepReferenceTarget(subject addrs.Referenceable) any {
 	case addrs.ResourceInstance:
 		switch addr.Resource.Mode {
 		case addrs.DataResourceMode:
-			return DataSourceInstance{
-				DataSource: DataSource{Type: addr.Resource.Type, Name: addr.Resource.Name},
-				Key:        addr.Key,
+			return DataSource{
+				Type: addr.Resource.Type,
+				Name: addr.Resource.Name,
+				Key:  addr.Key,
 			}
 		case addrs.ListResourceMode:
-			return ListInstance{
-				List: List{Type: addr.Resource.Type, Name: addr.Resource.Name},
+			return List{
+				Type: addr.Resource.Type,
+				Name: addr.Resource.Name,
 				Key:  addr.Key,
 			}
 		}
