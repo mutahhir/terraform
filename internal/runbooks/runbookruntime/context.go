@@ -220,6 +220,23 @@ func (c *RunbookContext) Validate() hcl.Diagnostics {
 				diags = append(diags, c.validateExecutableAction(step.Name, action)...)
 			}
 		}
+
+		for _, output := range step.Outputs {
+			diags = append(diags, c.validateExpressionExternalReferences(output.Expr)...)
+		}
+
+		for _, condition := range step.Preconditions {
+			diags = append(diags, c.validateExpressionExternalReferences(condition.Condition)...)
+			diags = append(diags, c.validateExpressionExternalReferences(condition.ErrorMessage)...)
+		}
+		for _, condition := range step.Postconditions {
+			diags = append(diags, c.validateExpressionExternalReferences(condition.Condition)...)
+			diags = append(diags, c.validateExpressionExternalReferences(condition.ErrorMessage)...)
+		}
+	}
+
+	for _, output := range c.config.Outputs {
+		diags = append(diags, c.validateExpressionExternalReferences(output.Expr)...)
 	}
 
 	return diags
@@ -266,5 +283,63 @@ func (c *RunbookContext) workspaceActionExists(addr addrs.AbsAction) bool {
 		return false
 	}
 	_, exists := moduleCfg.Module.Actions[addr.Action.String()]
+	return exists
+}
+
+func (c *RunbookContext) validateExpressionExternalReferences(expr hcl.Expression) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	if expr == nil {
+		return diags
+	}
+
+	for _, traversal := range expr.Variables() {
+		rootName := traversal.RootName()
+		if rootName != "step" && rootName != "workspace" {
+			continue
+		}
+
+		ref, _, refDiags := runbookaddrs.ParseStepExternalReference(traversal)
+		diags = append(diags, refDiags.ToHCL()...)
+		if refDiags.HasErrors() {
+			continue
+		}
+
+		switch addr := ref.Target.(type) {
+		case runbookaddrs.StepOutputValue:
+			cfgAddr := addr.ConfigStepOutputValue()
+			if c.StepOutput(cfgAddr.Step.Name, cfgAddr.Name) == nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Reference to undeclared step output",
+					Detail:   fmt.Sprintf("The step output %q does not exist in the loaded runbook configuration.", addr.String()),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
+		case runbookaddrs.WorkspaceOutputValue:
+			if !c.workspaceOutputExists(addr) {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Reference to undeclared workspace output",
+					Detail:   fmt.Sprintf("The workspace output %q does not exist in the loaded Terraform configuration.", addr.String()),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+				continue
+			}
+			c.usedWorkspaceOutputNames = append(c.usedWorkspaceOutputNames, addr)
+		}
+	}
+
+	return diags
+}
+
+func (c *RunbookContext) workspaceOutputExists(addr runbookaddrs.WorkspaceOutputValue) bool {
+	if c == nil || c.config == nil || c.config.WorkspaceConfig == nil {
+		return false
+	}
+
+	if !addr.Output.Module.IsRoot() {
+		return false
+	}
+	_, exists := c.config.WorkspaceConfig.Module.Outputs[addr.Output.OutputValue.Name]
 	return exists
 }
