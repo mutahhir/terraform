@@ -99,19 +99,8 @@ func parseStepOutputRef(traversal hcl.Traversal) (Referenceable, hcl.Range, hcl.
 	}
 
 	rng := hcl.RangeBetween(traversal[0].SourceRange(), outputStep.SourceRange())
-	if stepInst.Key == nil {
-		return ConfigOutputValue{
-			Step: stepInst.Step,
-			OutputValue: OutputValue{
-				Name: outputStep.Name,
-			},
-		}, rng, remain[1:], diags
-	}
-
-	return AbsOutputValue{
+	return StepOutputValue{
 		Step: stepInst,
-		OutputValue: OutputValue{
-			Name: outputStep.Name,
-		},
+		Name: outputStep.Name,
 	}, rng, remain[1:], diags
 }

@@ -16,8 +16,7 @@ type Referenceable interface {
 	String() string
 }
 
-var _ Referenceable = ConfigOutputValue{}
-var _ Referenceable = AbsOutputValue{}
+var _ Referenceable = StepOutputValue{}
 var _ Referenceable = WorkspaceActionInstance{}
 var _ Referenceable = WorkspaceOutputValue{}
 

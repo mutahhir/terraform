@@ -26,11 +26,9 @@ func TestParseStepExternalReference_StepOutput(t *testing.T) {
 		t.Fatalf("expected no remaining traversal, got %d steps", len(remain))
 	}
 
-	want := ConfigOutputValue{
-		Step: Step{Name: "deploy"},
-		OutputValue: OutputValue{
-			Name: "result",
-		},
+	want := StepOutputValue{
+		Step: StepInstance{Step: Step{Name: "deploy"}},
+		Name: "result",
 	}
 	if !reflect.DeepEqual(got.Target, want) {
 		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", got.Target, want)
@@ -51,14 +49,12 @@ func TestParseStepExternalReference_IndexedStepOutput(t *testing.T) {
 		t.Fatalf("expected no remaining traversal, got %d steps", len(remain))
 	}
 
-	want := AbsOutputValue{
+	want := StepOutputValue{
 		Step: StepInstance{
 			Step: Step{Name: "deploy"},
 			Key:  addrs.StringKey("blue"),
 		},
-		OutputValue: OutputValue{
-			Name: "result",
-		},
+		Name: "result",
 	}
 	if !reflect.DeepEqual(got.Target, want) {
 		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", got.Target, want)

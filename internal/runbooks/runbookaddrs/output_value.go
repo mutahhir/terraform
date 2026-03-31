@@ -11,110 +11,87 @@ import (
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
-// OutputValue is the address of an output value within a step.
-//
-// Unlike Terraform module output addresses, step outputs are exposed directly as
-// attributes of a step, and so the string form is just the output name.
-type OutputValue struct {
+// ConfigStepOutputValue is the address of an output value within a step
+// configuration.
+type ConfigStepOutputValue struct {
+	Step Step
 	Name string
 }
 
-func (v OutputValue) String() string {
-	return v.Name
+func (v ConfigStepOutputValue) String() string {
+	return v.Step.String() + "." + v.Name
 }
 
-func (v OutputValue) UniqueKey() collections.UniqueKey[OutputValue] {
-	return v
-}
-
-// An OutputValue is its own [collections.UniqueKey].
-func (OutputValue) IsUniqueKey(OutputValue) {}
-
-// ConfigOutputValue is the address of an output value within a step
-// configuration.
-type ConfigOutputValue struct {
-	Step        Step
-	OutputValue OutputValue
-}
-
-func (ConfigOutputValue) referenceableSigil() {}
-
-func (v ConfigOutputValue) String() string {
-	return v.Step.String() + "." + v.OutputValue.String()
-}
-
-func (v ConfigOutputValue) UniqueKey() collections.UniqueKey[ConfigOutputValue] {
+func (v ConfigStepOutputValue) UniqueKey() collections.UniqueKey[ConfigStepOutputValue] {
 	return configOutputValueKey{
 		stepKey:   v.Step.UniqueKey(),
-		outputKey: v.OutputValue.UniqueKey(),
+		outputKey: v.Name,
 	}
 }
 
 type configOutputValueKey struct {
 	stepKey   collections.UniqueKey[Step]
-	outputKey collections.UniqueKey[OutputValue]
+	outputKey string
 }
 
 // IsUniqueKey implements collections.UniqueKey.
-func (configOutputValueKey) IsUniqueKey(ConfigOutputValue) {}
+func (configOutputValueKey) IsUniqueKey(ConfigStepOutputValue) {}
 
-// AbsOutputValue is the absolute address of an output value within a step
-// instance.
-type AbsOutputValue struct {
-	Step        StepInstance
-	OutputValue OutputValue
+// StepOutputValue is the address of an output value referenced from a step,
+// optionally selecting a specific step instance.
+type StepOutputValue struct {
+	Step StepInstance
+	Name string
 }
 
-func (AbsOutputValue) referenceableSigil() {}
+func (StepOutputValue) referenceableSigil() {}
 
-func (v AbsOutputValue) String() string {
-	return v.Step.String() + "." + v.OutputValue.String()
+func (v StepOutputValue) String() string {
+	return v.Step.String() + "." + v.Name
 }
 
-func (v AbsOutputValue) UniqueKey() collections.UniqueKey[AbsOutputValue] {
-	return absOutputValueKey{
+func (v StepOutputValue) UniqueKey() collections.UniqueKey[StepOutputValue] {
+	return outputValueInstanceKey{
 		stepKey:   v.Step.UniqueKey(),
-		outputKey: v.OutputValue.UniqueKey(),
+		outputKey: v.Name,
 	}
 }
 
-type absOutputValueKey struct {
+type outputValueInstanceKey struct {
 	stepKey   collections.UniqueKey[StepInstance]
-	outputKey collections.UniqueKey[OutputValue]
+	outputKey string
 }
 
 // IsUniqueKey implements collections.UniqueKey.
-func (absOutputValueKey) IsUniqueKey(AbsOutputValue) {}
+func (outputValueInstanceKey) IsUniqueKey(StepOutputValue) {}
 
-func (v AbsOutputValue) ConfigOutputValue() ConfigOutputValue {
-	return ConfigOutputValue{
+func (v StepOutputValue) ConfigStepOutputValue() ConfigStepOutputValue {
+	return ConfigStepOutputValue{
 		Step: v.Step.Step,
-		OutputValue: OutputValue{
-			Name: v.OutputValue.Name,
-		},
+		Name: v.Name,
 	}
 }
 
-func ParseAbsOutputValueStr(s string) (AbsOutputValue, tfdiags.Diagnostics) {
+func ParseStepOutputValueStr(s string) (StepOutputValue, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	traversal, hclDiags := hclsyntax.ParseTraversalAbs([]byte(s), "", hcl.InitialPos)
 	diags = diags.Append(hclDiags)
 	if diags.HasErrors() {
-		return AbsOutputValue{}, diags
+		return StepOutputValue{}, diags
 	}
 
-	ret, moreDiags := ParseAbsOutputValue(traversal)
+	ret, moreDiags := ParseStepOutputValue(traversal)
 	return ret, diags.Append(moreDiags)
 }
 
-func ParseAbsOutputValue(traversal hcl.Traversal) (AbsOutputValue, tfdiags.Diagnostics) {
+func ParseStepOutputValue(traversal hcl.Traversal) (StepOutputValue, tfdiags.Diagnostics) {
 	stepInst, remain, diags := ParseStepInstanceOnly(traversal)
 	if diags.HasErrors() {
-		return AbsOutputValue{}, diags
+		return StepOutputValue{}, diags
 	}
 
 	if len(remain) != 1 {
-		return AbsOutputValue{}, diags.Append(&hcl.Diagnostic{
+		return StepOutputValue{}, diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid output address",
 			Detail:   "The output address must include the keyword \"step\" followed by a step name and then an output name.",
@@ -124,7 +101,7 @@ func ParseAbsOutputValue(traversal hcl.Traversal) (AbsOutputValue, tfdiags.Diagn
 
 	nameStep, ok := remain[0].(hcl.TraverseAttr)
 	if !ok {
-		return AbsOutputValue{}, diags.Append(&hcl.Diagnostic{
+		return StepOutputValue{}, diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid output address",
 			Detail:   "The output address must include the keyword \"step\" followed by a step name and then an output name.",
@@ -132,10 +109,28 @@ func ParseAbsOutputValue(traversal hcl.Traversal) (AbsOutputValue, tfdiags.Diagn
 		})
 	}
 
-	return AbsOutputValue{
+	return StepOutputValue{
 		Step: stepInst,
-		OutputValue: OutputValue{
-			Name: nameStep.Name,
-		},
+		Name: nameStep.Name,
 	}, diags
+}
+
+// ParseOutputValueInstanceStr is retained as a compatibility wrapper.
+func ParseOutputValueInstanceStr(s string) (StepOutputValue, tfdiags.Diagnostics) {
+	return ParseStepOutputValueStr(s)
+}
+
+// ParseOutputValueInstance is retained as a compatibility wrapper.
+func ParseOutputValueInstance(traversal hcl.Traversal) (StepOutputValue, tfdiags.Diagnostics) {
+	return ParseStepOutputValue(traversal)
+}
+
+// ParseAbsOutputValueStr is retained as a compatibility wrapper.
+func ParseAbsOutputValueStr(s string) (StepOutputValue, tfdiags.Diagnostics) {
+	return ParseStepOutputValueStr(s)
+}
+
+// ParseAbsOutputValue is retained as a compatibility wrapper.
+func ParseAbsOutputValue(traversal hcl.Traversal) (StepOutputValue, tfdiags.Diagnostics) {
+	return ParseStepOutputValue(traversal)
 }

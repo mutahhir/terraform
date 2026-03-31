@@ -12,27 +12,23 @@ import (
 func TestParseAbsOutputValueStr(t *testing.T) {
 	tests := []struct {
 		input string
-		want  AbsOutputValue
+		want  StepOutputValue
 	}{
 		{
 			input: "step.deploy.result",
-			want: AbsOutputValue{
+			want: StepOutputValue{
 				Step: StepInstance{Step: Step{Name: "deploy"}},
-				OutputValue: OutputValue{
-					Name: "result",
-				},
+				Name: "result",
 			},
 		},
 		{
 			input: "step.deploy[\"blue\"].result",
-			want: AbsOutputValue{
+			want: StepOutputValue{
 				Step: StepInstance{
 					Step: Step{Name: "deploy"},
 					Key:  addrs.StringKey("blue"),
 				},
-				OutputValue: OutputValue{
-					Name: "result",
-				},
+				Name: "result",
 			},
 		},
 	}
