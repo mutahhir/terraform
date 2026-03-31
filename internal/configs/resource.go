@@ -707,6 +707,11 @@ func decodeDataBlock(block *hcl.Block, override, nested bool) (*Resource, hcl.Di
 	return r, diags
 }
 
+// Export for use within runbooks
+func DecodeDataBlock(block *hcl.Block, override, nested bool) (*Resource, hcl.Diagnostics) {
+	return decodeDataBlock(block, override, nested)
+}
+
 // decodeReplaceTriggeredBy decodes and does basic validation of the
 // replace_triggered_by expressions, ensuring they only contains references to
 // a single resource, and the only extra variables are count.index or each.key.

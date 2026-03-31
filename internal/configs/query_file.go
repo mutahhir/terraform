@@ -191,6 +191,11 @@ func decodeQueryListBlock(block *hcl.Block) (*Resource, hcl.Diagnostics) {
 	return &r, diags
 }
 
+// Export for use within runbooks
+func DecodeQueryListBlock(block *hcl.Block) (*Resource, hcl.Diagnostics) {
+	return decodeQueryListBlock(block)
+}
+
 // QueryListResourceBlockSchema is the schema for a list resource type within
 // a terraform query file.
 var QueryListResourceBlockSchema = &hcl.BodySchema{

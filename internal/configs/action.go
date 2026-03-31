@@ -232,6 +232,11 @@ func decodeActionBlock(block *hcl.Block) (*Action, hcl.Diagnostics) {
 	return a, diags
 }
 
+// export for Runbooks
+func DecodeActionBlock(block *hcl.Block) (*Action, hcl.Diagnostics) {
+	return decodeActionBlock(block)
+}
+
 // actionBlockSchema is the schema for an action type within terraform.
 var actionBlockSchema = &hcl.BodySchema{
 	Attributes: commonActionAttributes,

@@ -321,6 +321,11 @@ func decodeVariableType(expr hcl.Expression) (cty.Type, *typeexpr.Defaults, Vari
 	}
 }
 
+// Export for use with runbooks
+func DecodeVariableBlock(block *hcl.Block, override bool) (*Variable, hcl.Diagnostics) {
+	return decodeVariableBlock(block, override)
+}
+
 func (v *Variable) Addr() addrs.InputVariable {
 	return addrs.InputVariable{Name: v.Name}
 }
@@ -505,6 +510,11 @@ func decodeOutputBlock(block *hcl.Block, override bool) (*Output, hcl.Diagnostic
 	}
 
 	return o, diags
+}
+
+// For use with runbooks
+func DecodeOutputBlock(block *hcl.Block, override bool) (*Output, hcl.Diagnostics) {
+	return decodeOutputBlock(block, override)
 }
 
 func (o *Output) Addr() addrs.OutputValue {

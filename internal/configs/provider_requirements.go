@@ -247,3 +247,8 @@ func decodeRequiredProvidersBlock(block *hcl.Block) (*RequiredProviders, hcl.Dia
 
 	return ret, diags
 }
+
+// Exported for use with runbooks
+func DecodeRequiredProvidersBlock(block *hcl.Block) (*RequiredProviders, hcl.Diagnostics) {
+	return decodeRequiredProvidersBlock(block)
+}

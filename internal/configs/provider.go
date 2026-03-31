@@ -165,6 +165,11 @@ func decodeProviderBlock(block *hcl.Block, testFile bool) (*Provider, hcl.Diagno
 	return provider, diags
 }
 
+// Export for use with runbooks
+func DecodeProviderBlock(block *hcl.Block, testFile bool) (*Provider, hcl.Diagnostics) {
+	return decodeProviderBlock(block, testFile)
+}
+
 // Addr returns the address of the receiving provider configuration, relative
 // to its containing module.
 func (p *Provider) Addr() addrs.LocalProviderConfig {

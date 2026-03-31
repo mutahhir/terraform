@@ -72,3 +72,8 @@ func decodeVersionConstraint(attr *hcl.Attribute) (VersionConstraint, hcl.Diagno
 	ret.Required = constraints
 	return ret, diags
 }
+
+// Export for use within Runbooks
+func DecodeVersionConstraint(attr *hcl.Attribute) (VersionConstraint, hcl.Diagnostics) {
+	return decodeVersionConstraint(attr)
+}
