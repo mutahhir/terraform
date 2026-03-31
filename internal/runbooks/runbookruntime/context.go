@@ -23,7 +23,7 @@ type RunbookContext struct {
 	config                   *runbookconfig.RunbookConfig
 	variablesByName          map[string]*configs.Variable
 	outputsByName            map[string]*configs.Output
-	stepsByName              map[string]*runbookconfig.Step
+	stepsByName              map[string]*Step
 	stepVertices             map[string]stepVertex
 	stepDependencyGraph      *dag.AcyclicGraph
 	stepLocalsByStep         map[string]map[string]*configs.Local
@@ -53,7 +53,7 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 		config:                   opts.Config,
 		variablesByName:          make(map[string]*configs.Variable, len(opts.Config.Variables)),
 		outputsByName:            make(map[string]*configs.Output, len(opts.Config.Outputs)),
-		stepsByName:              make(map[string]*runbookconfig.Step, len(opts.Config.Steps)),
+		stepsByName:              make(map[string]*Step, len(opts.Config.Steps)),
 		stepVertices:             make(map[string]stepVertex, len(opts.Config.Steps)),
 		stepDependencyGraph:      &dag.AcyclicGraph{},
 		stepLocalsByStep:         make(map[string]map[string]*configs.Local, len(opts.Config.Steps)),
@@ -71,7 +71,7 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 	maps.Copy(ctx.outputsByName, opts.Config.Outputs)
 
 	for name, step := range opts.Config.Steps {
-		ctx.stepsByName[name] = step
+		ctx.stepsByName[name] = &Step{context: ctx, config: step}
 		v := stepVertex{NameValue: name}
 		ctx.stepVertices[name] = v
 		ctx.stepDependencyGraph.Add(v)
@@ -142,14 +142,14 @@ func (c *RunbookContext) Output(name string) *configs.Output {
 	return c.outputsByName[name]
 }
 
-func (c *RunbookContext) Step(name string) *runbookconfig.Step {
+func (c *RunbookContext) Step(name string) *Step {
 	if c == nil {
 		return nil
 	}
 	return c.stepsByName[name]
 }
 
-func (c *RunbookContext) StepDependencies(stepName string) []*runbookconfig.Step {
+func (c *RunbookContext) StepDependencies(stepName string) []*Step {
 	if c == nil {
 		return nil
 	}
@@ -158,7 +158,7 @@ func (c *RunbookContext) StepDependencies(stepName string) []*runbookconfig.Step
 		return nil
 	}
 	deps := c.stepDependencyGraph.DownEdges(v)
-	ret := make([]*runbookconfig.Step, 0, len(deps))
+	ret := make([]*Step, 0, len(deps))
 	for _, raw := range deps {
 		dep, ok := raw.(stepVertex)
 		if ok {
@@ -167,13 +167,13 @@ func (c *RunbookContext) StepDependencies(stepName string) []*runbookconfig.Step
 			}
 		}
 	}
-	slices.SortFunc(ret, func(a, b *runbookconfig.Step) int {
-		return strings.Compare(a.Name, b.Name)
+	slices.SortFunc(ret, func(a, b *Step) int {
+		return strings.Compare(a.Name(), b.Name())
 	})
 	return ret
 }
 
-func (c *RunbookContext) StepExecutionOrder() []*runbookconfig.Step {
+func (c *RunbookContext) StepExecutionOrder() []*Step {
 	if c == nil {
 		return nil
 	}
@@ -182,7 +182,7 @@ func (c *RunbookContext) StepExecutionOrder() []*runbookconfig.Step {
 	}
 
 	ordered := c.stepDependencyGraph.ReverseTopologicalOrder()
-	ret := make([]*runbookconfig.Step, 0, len(ordered))
+	ret := make([]*Step, 0, len(ordered))
 	for _, raw := range ordered {
 		step, ok := raw.(stepVertex)
 		if !ok {

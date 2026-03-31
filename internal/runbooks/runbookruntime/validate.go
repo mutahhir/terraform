@@ -15,6 +15,11 @@ import (
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
+type repetitionValidationScope struct {
+	countAvailable bool
+	eachAvailable  bool
+}
+
 func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if c == nil || c.config == nil {
@@ -31,24 +36,28 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 	}
 
 	for _, step := range c.config.Steps {
-		diags = diags.Append(c.validateScopedExpressions(step.Name, step.Count, step.ForEach))
+		diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, step.Count, step.ForEach))
 
 		for _, local := range step.Locals {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, local.Expr))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, local.Expr))
 		}
 
 		for _, action := range step.Actions {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, action.Count, action.ForEach))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, action.Count, action.ForEach))
 		}
 
 		for _, dataSource := range step.DataSources {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, dataSource.Count, dataSource.ForEach))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, dataSource.Count, dataSource.ForEach))
 		}
 
 		for _, list := range step.ListResources {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, list.Count, list.ForEach))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, list.Count, list.ForEach))
+			scope := repetitionValidationScope{
+				countAvailable: list.Count != nil,
+				eachAvailable:  list.ForEach != nil,
+			}
 			if list.List != nil {
-				diags = diags.Append(c.validateScopedExpressions(step.Name, list.List.IncludeResource, list.List.Limit))
+				diags = diags.Append(c.validateScopedExpressions(step.Name, scope, list.List.IncludeResource, list.List.Limit))
 			}
 		}
 
@@ -59,19 +68,19 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 		}
 
 		for _, output := range step.Outputs {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, output.Expr))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, output.Expr))
 		}
 
 		for _, condition := range step.Preconditions {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, condition.Condition, condition.ErrorMessage))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, condition.Condition, condition.ErrorMessage))
 		}
 		for _, condition := range step.Postconditions {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, condition.Condition, condition.ErrorMessage))
+			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, condition.Condition, condition.ErrorMessage))
 		}
 	}
 
 	for _, output := range c.config.Outputs {
-		diags = diags.Append(c.validateScopedExpressions("", output.Expr))
+		diags = diags.Append(c.validateScopedExpressions("", repetitionValidationScope{}, output.Expr))
 	}
 
 	diags = diags.Append(c.validateStepDependencyCycles())
@@ -79,14 +88,76 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 	return diags
 }
 
-func (c *RunbookContext) validateScopedExpressions(currentStepName string, exprs ...hcl.Expression) tfdiags.Diagnostics {
+func (c *RunbookContext) validateScopedExpressions(currentStepName string, scope repetitionValidationScope, exprs ...hcl.Expression) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	for _, expr := range exprs {
 		diags = diags.Append(c.validateExpressionRunbookScopeReferences(expr))
 		diags = diags.Append(c.validateExpressionStepExternalReferences(currentStepName, expr))
 		diags = diags.Append(c.validateExpressionWorkspaceReferences(currentStepName, expr))
+		diags = diags.Append(c.validateExpressionRepetitionReferences(scope, expr))
 		diags = diags.Append(c.validateExpressionStepLocalReferences(currentStepName, expr))
 	}
+	return diags
+}
+
+func (c *RunbookContext) validateExpressionRepetitionReferences(scope repetitionValidationScope, expr hcl.Expression) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if expr == nil {
+		return diags
+	}
+
+	for _, traversal := range expr.Variables() {
+		rootName := traversal.RootName()
+		if rootName != "count" && rootName != "each" {
+			continue
+		}
+
+		ref, refDiags := runbookaddrs.ParseScopedReference(traversal)
+		diags = diags.Append(refDiags)
+		if refDiags.HasErrors() {
+			continue
+		}
+
+		switch addr := ref.Target.(type) {
+		case addrs.CountAttr:
+			if addr.Name != "index" {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  `Invalid "count" attribute`,
+					Detail:   fmt.Sprintf(`The "count" object does not have an attribute named %q. The only supported attribute is count.index.`, addr.Name),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+				continue
+			}
+			if !scope.countAvailable {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  `Reference to "count" in non-counted context`,
+					Detail:   `The "count" object can be used only in step-contained blocks when the enclosing block has the "count" argument set.`,
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
+		case addrs.ForEachAttr:
+			if addr.Name != "key" && addr.Name != "value" {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  `Invalid "each" attribute`,
+					Detail:   fmt.Sprintf(`The "each" object does not have an attribute named %q. The supported attributes are each.key and each.value.`, addr.Name),
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+				continue
+			}
+			if !scope.eachAvailable {
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  `Reference to "each" in context without for_each`,
+					Detail:   `The "each" object can be used only in step-contained blocks when the enclosing block has the "for_each" argument set.`,
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
+		}
+	}
+
 	return diags
 }
 
@@ -188,6 +259,9 @@ func (c *RunbookContext) validateExpressionStepExternalReferences(currentStepNam
 			continue
 		}
 		cfgAddr := addr.ConfigStepOutputValue()
+		if step := c.Step(cfgAddr.Step.Name); step != nil {
+			diags = diags.Append(c.validateStepInstanceReference(step, addr, traversal))
+		}
 		if currentStepName != "" && cfgAddr.Step.Name != currentStepName {
 			if from, ok := c.stepVertices[currentStepName]; ok {
 				if to, ok := c.stepVertices[cfgAddr.Step.Name]; ok {
@@ -209,6 +283,71 @@ func (c *RunbookContext) validateExpressionStepExternalReferences(currentStepNam
 				Severity: hcl.DiagError,
 				Summary:  "Reference to undeclared step output",
 				Detail:   fmt.Sprintf("The step output %q does not exist in the loaded runbook configuration.", addr.String()),
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+		}
+	}
+
+	return diags
+}
+
+func (c *RunbookContext) validateStepInstanceReference(step *Step, addr runbookaddrs.StepOutputValue, traversal hcl.Traversal) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if step == nil || step.Config() == nil {
+		return diags
+	}
+	stepCfg := step.Config()
+
+	hasRepetition := stepCfg.Count != nil || stepCfg.ForEach != nil
+	key := addr.Step.Key
+
+	if key == addrs.WildcardKey {
+		return diags
+	}
+
+	if key == addrs.NoKey {
+		if hasRepetition {
+			var detail string
+			if stepCfg.Count != nil {
+				detail = fmt.Sprintf("Because %s has \"count\" set, its outputs must be accessed on specific instances.\n\nFor example:\n    step.%s[count.index].%s", addr.Step.Step.String(), stepCfg.Name, addr.Name)
+			} else {
+				detail = fmt.Sprintf("Because %s has \"for_each\" set, its outputs must be accessed on specific instances.\n\nFor example:\n    step.%s[each.key].%s", addr.Step.Step.String(), stepCfg.Name, addr.Name)
+			}
+			return diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Missing step instance key",
+				Detail:   detail,
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+		}
+		return diags
+	}
+
+	if !hasRepetition {
+		return diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Unexpected step instance key",
+			Detail:   fmt.Sprintf("Because %s does not have \"count\" or \"for_each\" set, references to it must not include an index key.", addr.Step.Step.String()),
+			Subject:  traversal.SourceRange().Ptr(),
+		})
+	}
+
+	switch key.(type) {
+	case addrs.IntKey:
+		if stepCfg.Count == nil {
+			return diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid step instance key",
+				Detail:   fmt.Sprintf("Step %q uses \"for_each\", so references to its instances must use string keys, not numeric indexes.", stepCfg.Name),
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+		}
+	case addrs.StringKey:
+		if stepCfg.ForEach == nil {
+			return diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid step instance key",
+				Detail:   fmt.Sprintf("Step %q uses \"count\", so references to its instances must use numeric indexes, not string keys.", stepCfg.Name),
 				Subject:  traversal.SourceRange().Ptr(),
 			})
 		}
@@ -276,6 +415,9 @@ func (c *RunbookContext) validateExpressionStepLocalReferences(currentStepName s
 	for _, traversal := range expr.Variables() {
 		rootName := traversal.RootName()
 		if rootName == "step" || rootName == "workspace" || rootName == "var" {
+			continue
+		}
+		if len(traversal) == 1 {
 			continue
 		}
 

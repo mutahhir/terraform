@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
 	"github.com/spf13/afero"
+	"github.com/zclconf/go-cty/cty"
 )
 
 func TestNewContext(t *testing.T) {
@@ -121,6 +122,251 @@ func TestNewContextNilConfig(t *testing.T) {
 	}
 	if ctx != nil {
 		t.Fatal("expected nil context")
+	}
+}
+
+func TestRunbookContextStepInstancesSingleton(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  output "result" {
+    value = "ok"
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+
+	step := ctx.Step("deploy")
+	insts, known := step.Instances()
+	if !known {
+		t.Fatal("expected singleton step instances to be known")
+	}
+	if len(insts) != 1 {
+		t.Fatalf("expected one singleton step instance, got %#v", insts)
+	}
+	inst := insts[addrs.NoKey]
+	if inst == nil {
+		t.Fatalf("expected singleton step instance at no key, got %#v", insts)
+	}
+	if inst.Step() != step {
+		t.Fatalf("wrong singleton step instance owner\ngot:  %#v\nwant: %#v", inst.Step(), step)
+	}
+	if inst.Addr() != (runbookaddrs.StepInstance{Step: runbookaddrs.ConfigStep{Name: "deploy"}}) {
+		t.Fatalf("wrong singleton step instance address\ngot:  %#v", inst.Addr())
+	}
+}
+
+func TestRunbookContextStepInstancesStaticCount(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  count = 2
+
+  output "result" {
+    value = count.index
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+
+	step := ctx.Step("deploy")
+	insts, known := step.Instances()
+	if !known {
+		t.Fatal("expected counted step instances to be known")
+	}
+	if len(insts) != 2 {
+		t.Fatalf("expected 2 step instances, got %#v", insts)
+	}
+	if insts[addrs.IntKey(0)] == nil || insts[addrs.IntKey(1)] == nil {
+		t.Fatalf("wrong counted step keys: %#v", insts)
+	}
+	if !insts[addrs.IntKey(0)].RepetitionData().CountIndex.RawEquals(cty.NumberIntVal(0)) || !insts[addrs.IntKey(1)].RepetitionData().CountIndex.RawEquals(cty.NumberIntVal(1)) {
+		t.Fatalf("wrong count repetition data: %#v", insts)
+	}
+}
+
+func TestRunbookContextStepInstancesStaticForEach(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  for_each = {
+    blue  = "blue"
+    green = "green"
+  }
+
+  output "result" {
+    value = each.key
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+
+	step := ctx.Step("deploy")
+	insts, known := step.Instances()
+	if !known {
+		t.Fatal("expected for_each step instances to be known")
+	}
+	if len(insts) != 2 {
+		t.Fatalf("expected 2 step instances, got %#v", insts)
+	}
+	if insts[addrs.StringKey("blue")] == nil || insts[addrs.StringKey("green")] == nil {
+		t.Fatalf("wrong for_each step keys: %#v", insts)
+	}
+	if !insts[addrs.StringKey("blue")].RepetitionData().EachKey.RawEquals(cty.StringVal("blue")) || !insts[addrs.StringKey("blue")].RepetitionData().EachValue.RawEquals(cty.StringVal("blue")) {
+		t.Fatalf("wrong first for_each repetition data: %#v", insts[addrs.StringKey("blue")].RepetitionData())
+	}
+	if !insts[addrs.StringKey("green")].RepetitionData().EachKey.RawEquals(cty.StringVal("green")) || !insts[addrs.StringKey("green")].RepetitionData().EachValue.RawEquals(cty.StringVal("green")) {
+		t.Fatalf("wrong second for_each repetition data: %#v", insts[addrs.StringKey("green")].RepetitionData())
+	}
+}
+
+func TestRunbookContextStepInstancesUnknownDynamicCount(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+variable "instance_count" {
+  type = number
+}
+
+step "deploy" {
+  count = var.instance_count
+
+  output "result" {
+    value = "ok"
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+
+	insts, known := ctx.Step("deploy").Instances()
+	if known {
+		t.Fatalf("expected dynamic count step instances to be unknown, got %#v", insts)
+	}
+}
+
+func TestRunbookContextStepInstancesVariableDefaultCount(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+variable "instance_count" {
+  type    = number
+  default = 3
+}
+
+step "deploy" {
+  count = var.instance_count
+
+  output "result" {
+    value = count.index
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+
+	insts, known := ctx.Step("deploy").Instances()
+	if !known {
+		t.Fatal("expected variable-default count step instances to be known")
+	}
+	if len(insts) != 3 {
+		t.Fatalf("expected 3 step instances, got %#v", insts)
+	}
+}
+
+func TestRunbookContextStepInstancesLocalDerivedForEach(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+variable "envs" {
+  type    = list(string)
+  default = ["blue", "green"]
+}
+
+step "deploy" {
+  locals {
+    targets = toset(var.envs)
+  }
+
+  for_each = local.targets
+
+  output "result" {
+    value = each.key
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+
+	insts, known := ctx.Step("deploy").Instances()
+	if !known {
+		t.Fatal("expected local-derived for_each step instances to be known")
+	}
+	if len(insts) != 2 {
+		t.Fatalf("expected 2 step instances, got %#v", insts)
+	}
+	if insts[addrs.StringKey("blue")] == nil || insts[addrs.StringKey("green")] == nil {
+		t.Fatalf("wrong local-derived for_each keys: %#v", insts)
 	}
 }
 
@@ -353,7 +599,7 @@ step "deploy" {
 		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
 	}
 	deps := ctx.StepDependencies("deploy")
-	if len(deps) != 1 || deps[0] == nil || deps[0].Name != "prepare" {
+	if len(deps) != 1 || deps[0] == nil || deps[0].Name() != "prepare" {
 		t.Fatalf("wrong step dependencies\ngot:  %#v", deps)
 	}
 	if len(ctx.StepDependencies("prepare")) != 0 {
@@ -365,7 +611,7 @@ step "deploy" {
 	}
 	positions := make(map[string]int, len(order))
 	for i, step := range order {
-		positions[step.Name] = i
+		positions[step.Name()] = i
 	}
 	if positions["prepare"] > positions["deploy"] {
 		t.Fatalf("prepare should come before deploy, got %#v", order)
@@ -457,7 +703,7 @@ step "deploy" {
 
 	positions := make(map[string]int, len(order))
 	for i, step := range order {
-		positions[step.Name] = i
+		positions[step.Name()] = i
 	}
 	if positions["setup"] > positions["prepare"] {
 		t.Fatalf("setup should come before prepare, got %#v", order)
@@ -478,7 +724,7 @@ step "deploy" {
 	}
 	secondPositions := make(map[string]int, len(secondOrder))
 	for i, step := range secondOrder {
-		secondPositions[step.Name] = i
+		secondPositions[step.Name()] = i
 	}
 	if secondPositions["setup"] > secondPositions["prepare"] {
 		t.Fatalf("setup should come before prepare on repeated call, got %#v", secondOrder)
@@ -768,6 +1014,388 @@ step "deploy" {
 	}
 	if diags := ctx.Validate(); !diags.HasErrors() {
 		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateRejectsCountOutsideCountedContext(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  output "result" {
+    value = count.index
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateAllowsCountInsideCountedListLimit(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  list "aws_instance" "example" {
+    provider = aws
+    count = 2
+    limit = count.index
+  }
+
+  output "result" {
+    value = "ok"
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); diags.HasErrors() {
+		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
+	}
+}
+
+func TestRunbookContextValidateRejectsInvalidCountAttributeInListLimit(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  list "aws_instance" "example" {
+    provider = aws
+    count = 2
+    limit = count.value
+  }
+
+  output "result" {
+    value = "ok"
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateRejectsEachOutsideForEachContext(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  output "result" {
+    value = each.key
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateAllowsEachInsideForEachListLimit(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  list "aws_instance" "example" {
+    provider = aws
+    for_each = toset(["a", "b"])
+    limit = each.key != "" ? 1 : 0
+  }
+
+  output "result" {
+    value = "ok"
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); diags.HasErrors() {
+		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
+	}
+}
+
+func TestRunbookContextValidateRejectsInvalidEachAttributeInListLimit(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "deploy" {
+  list "aws_instance" "example" {
+    provider = aws
+    for_each = toset(["a", "b"])
+    limit = each.index
+  }
+
+  output "result" {
+    value = "ok"
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateRejectsMissingStepInstanceKeyForCountedStep(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "prepare" {
+  count = 2
+
+  output "result" {
+    value = "ok"
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare.result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateRejectsUnexpectedStepInstanceKey(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "prepare" {
+  output "result" {
+    value = "ok"
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare[0].result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateRejectsWrongStepInstanceKeyTypeForCount(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "prepare" {
+  count = 2
+
+  output "result" {
+    value = "ok"
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare["blue"].result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateRejectsWrongStepInstanceKeyTypeForForEach(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "prepare" {
+  for_each = toset(["blue", "green"])
+
+  output "result" {
+    value = "ok"
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare[0].result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateAllowsIndexedCountedStepReference(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "prepare" {
+  count = 2
+
+  output "result" {
+    value = "ok"
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare[0].result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); diags.HasErrors() {
+		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
+	}
+}
+
+func TestRunbookContextValidateAllowsKeyedForEachStepReference(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "prepare" {
+  for_each = toset(["blue", "green"])
+
+  output "result" {
+    value = "ok"
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare["blue"].result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); diags.HasErrors() {
+		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
 	}
 }
 
