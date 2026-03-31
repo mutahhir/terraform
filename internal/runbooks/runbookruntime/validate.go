@@ -31,6 +31,27 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 	}
 
 	for _, step := range c.config.Steps {
+		diags = diags.Append(c.validateScopedExpressions(step.Name, step.Count, step.ForEach))
+
+		for _, local := range step.Locals {
+			diags = diags.Append(c.validateScopedExpressions(step.Name, local.Expr))
+		}
+
+		for _, action := range step.Actions {
+			diags = diags.Append(c.validateScopedExpressions(step.Name, action.Count, action.ForEach))
+		}
+
+		for _, dataSource := range step.DataSources {
+			diags = diags.Append(c.validateScopedExpressions(step.Name, dataSource.Count, dataSource.ForEach))
+		}
+
+		for _, list := range step.ListResources {
+			diags = diags.Append(c.validateScopedExpressions(step.Name, list.Count, list.ForEach))
+			if list.List != nil {
+				diags = diags.Append(c.validateScopedExpressions(step.Name, list.List.IncludeResource, list.List.Limit))
+			}
+		}
+
 		for _, execution := range step.Executions {
 			for _, action := range execution.InvokeAction {
 				diags = diags.Append(c.validateExecutableAction(step.Name, action))
