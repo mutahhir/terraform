@@ -6,10 +6,13 @@ package runbookruntime
 import (
 	"fmt"
 	"maps"
+	"slices"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
+	"github.com/hashicorp/terraform/internal/dag"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
 )
@@ -23,6 +26,8 @@ type RunbookContext struct {
 	variablesByName          map[string]*configs.Variable
 	outputsByName            map[string]*configs.Output
 	stepsByName              map[string]*runbookconfig.Step
+	stepVertices             map[string]stepVertex
+	stepDependencyGraph      *dag.AcyclicGraph
 	stepLocalsByStep         map[string]map[string]*configs.Local
 	stepActionsByStep        map[string]map[string]*configs.Action
 	stepDataSourcesByStep    map[string]map[string]*configs.Resource
@@ -49,6 +54,8 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 		variablesByName:          make(map[string]*configs.Variable, len(opts.Config.Variables)),
 		outputsByName:            make(map[string]*configs.Output, len(opts.Config.Outputs)),
 		stepsByName:              make(map[string]*runbookconfig.Step, len(opts.Config.Steps)),
+		stepVertices:             make(map[string]stepVertex, len(opts.Config.Steps)),
+		stepDependencyGraph:      &dag.AcyclicGraph{},
 		stepLocalsByStep:         make(map[string]map[string]*configs.Local, len(opts.Config.Steps)),
 		stepActionsByStep:        make(map[string]map[string]*configs.Action, len(opts.Config.Steps)),
 		stepDataSourcesByStep:    make(map[string]map[string]*configs.Resource, len(opts.Config.Steps)),
@@ -63,6 +70,9 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 
 	for name, step := range opts.Config.Steps {
 		ctx.stepsByName[name] = step
+		v := stepVertex{NameValue: name}
+		ctx.stepVertices[name] = v
+		ctx.stepDependencyGraph.Add(v)
 
 		locals := make(map[string]*configs.Local, len(step.Locals))
 		for _, local := range step.Locals {
@@ -132,6 +142,26 @@ func (c *RunbookContext) Step(name string) *runbookconfig.Step {
 		return nil
 	}
 	return c.stepsByName[name]
+}
+
+func (c *RunbookContext) StepDependencies(stepName string) []string {
+	if c == nil {
+		return nil
+	}
+	v, ok := c.stepVertices[stepName]
+	if !ok || c.stepDependencyGraph == nil {
+		return nil
+	}
+	deps := c.stepDependencyGraph.DownEdges(v)
+	ret := make([]string, 0, len(deps))
+	for _, raw := range deps {
+		dep, ok := raw.(stepVertex)
+		if ok {
+			ret = append(ret, dep.Name())
+		}
+	}
+	slices.Sort(ret)
+	return ret
 }
 
 func (c *RunbookContext) StepLocal(stepName, localName string) *configs.Local {
@@ -245,6 +275,8 @@ func (c *RunbookContext) Validate() hcl.Diagnostics {
 		diags = append(diags, c.validateExpressionInStepReferences("", output.Expr)...)
 	}
 
+	diags = append(diags, c.validateStepDependencyCycles()...)
+
 	return diags
 }
 
@@ -313,6 +345,13 @@ func (c *RunbookContext) validateExpressionExternalReferences(currentStepName st
 		switch addr := ref.Target.(type) {
 		case runbookaddrs.StepOutputValue:
 			cfgAddr := addr.ConfigStepOutputValue()
+			if currentStepName != "" && cfgAddr.Step.Name != currentStepName {
+				if from, ok := c.stepVertices[currentStepName]; ok {
+					if to, ok := c.stepVertices[cfgAddr.Step.Name]; ok {
+						c.stepDependencyGraph.Connect(dag.BasicEdge(from, to))
+					}
+				}
+			}
 			if currentStepName != "" && cfgAddr.Step.Name == currentStepName {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
@@ -446,4 +485,36 @@ func (c *RunbookContext) validateExpressionInStepReferences(currentStepName stri
 	}
 
 	return diags
+}
+
+func (c *RunbookContext) validateStepDependencyCycles() hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	if c == nil || c.stepDependencyGraph == nil {
+		return diags
+	}
+	for _, cycle := range c.stepDependencyGraph.Cycles() {
+		cycleNames := make([]string, 0, len(cycle))
+		for _, raw := range cycle {
+			if step, ok := raw.(stepVertex); ok {
+				cycleNames = append(cycleNames, step.Name())
+			}
+		}
+		if len(cycleNames) == 0 {
+			continue
+		}
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Cycle: %s", strings.Join(cycleNames, ", ")),
+		})
+	}
+
+	return diags
+}
+
+type stepVertex struct {
+	NameValue string
+}
+
+func (v stepVertex) Name() string {
+	return v.NameValue
 }

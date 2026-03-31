@@ -302,6 +302,77 @@ step "deploy" {
 	}
 }
 
+func TestRunbookContextTracksStepDependencies(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "prepare" {
+  output "result" {
+    value = "ok"
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare.result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); diags.HasErrors() {
+		t.Fatalf("unexpected validation diagnostics: %s", diags.Error())
+	}
+	want := []string{"prepare"}
+	if !reflect.DeepEqual(ctx.StepDependencies("deploy"), want) {
+		t.Fatalf("wrong step dependencies\ngot:  %#v\nwant: %#v", ctx.StepDependencies("deploy"), want)
+	}
+	if len(ctx.StepDependencies("prepare")) != 0 {
+		t.Fatalf("expected no dependencies for prepare, got %#v", ctx.StepDependencies("prepare"))
+	}
+}
+
+func TestRunbookContextValidateRejectsStepDependencyCycle(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "prepare" {
+  output "result" {
+    value = step.deploy.result
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare.result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); !diags.HasErrors() {
+		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
 func TestRunbookContextValidateMissingLocalReference(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	writeTestFile(t, fs, "/workspace/main.tf", ``)
