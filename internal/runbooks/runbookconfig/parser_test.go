@@ -9,11 +9,18 @@ import (
 func TestLoadRunbookConfigDir(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	writeTestFile(t, fs, "/workspace/main.tf", `
+module "child" {
+  source = "./child"
+}
+
 output "root_value" {
   value = "hello"
 }
 
 action "http" "notify" {}
+`)
+	writeTestFile(t, fs, "/workspace/child/main.tf", `
+action "http" "child_notify" {}
 `)
 	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
 variable "name" {
@@ -60,6 +67,13 @@ step "deploy" {
 	}
 	if _, exists := got.WorkspaceConfig.Module.Actions["action.http.notify"]; !exists {
 		t.Fatal("expected workspace action action.http.notify")
+	}
+	child, exists := got.WorkspaceConfig.Children["child"]
+	if !exists || child == nil || child.Module == nil {
+		t.Fatal("expected child workspace module to be loaded")
+	}
+	if _, exists := child.Module.Actions["action.http.child_notify"]; !exists {
+		t.Fatal("expected child workspace action action.http.child_notify")
 	}
 	step, exists := got.Steps["deploy"]
 	if !exists {

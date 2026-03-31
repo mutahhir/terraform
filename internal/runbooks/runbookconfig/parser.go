@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	version "github.com/hashicorp/go-version"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/terraform/internal/configs"
@@ -102,7 +103,15 @@ func (p *RunbookParser) LoadRunbookConfigDir(path, rootModulePath string) (*Runb
 	rootModule, workspaceDiags := workspaceParser.LoadConfigDir(rootModulePath)
 	diags = append(diags, workspaceDiags...)
 	if rootModule != nil {
-		workspaceCfg, buildDiags := configs.BuildConfig(rootModule, configs.DisabledModuleWalker, nil)
+		workspaceCfg, buildDiags := configs.BuildConfig(rootModule, configs.ModuleWalkerFunc(
+			func(req *configs.ModuleRequest) (*configs.Module, *version.Version, hcl.Diagnostics) {
+				// For now, runbooks support only already-present local module sources
+				// relative to the root module directory.
+				sourcePath := filepath.Join(rootModulePath, req.SourceAddr.String())
+				mod, loadDiags := workspaceParser.LoadConfigDir(sourcePath)
+				return mod, nil, loadDiags
+			},
+		), nil)
 		diags = append(diags, buildDiags...)
 		result.WorkspaceConfig = workspaceCfg
 	}

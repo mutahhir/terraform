@@ -559,6 +559,11 @@ func decodeLocalsBlock(block *hcl.Block) ([]*Local, hcl.Diagnostics) {
 	return locals, diags
 }
 
+// Export for use with Runbooks
+func DecodeLocalsBlock(block *hcl.Block) ([]*Local, hcl.Diagnostics) {
+	return decodeLocalsBlock(block)
+}
+
 // Addr returns the address of the local value declared by the receiver,
 // relative to its containing module.
 func (l *Local) Addr() addrs.LocalValue {

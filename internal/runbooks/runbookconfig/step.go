@@ -10,7 +10,7 @@ type Step struct {
 
 	Actions        []*configs.Action
 	DataSources    []*configs.Resource
-	ListResources  []*configs.ListResource
+	ListResources  []*configs.Resource
 	Executions     []*Execution
 	Preconditions  []*Condition
 	Postconditions []*Condition
@@ -27,7 +27,7 @@ func decodeStepBlock(stepBlock *hcl.Block) (*Step, hcl.Diagnostics) {
 
 		Actions:        []*configs.Action{},
 		DataSources:    []*configs.Resource{},
-		ListResources:  []*configs.ListResource{},
+		ListResources:  []*configs.Resource{},
 		Executions:     []*Execution{},
 		Preconditions:  []*Condition{},
 		Postconditions: []*Condition{},
@@ -56,7 +56,7 @@ func decodeStepBlock(stepBlock *hcl.Block) (*Step, hcl.Diagnostics) {
 			list, listDiags := configs.DecodeQueryListBlock(innerBlock)
 			diags = append(diags, listDiags...)
 			if !listDiags.HasErrors() {
-				step.ListResources = append(step.ListResources, list.List)
+				step.ListResources = append(step.ListResources, list)
 			}
 
 			if _, exists := listBlockTypes[list.Type]; !exists {
@@ -79,6 +79,18 @@ func decodeStepBlock(stepBlock *hcl.Block) (*Step, hcl.Diagnostics) {
 			diags = append(diags, cfgDiags...)
 			if cfg != nil {
 				step.Actions = append(step.Actions, cfg)
+			}
+		case "output":
+			cfg, cfgDiags := configs.DecodeOutputBlock(innerBlock, false)
+			diags = append(diags, cfgDiags...)
+			if cfg != nil {
+				step.Outputs = append(step.Outputs, cfg)
+			}
+		case "locals":
+			locals, cfgDiags := configs.DecodeLocalsBlock(innerBlock)
+			diags = append(diags, cfgDiags...)
+			if locals != nil {
+				step.Locals = append(step.Locals, locals...)
 			}
 		case "execute":
 			cfg, cfgDiags := decodeExecutionBlock(innerBlock)
