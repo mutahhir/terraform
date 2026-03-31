@@ -25,6 +25,11 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 		))
 	}
 
+	c.usedWorkspaceOutputNames = c.usedWorkspaceOutputNames[:0]
+	for stepName := range c.workspaceOutputsByStep {
+		c.workspaceOutputsByStep[stepName] = c.workspaceOutputsByStep[stepName][:0]
+	}
+
 	for _, step := range c.config.Steps {
 		for _, execution := range step.Executions {
 			for _, action := range execution.InvokeAction {
@@ -58,7 +63,7 @@ func (c *RunbookContext) validateScopedExpressions(currentStepName string, exprs
 	for _, expr := range exprs {
 		diags = diags.Append(c.validateExpressionRunbookScopeReferences(expr))
 		diags = diags.Append(c.validateExpressionStepExternalReferences(currentStepName, expr))
-		diags = diags.Append(c.validateExpressionWorkspaceReferences(expr))
+		diags = diags.Append(c.validateExpressionWorkspaceReferences(currentStepName, expr))
 		diags = diags.Append(c.validateExpressionStepLocalReferences(currentStepName, expr))
 	}
 	return diags
@@ -191,9 +196,9 @@ func (c *RunbookContext) validateExpressionStepExternalReferences(currentStepNam
 	return diags
 }
 
-func (c *RunbookContext) validateExpressionWorkspaceReferences(expr hcl.Expression) tfdiags.Diagnostics {
+func (c *RunbookContext) validateExpressionWorkspaceReferences(currentStepName string, expr hcl.Expression) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
-	if expr == nil {
+	if expr == nil || currentStepName == "" {
 		return diags
 	}
 
@@ -220,6 +225,7 @@ func (c *RunbookContext) validateExpressionWorkspaceReferences(expr hcl.Expressi
 				continue
 			}
 			c.usedWorkspaceOutputNames = append(c.usedWorkspaceOutputNames, addr)
+			c.workspaceOutputsByStep[currentStepName] = append(c.workspaceOutputsByStep[currentStepName], addr)
 		}
 	}
 

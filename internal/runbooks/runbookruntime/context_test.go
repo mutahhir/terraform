@@ -249,7 +249,11 @@ output "summary" {
   value = workspace.output.root_value
 }
 
-step "deploy" {}
+step "deploy" {
+  output "result" {
+    value = workspace.output.root_value
+  }
+}
 `)
 
 	parser := runbookconfig.NewRunbookParser(fs)
@@ -271,8 +275,24 @@ step "deploy" {}
 			OutputValue: addrs.OutputValue{Name: "root_value"},
 		},
 	}}
-	if !reflect.DeepEqual(ctx.UsedWorkspaceOutputs(), want) {
-		t.Fatalf("wrong workspace outputs\ngot:  %#v\nwant: %#v", ctx.UsedWorkspaceOutputs(), want)
+	wantAll := append(append([]runbookaddrs.WorkspaceOutputValue{}, want...), want...)
+	if !reflect.DeepEqual(ctx.UsedWorkspaceOutputs(), wantAll) {
+		t.Fatalf("wrong workspace outputs\ngot:  %#v\nwant: %#v", ctx.UsedWorkspaceOutputs(), wantAll)
+	}
+	if !reflect.DeepEqual(ctx.StepWorkspaceOutputs("deploy"), want) {
+		t.Fatalf("wrong step workspace outputs\ngot:  %#v\nwant: %#v", ctx.StepWorkspaceOutputs("deploy"), want)
+	}
+	if len(ctx.StepWorkspaceOutputs("missing")) != 0 {
+		t.Fatalf("expected no workspace outputs for missing step, got %#v", ctx.StepWorkspaceOutputs("missing"))
+	}
+	if diags := ctx.Validate(); diags.HasErrors() {
+		t.Fatalf("unexpected validation diagnostics on second validate: %s", diags.Err())
+	}
+	if !reflect.DeepEqual(ctx.UsedWorkspaceOutputs(), wantAll) {
+		t.Fatalf("wrong workspace outputs after second validate\ngot:  %#v\nwant: %#v", ctx.UsedWorkspaceOutputs(), wantAll)
+	}
+	if !reflect.DeepEqual(ctx.StepWorkspaceOutputs("deploy"), want) {
+		t.Fatalf("wrong step workspace outputs after second validate\ngot:  %#v\nwant: %#v", ctx.StepWorkspaceOutputs("deploy"), want)
 	}
 }
 

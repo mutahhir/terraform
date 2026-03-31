@@ -30,6 +30,8 @@ type RunbookContext struct {
 	stepDataSourcesByStep    map[string]map[string]*configs.Resource
 	stepListsByStep          map[string]map[string]*configs.Resource
 	stepOutputsByStep        map[string]map[string]*configs.Output
+	workspaceActionsByStep   map[string][]runbookaddrs.WorkspaceActionInstance
+	workspaceOutputsByStep   map[string][]runbookaddrs.WorkspaceOutputValue
 	usedWorkspaceActions     []runbookaddrs.ExecutableAction
 	usedWorkspaceOutputNames []runbookaddrs.WorkspaceOutputValue
 }
@@ -58,6 +60,8 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 		stepDataSourcesByStep:    make(map[string]map[string]*configs.Resource, len(opts.Config.Steps)),
 		stepListsByStep:          make(map[string]map[string]*configs.Resource, len(opts.Config.Steps)),
 		stepOutputsByStep:        make(map[string]map[string]*configs.Output, len(opts.Config.Steps)),
+		workspaceActionsByStep:   make(map[string][]runbookaddrs.WorkspaceActionInstance, len(opts.Config.Steps)),
+		workspaceOutputsByStep:   make(map[string][]runbookaddrs.WorkspaceOutputValue, len(opts.Config.Steps)),
 		usedWorkspaceActions:     make([]runbookaddrs.ExecutableAction, 0),
 		usedWorkspaceOutputNames: make([]runbookaddrs.WorkspaceOutputValue, 0),
 	}
@@ -70,6 +74,8 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 		v := stepVertex{NameValue: name}
 		ctx.stepVertices[name] = v
 		ctx.stepDependencyGraph.Add(v)
+		ctx.workspaceActionsByStep[name] = make([]runbookaddrs.WorkspaceActionInstance, 0)
+		ctx.workspaceOutputsByStep[name] = make([]runbookaddrs.WorkspaceOutputValue, 0)
 
 		locals := make(map[string]*configs.Local, len(step.Locals))
 		for _, local := range step.Locals {
@@ -103,8 +109,9 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 
 		for _, execution := range step.Executions {
 			for _, action := range execution.InvokeAction {
-				if _, ok := action.(runbookaddrs.WorkspaceActionInstance); ok {
+				if workspaceAction, ok := action.(runbookaddrs.WorkspaceActionInstance); ok {
 					ctx.usedWorkspaceActions = append(ctx.usedWorkspaceActions, action)
+					ctx.workspaceActionsByStep[name] = append(ctx.workspaceActionsByStep[name], workspaceAction)
 				}
 			}
 		}
@@ -223,11 +230,25 @@ func (c *RunbookContext) UsedWorkspaceActions() []runbookaddrs.ExecutableAction 
 	return c.usedWorkspaceActions
 }
 
+func (c *RunbookContext) StepWorkspaceActions(stepName string) []runbookaddrs.WorkspaceActionInstance {
+	if c == nil {
+		return nil
+	}
+	return c.workspaceActionsByStep[stepName]
+}
+
 func (c *RunbookContext) UsedWorkspaceOutputs() []runbookaddrs.WorkspaceOutputValue {
 	if c == nil {
 		return nil
 	}
 	return c.usedWorkspaceOutputNames
+}
+
+func (c *RunbookContext) StepWorkspaceOutputs(stepName string) []runbookaddrs.WorkspaceOutputValue {
+	if c == nil {
+		return nil
+	}
+	return c.workspaceOutputsByStep[stepName]
 }
 
 type stepVertex struct {
