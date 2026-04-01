@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookgraph"
 	"github.com/spf13/afero"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -528,26 +529,27 @@ step "deploy" {
 	if diags.HasErrors() {
 		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
 	}
-	if diags := ctx.Validate(); diags.HasErrors() {
-		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
+	graph, buildDiags := (&RunbookPlanGraphBuilder{Context: ctx, Operation: runbookgraph.WalkValidate}).Build()
+	if buildDiags.HasErrors() {
+		t.Fatalf("unexpected build diagnostics: %s", buildDiags.Err())
 	}
-	deps := ctx.StepDependencies("deploy")
-	if len(deps) != 1 || deps[0] == nil || deps[0].Name() != "prepare" {
-		t.Fatalf("wrong step dependencies\ngot:  %#v", deps)
+	deploy := graph.ConfigSteps["deploy"]
+	var deployOutput *nodeRunbookStepOutput
+	var prepareOutput *nodeRunbookStepOutput
+	for _, raw := range graph.Graph.Vertices() {
+		if n, ok := raw.(*nodeRunbookStepOutput); ok && n.Instance == nil && n.Step != nil && n.Step.Name() == "deploy" && n.Output != nil && n.Output.Name == "result" {
+			deployOutput = n
+		}
+		if n, ok := raw.(*nodeRunbookStepOutput); ok && n.Instance == nil && n.Step != nil && n.Step.Name() == "prepare" && n.Output != nil && n.Output.Name == "result" {
+			prepareOutput = n
+		}
 	}
-	if len(ctx.StepDependencies("prepare")) != 0 {
-		t.Fatalf("expected no dependencies for prepare, got %#v", ctx.StepDependencies("prepare"))
+	if deploy == nil || deployOutput == nil || prepareOutput == nil {
+		t.Fatalf("missing step nodes in graph: %#v", graph.ConfigSteps)
 	}
-	order := ctx.StepExecutionOrder()
-	if len(order) != 2 {
-		t.Fatalf("expected 2 steps in execution order, got %#v", order)
-	}
-	positions := make(map[string]int, len(order))
-	for i, step := range order {
-		positions[step.Name()] = i
-	}
-	if positions["prepare"] > positions["deploy"] {
-		t.Fatalf("prepare should come before deploy, got %#v", order)
+	outputDeps := graph.Graph.DownEdges(deployOutput)
+	if !outputDeps.Include(prepareOutput) {
+		t.Fatalf("expected deploy output to depend on prepare output, got %#v", outputDeps)
 	}
 }
 
@@ -581,12 +583,76 @@ step "deploy" {
 	if diags := ctx.Validate(); !diags.HasErrors() {
 		t.Fatal("expected validation diagnostics but got none")
 	}
-	if got := ctx.StepExecutionOrder(); got != nil {
-		t.Fatalf("expected nil step execution order for cyclic graph, got %#v", got)
+	if _, buildDiags := (&RunbookPlanGraphBuilder{Context: ctx, Operation: runbookgraph.WalkValidate}).Build(); !buildDiags.HasErrors() {
+		t.Fatal("expected graph build diagnostics for cyclic graph")
 	}
 }
 
-func TestRunbookContextStepExecutionOrderStable(t *testing.T) {
+func TestRunbookPlanGraphBuilderBuildsCrossStepOutputEdges(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+step "prepare" {
+  output "result" {
+    value = "ok"
+  }
+}
+
+step "deploy" {
+  output "result" {
+    value = step.prepare.result
+  }
+}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+
+	graph, buildDiags := (&RunbookPlanGraphBuilder{Context: ctx, Operation: runbookgraph.WalkValidate}).Build()
+	if buildDiags.HasErrors() {
+		t.Fatalf("unexpected build diagnostics: %s", buildDiags.Err())
+	}
+
+	deploy := graph.ConfigSteps["deploy"]
+	var deployOutput *nodeRunbookStepOutput
+	var prepareOutput *nodeRunbookStepOutput
+	for _, raw := range graph.Graph.Vertices() {
+		if n, ok := raw.(*nodeRunbookStepOutput); ok && n.Instance == nil && n.Step != nil && n.Step.Name() == "deploy" && n.Output != nil && n.Output.Name == "result" {
+			deployOutput = n
+		}
+		if n, ok := raw.(*nodeRunbookStepOutput); ok && n.Instance == nil && n.Step != nil && n.Step.Name() == "prepare" && n.Output != nil && n.Output.Name == "result" {
+			prepareOutput = n
+		}
+	}
+	if deploy == nil || deployOutput == nil || prepareOutput == nil {
+		t.Fatalf("missing step nodes in graph: %#v", graph.ConfigSteps)
+	}
+	deps := graph.Graph.DownEdges(deploy)
+	for _, dep := range deps {
+		if dep == prepareOutput {
+			return
+		}
+	}
+	if deployOutput != nil {
+		outputDeps := graph.Graph.DownEdges(deployOutput)
+		for _, outputDep := range outputDeps {
+			if outputDep == prepareOutput {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected deploy to depend on prepare, got %#v", deps)
+}
+
+func TestRunbookPlanGraphBuilderBuildsStableStepOrder(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	writeTestFile(t, fs, "/workspace/main.tf", ``)
 	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
@@ -625,51 +691,42 @@ step "deploy" {
 	if diags.HasErrors() {
 		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
 	}
-	if diags := ctx.Validate(); diags.HasErrors() {
-		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
+	graph, buildDiags := (&RunbookPlanGraphBuilder{Context: ctx, Operation: runbookgraph.WalkValidate}).Build()
+	if buildDiags.HasErrors() {
+		t.Fatalf("unexpected build diagnostics: %s", buildDiags.Err())
 	}
-
-	order := ctx.StepExecutionOrder()
-	if len(order) != 4 {
-		t.Fatalf("expected 4 steps in execution order, got %#v", order)
+	var setupOutput, prepareOutput, verifyOutput, deployOutput *nodeRunbookStepOutput
+	for _, raw := range graph.Graph.Vertices() {
+		node, ok := raw.(*nodeRunbookStepOutput)
+		if !ok || node.Instance != nil || node.Step == nil || node.Output == nil || node.Output.Name != "result" {
+			continue
+		}
+		switch node.Step.Name() {
+		case "setup":
+			setupOutput = node
+		case "prepare":
+			prepareOutput = node
+		case "verify":
+			verifyOutput = node
+		case "deploy":
+			deployOutput = node
+		}
 	}
-
-	positions := make(map[string]int, len(order))
-	for i, step := range order {
-		positions[step.Name()] = i
+	if setupOutput == nil || prepareOutput == nil || verifyOutput == nil || deployOutput == nil {
+		t.Fatalf("missing step nodes in graph: %#v", graph.ConfigSteps)
 	}
-	if positions["setup"] > positions["prepare"] {
-		t.Fatalf("setup should come before prepare, got %#v", order)
+	if !graph.Graph.Ancestors(prepareOutput).Include(setupOutput) {
+		t.Fatalf("expected prepare output to depend on setup output")
 	}
-	if positions["setup"] > positions["verify"] {
-		t.Fatalf("setup should come before verify, got %#v", order)
+	if !graph.Graph.Ancestors(verifyOutput).Include(setupOutput) {
+		t.Fatalf("expected verify output to depend on setup output")
 	}
-	if positions["prepare"] > positions["deploy"] {
-		t.Fatalf("prepare should come before deploy, got %#v", order)
+	deployAncestors := graph.Graph.Ancestors(deployOutput)
+	if !deployAncestors.Include(prepareOutput) {
+		t.Fatalf("expected deploy output to depend on prepare output")
 	}
-	if positions["verify"] > positions["deploy"] {
-		t.Fatalf("verify should come before deploy, got %#v", order)
-	}
-
-	secondOrder := ctx.StepExecutionOrder()
-	if len(secondOrder) != len(order) {
-		t.Fatalf("expected repeated execution order call to return same number of steps\nfirst:  %#v\nsecond: %#v", order, secondOrder)
-	}
-	secondPositions := make(map[string]int, len(secondOrder))
-	for i, step := range secondOrder {
-		secondPositions[step.Name()] = i
-	}
-	if secondPositions["setup"] > secondPositions["prepare"] {
-		t.Fatalf("setup should come before prepare on repeated call, got %#v", secondOrder)
-	}
-	if secondPositions["setup"] > secondPositions["verify"] {
-		t.Fatalf("setup should come before verify on repeated call, got %#v", secondOrder)
-	}
-	if secondPositions["prepare"] > secondPositions["deploy"] {
-		t.Fatalf("prepare should come before deploy on repeated call, got %#v", secondOrder)
-	}
-	if secondPositions["verify"] > secondPositions["deploy"] {
-		t.Fatalf("verify should come before deploy on repeated call, got %#v", secondOrder)
+	if !deployAncestors.Include(verifyOutput) {
+		t.Fatalf("expected deploy output to depend on verify output")
 	}
 }
 

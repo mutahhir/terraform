@@ -12,7 +12,7 @@ func (t *ConfigTransformer) Transform(g *PlanGraph) error {
 		return nil
 	}
 	if t.Context != nil {
-		t.Context.resetGraphBuildState()
+		t.Context.resetValidationTracking()
 	}
 	g.Root = &nodeRunbookRoot{}
 	g.Graph.Add(g.Root)

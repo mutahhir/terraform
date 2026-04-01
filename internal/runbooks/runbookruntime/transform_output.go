@@ -13,8 +13,8 @@ func (t *OutputTransformer) Transform(g *PlanGraph) error {
 	if t.Context == nil || g == nil || g.Graph == nil {
 		return nil
 	}
-	for name := range t.Context.config.Outputs {
-		node := &nodeRunbookOutput{NameValue: name}
+	for name, output := range t.Context.config.Outputs {
+		node := &nodeRunbookOutput{NameValue: name, Output: output}
 		g.Graph.Add(node)
 		g.Graph.Connect(dag.BasicEdge(g.Root, node))
 	}

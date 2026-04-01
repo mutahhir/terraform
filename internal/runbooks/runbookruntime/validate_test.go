@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookgraph"
 	"github.com/spf13/afero"
 )
 
@@ -59,9 +60,26 @@ step "deploy" {
 	if diags := ctx.Validate(); diags.HasErrors() {
 		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
 	}
-	deps := ctx.StepDependencies("deploy")
-	if len(deps) != 1 || deps[0] == nil || deps[0].Name() != "prepare" {
-		t.Fatalf("wrong nested-config step dependencies\ngot: %#v", deps)
+	graph, buildDiags := (&RunbookPlanGraphBuilder{Context: ctx, Operation: runbookgraph.WalkValidate}).Build()
+	if buildDiags.HasErrors() {
+		t.Fatalf("unexpected build diagnostics: %s", buildDiags.Err())
+	}
+	var prepareOutput *nodeRunbookStepOutput
+	var deployAction *nodeExpandRunbookAction
+	for _, raw := range graph.Graph.Vertices() {
+		if node, ok := raw.(*nodeRunbookStepOutput); ok && node.Instance == nil && node.Step != nil && node.Step.Name() == "prepare" && node.Output != nil && node.Output.Name == "result" {
+			prepareOutput = node
+		}
+		if node, ok := raw.(*nodeExpandRunbookAction); ok && node.Instance == nil && node.Step != nil && node.Step.Name() == "deploy" {
+			deployAction = node
+		}
+	}
+	if prepareOutput == nil || deployAction == nil {
+		t.Fatalf("missing step nodes in graph: %#v", graph.ConfigSteps)
+	}
+	deps := graph.Graph.Ancestors(deployAction)
+	if !deps.Include(prepareOutput) {
+		t.Fatalf("expected deploy action graph ancestors to include prepare output, got %#v", deps)
 	}
 }
 
@@ -328,5 +346,36 @@ step "deploy" {
 	}
 	if diags := ctx.Validate(); !diags.HasErrors() {
 		t.Fatal("expected validation diagnostics but got none")
+	}
+}
+
+func TestRunbookContextValidateRunbookOutputGraphReferencesVariable(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+variable "name" {
+  type    = string
+  default = "hello"
+}
+
+output "summary" {
+  value = var.name
+}
+
+step "deploy" {}
+`)
+
+	parser := runbookconfig.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected load diagnostics: %s", diags.Error())
+	}
+
+	ctx, diags := NewContext(&RunbookContextOpts{Config: config})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected context diagnostics: %s", diags.Error())
+	}
+	if diags := ctx.Validate(); diags.HasErrors() {
+		t.Fatalf("unexpected validation diagnostics: %s", diags.Err())
 	}
 }

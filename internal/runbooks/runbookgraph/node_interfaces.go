@@ -28,6 +28,7 @@ type ReferenceTarget interface {
 
 type Reference struct {
 	Target      ReferenceTarget
+	Scope       Scope
 	SourceRange tfdiags.SourceRange
 }
 

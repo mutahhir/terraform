@@ -5,14 +5,12 @@ package runbookruntime
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
-	"github.com/hashicorp/terraform/internal/dag"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookgraph"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -45,19 +43,6 @@ func (c *RunbookContext) validateStepShell(step *Step) tfdiags.Diagnostics {
 	stepCfg := step.Config()
 
 	diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, stepCfg.Count, stepCfg.ForEach))
-
-	for _, execution := range stepCfg.Executions {
-		for _, action := range execution.InvokeAction {
-			diags = diags.Append(c.validateExecutableAction(stepCfg.Name, action))
-		}
-	}
-
-	for _, condition := range stepCfg.Preconditions {
-		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, condition.Condition, condition.ErrorMessage))
-	}
-	for _, condition := range stepCfg.Postconditions {
-		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, condition.Condition, condition.ErrorMessage))
-	}
 
 	return diags
 }
@@ -328,13 +313,6 @@ func (c *RunbookContext) validateExpressionStepExternalReferences(currentStepNam
 		if step := c.Step(cfgAddr.Step.Name); step != nil {
 			diags = diags.Append(c.validateStepInstanceReference(step, addr, traversal))
 		}
-		if currentStepName != "" && cfgAddr.Step.Name != currentStepName {
-			if from, ok := c.stepVertices[currentStepName]; ok {
-				if to, ok := c.stepVertices[cfgAddr.Step.Name]; ok {
-					c.stepDependencyGraph.Connect(dag.BasicEdge(from, to))
-				}
-			}
-		}
 		if currentStepName != "" && cfgAddr.Step.Name == currentStepName {
 			diags = diags.Append(&hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -550,31 +528,6 @@ func (c *RunbookContext) validateExpressionStepLocalReferences(currentStepName s
 				})
 			}
 		}
-	}
-
-	return diags
-}
-
-func (c *RunbookContext) validateStepDependencyCycles() tfdiags.Diagnostics {
-	var diags tfdiags.Diagnostics
-	if c == nil || c.stepDependencyGraph == nil {
-		return diags
-	}
-	for _, cycle := range c.stepDependencyGraph.Cycles() {
-		cycleNames := make([]string, 0, len(cycle))
-		for _, raw := range cycle {
-			if step, ok := raw.(stepVertex); ok {
-				cycleNames = append(cycleNames, step.Name())
-			}
-		}
-		if len(cycleNames) == 0 {
-			continue
-		}
-		diags = diags.Append(tfdiags.Sourceless(
-			tfdiags.Error,
-			fmt.Sprintf("Cycle: %s", strings.Join(cycleNames, ", ")),
-			"",
-		))
 	}
 
 	return diags

@@ -5,12 +5,9 @@ package runbookruntime
 
 import (
 	"maps"
-	"slices"
-	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/configs"
-	"github.com/hashicorp/terraform/internal/dag"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
 	"github.com/zclconf/go-cty/cty"
@@ -31,8 +28,6 @@ type RunbookContext struct {
 	variablesByName          map[string]*configs.Variable
 	outputsByName            map[string]*configs.Output
 	stepsByName              map[string]*Step
-	stepVertices             map[string]stepVertex
-	stepDependencyGraph      *dag.AcyclicGraph
 	stepLocalsByStep         map[string]map[string]*configs.Local
 	stepActionsByStep        map[string]map[string]*configs.Action
 	stepDataSourcesByStep    map[string]map[string]*configs.Resource
@@ -62,8 +57,6 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 		variablesByName:          make(map[string]*configs.Variable, len(opts.Config.Variables)),
 		outputsByName:            make(map[string]*configs.Output, len(opts.Config.Outputs)),
 		stepsByName:              make(map[string]*Step, len(opts.Config.Steps)),
-		stepVertices:             make(map[string]stepVertex, len(opts.Config.Steps)),
-		stepDependencyGraph:      &dag.AcyclicGraph{},
 		stepLocalsByStep:         make(map[string]map[string]*configs.Local, len(opts.Config.Steps)),
 		stepActionsByStep:        make(map[string]map[string]*configs.Action, len(opts.Config.Steps)),
 		stepDataSourcesByStep:    make(map[string]map[string]*configs.Resource, len(opts.Config.Steps)),
@@ -88,9 +81,6 @@ func NewContext(opts *RunbookContextOpts) (*RunbookContext, hcl.Diagnostics) {
 
 	for name, step := range opts.Config.Steps {
 		ctx.stepsByName[name] = &Step{context: ctx, config: step}
-		v := stepVertex{NameValue: name}
-		ctx.stepVertices[name] = v
-		ctx.stepDependencyGraph.Add(v)
 		ctx.workspaceActionsByStep[name] = make([]runbookaddrs.WorkspaceActionInstance, 0)
 		ctx.workspaceOutputsByStep[name] = make([]runbookaddrs.WorkspaceOutputValue, 0)
 
@@ -163,58 +153,6 @@ func (c *RunbookContext) Step(name string) *Step {
 		return nil
 	}
 	return c.stepsByName[name]
-}
-
-func (c *RunbookContext) StepDependencies(stepName string) []*Step {
-	if c == nil {
-		return nil
-	}
-	v, ok := c.stepVertices[stepName]
-	if !ok || c.stepDependencyGraph == nil {
-		return nil
-	}
-	deps := c.stepDependencyGraph.DownEdges(v)
-	ret := make([]*Step, 0, len(deps))
-	for _, raw := range deps {
-		dep, ok := raw.(stepVertex)
-		if ok {
-			if step := c.stepsByName[dep.Name()]; step != nil {
-				ret = append(ret, step)
-			}
-		}
-	}
-	slices.SortFunc(ret, func(a, b *Step) int {
-		return strings.Compare(a.Name(), b.Name())
-	})
-	return ret
-}
-
-func (c *RunbookContext) StepExecutionOrder() []*Step {
-	if c == nil {
-		return nil
-	}
-	if c.stepDependencyGraph == nil || len(c.stepDependencyGraph.Cycles()) != 0 {
-		return nil
-	}
-
-	ordered := c.stepDependencyGraph.ReverseTopologicalOrder()
-	ret := make([]*Step, 0, len(ordered))
-	for _, raw := range ordered {
-		step, ok := raw.(stepVertex)
-		if !ok {
-			continue
-		}
-		cfg := c.stepsByName[step.Name()]
-		if cfg == nil {
-			return nil
-		}
-		ret = append(ret, cfg)
-	}
-	if len(ret) != len(c.stepsByName) {
-		return nil
-	}
-
-	return ret
 }
 
 func (c *RunbookContext) StepLocal(stepName, localName string) *configs.Local {
@@ -298,12 +236,4 @@ func (c *RunbookContext) StepWorkspaceOutputs(stepName string) []runbookaddrs.Wo
 		return nil
 	}
 	return c.workspaceOutputsByStep[stepName]
-}
-
-type stepVertex struct {
-	NameValue string
-}
-
-func (v stepVertex) Name() string {
-	return v.NameValue
 }

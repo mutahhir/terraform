@@ -63,6 +63,7 @@ func (b *RunbookPlanGraphBuilder) Build() (*PlanGraph, tfdiags.Diagnostics) {
 			&RootVariableTransformer{Context: b.Context},
 			&OutputTransformer{Context: b.Context},
 			&StepTransformer{Context: b.Context, Operation: b.Operation},
+			&runbookgraph.ReferenceTransformer[*PlanGraph]{},
 			&runbookgraph.TransitiveReductionTransformer[*PlanGraph]{},
 		},
 	}

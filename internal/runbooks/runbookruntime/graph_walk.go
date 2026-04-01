@@ -4,16 +4,11 @@
 package runbookruntime
 
 import (
-	"fmt"
-	"sort"
-
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/terraform/internal/addrs"
-	"github.com/hashicorp/terraform/internal/configs"
-	"github.com/hashicorp/terraform/internal/dag"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookgraph"
-	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type WalkerData struct {
@@ -26,260 +21,13 @@ func newRunbookGraphWalker(ctx *RunbookContext, graph *PlanGraph, operation runb
 	return runbookgraph.NewWalker(&WalkerData{Context: ctx}, graph, operation)
 }
 
-type nodeRunbookRoot struct{}
-
-func (n *nodeRunbookRoot) Hashcode() interface{} { return "runbook.root" }
-func (n *nodeRunbookRoot) Name() string          { return "runbook.root" }
-func (n *nodeRunbookRoot) ExecuteGraphNode(*RunbookGraphWalker) tfdiags.Diagnostics {
-	return nil
-}
-
-type nodeRootVariable struct {
-	NameValue string
-	Variable  *configs.Variable
-}
-
-func (n *nodeRootVariable) Hashcode() interface{} { return "runbook.var." + n.NameValue }
-func (n *nodeRootVariable) Name() string          { return "var." + n.NameValue }
-func (n *nodeRootVariable) ExecuteGraphNode(*RunbookGraphWalker) tfdiags.Diagnostics {
-	return nil
-}
-
-type nodeRunbookOutput struct {
-	NameValue string
-}
-
-func (n *nodeRunbookOutput) Hashcode() interface{} { return "runbook.output." + n.NameValue }
-func (n *nodeRunbookOutput) Name() string          { return "output." + n.NameValue }
-func (n *nodeRunbookOutput) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Data == nil || w.Data.Context == nil {
-		return nil
-	}
-	return w.Data.Context.validateRunbookOutput(n.NameValue)
-}
-
-type nodeExpandRunbookStep struct {
-	Step *Step
-}
-
-func (n *nodeExpandRunbookStep) Hashcode() interface{} {
-	if n.Step == nil {
-		return nil
-	}
-	return "runbook.step." + n.Step.Name()
-}
-
-func (n *nodeExpandRunbookStep) Name() string {
-	if n.Step == nil {
-		return ""
-	}
-	return n.Step.Name()
-}
-
-func (n *nodeExpandRunbookStep) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Data == nil || w.Data.Context == nil {
-		return nil
-	}
-	return w.Data.Context.validateStepShell(n.Step)
-}
-
-func (n *nodeExpandRunbookStep) DynamicExpand(w *RunbookGraphWalker) (*PlanGraph, tfdiags.Diagnostics) {
-	var diags tfdiags.Diagnostics
-	if w == nil || w.Operation != runbookgraph.WalkPlan || n.Step == nil {
-		return nil, diags
-	}
-
-	instances, unknown, moreDiags := n.Step.CheckInstances()
-	diags = diags.Append(moreDiags)
-	if diags.HasErrors() {
-		return nil, diags
-	}
-	if unknown {
-		var subject *hcl.Range
-		if cfg := n.Step.Config(); cfg != nil {
-			switch {
-			case cfg.Count != nil:
-				subject = cfg.Count.Range().Ptr()
-			case cfg.ForEach != nil:
-				subject = cfg.ForEach.Range().Ptr()
-			}
-		}
-		diags = diags.Append(&hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Unknown step repetition during planning",
-			Detail:   fmt.Sprintf("The repetition for step %q is not fully known at plan time. Runbooks require all step instances to be determined before execution planning.", n.Step.Name()),
-			Subject:  subject,
-		})
-		return nil, diags
-	}
-
-	if w.RootGraph != nil {
-		w.RootGraph.InstancesByStep[n.Step.Name()] = instances
-	}
-
-	subgraph := &PlanGraph{
-		Config:          w.Graph.Config,
-		Operation:       w.Operation,
-		Graph:           &dag.AcyclicGraph{},
-		ConfigSteps:     map[string]*nodeExpandRunbookStep{},
-		StepVertices:    map[string]*nodeExpandRunbookStepInstance{},
-		InstancesByStep: map[string]map[addrs.InstanceKey]*StepInstance{},
-	}
-	subgraph.Root = &nodeRunbookRoot{}
-	subgraph.Graph.Add(subgraph.Root)
-
-	keys := make([]string, 0, len(instances))
-	byAddr := make(map[string]*StepInstance, len(instances))
-	for _, inst := range instances {
-		if inst == nil {
-			continue
-		}
-		addr := inst.Addr().String()
-		keys = append(keys, addr)
-		byAddr[addr] = inst
-	}
-	sort.Strings(keys)
-	for _, addr := range keys {
-		vertex := &nodeExpandRunbookStepInstance{Instance: byAddr[addr]}
-		subgraph.Graph.Add(vertex)
-		subgraph.Graph.Connect(dag.BasicEdge(subgraph.Root, vertex))
-	}
-
-	return subgraph, diags
-}
-
-type nodeExpandRunbookStepInstance struct {
-	Instance *StepInstance
-}
-
-func (n *nodeExpandRunbookStepInstance) Hashcode() interface{} {
-	if n.Instance == nil {
-		return nil
-	}
-	return n.Instance.Addr().String()
-}
-
-func (n *nodeExpandRunbookStepInstance) Name() string {
-	if n.Instance == nil {
-		return ""
-	}
-	return n.Instance.Addr().String()
-}
-
-func (n *nodeExpandRunbookStepInstance) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.RootGraph == nil || n.Instance == nil {
-		return nil
-	}
-	w.RootGraph.StepVertices[n.Instance.Addr().String()] = n
-	return nil
-}
-
-type nodeRunbookStepLocal struct {
-	Step  *Step
-	Local *configs.Local
-}
-
-func (n *nodeRunbookStepLocal) Hashcode() interface{} {
-	if n.Step == nil || n.Local == nil {
-		return nil
-	}
-	return "runbook.step." + n.Step.Name() + ".local." + n.Local.Name
-}
-
-func (n *nodeRunbookStepLocal) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
-		return nil
-	}
-	return w.Data.Context.validateStepLocal(n.Step.Name(), n.Local)
-}
-
-type nodeRunbookAction struct {
-	Step   *Step
-	Action *configs.Action
-}
-
-func (n *nodeRunbookAction) Hashcode() interface{} {
-	if n.Step == nil || n.Action == nil {
-		return nil
-	}
-	return "runbook.step." + n.Step.Name() + ".action." + n.Action.Addr().String()
-}
-
-func (n *nodeRunbookAction) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
-		return nil
-	}
-	return w.Data.Context.validateStepAction(n.Step.Name(), n.Action)
-}
-
-type nodeRunbookDataSource struct {
-	Step       *Step
-	DataSource *configs.Resource
-}
-
-func (n *nodeRunbookDataSource) Hashcode() interface{} {
-	if n.Step == nil || n.DataSource == nil {
-		return nil
-	}
-	return "runbook.step." + n.Step.Name() + ".data." + n.DataSource.Addr().String()
-}
-
-func (n *nodeRunbookDataSource) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
-		return nil
-	}
-	return w.Data.Context.validateStepDataSource(n.Step.Name(), n.DataSource)
-}
-
-type nodeRunbookList struct {
-	Step *Step
-	List *configs.Resource
-}
-
-func (n *nodeRunbookList) Hashcode() interface{} {
-	if n.Step == nil || n.List == nil {
-		return nil
-	}
-	return "runbook.step." + n.Step.Name() + ".list." + n.List.Addr().String()
-}
-
-func (n *nodeRunbookList) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
-		return nil
-	}
-	return w.Data.Context.validateStepList(n.Step.Name(), n.List)
-}
-
-type nodeRunbookStepOutput struct {
-	Step   *Step
-	Output *configs.Output
-}
-
-func (n *nodeRunbookStepOutput) Hashcode() interface{} {
-	if n.Step == nil || n.Output == nil {
-		return nil
-	}
-	return "runbook.step." + n.Step.Name() + ".output." + n.Output.Name
-}
-
-func (n *nodeRunbookStepOutput) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
-		return nil
-	}
-	return w.Data.Context.validateStepOutputValue(n.Step.Name(), n.Output)
-}
-
-func (c *RunbookContext) resetGraphBuildState() {
+func (c *RunbookContext) resetValidationTracking() {
 	if c == nil {
 		return
 	}
 	c.usedWorkspaceOutputNames = c.usedWorkspaceOutputNames[:0]
 	for stepName := range c.workspaceOutputsByStep {
 		c.workspaceOutputsByStep[stepName] = c.workspaceOutputsByStep[stepName][:0]
-	}
-	c.stepDependencyGraph = &dag.AcyclicGraph{}
-	for _, v := range c.stepVertices {
-		c.stepDependencyGraph.Add(v)
 	}
 }
 
@@ -298,5 +46,112 @@ func visitBodyExpressions(body hcl.Body, visit func(hcl.Expression)) {
 	}
 	for _, block := range syntaxBody.Blocks {
 		visitBodyExpressions(block.Body, visit)
+	}
+}
+
+func runbookReferencesInExpr(scope runbookgraph.Scope, exprs ...hcl.Expression) []runbookgraph.Reference {
+	var refs []runbookgraph.Reference
+	for _, expr := range exprs {
+		if expr == nil {
+			continue
+		}
+		for _, traversal := range expr.Variables() {
+			if ref, ok := runbookReferenceFromTraversal(scope, traversal); ok {
+				refs = append(refs, ref)
+			}
+		}
+	}
+	return refs
+}
+
+func runbookReferenceFromTraversal(scope runbookgraph.Scope, traversal hcl.Traversal) (runbookgraph.Reference, bool) {
+	if traversal == nil {
+		return runbookgraph.Reference{}, false
+	}
+	if _, ok := scope.(runbookgraph.RootScope); ok {
+		switch traversal.RootName() {
+		case "var":
+			ref, diags := runbookaddrs.ParseRunbookReference(traversal)
+			if diags.HasErrors() {
+				return runbookgraph.Reference{}, false
+			}
+			if target, ok := ref.Target.(addrs.InputVariable); ok {
+				return runbookgraph.Reference{Target: target, Scope: runbookgraph.RootScope{}, SourceRange: ref.SourceRange}, true
+			}
+		case "step":
+			ref, _, diags := runbookaddrs.ParseStepOutputReference(traversal)
+			if diags.HasErrors() {
+				return runbookgraph.Reference{}, false
+			}
+			if target, ok := ref.Target.(runbookaddrs.StepOutputValue); ok {
+				return runbookgraph.Reference{Target: target.ConfigStepOutputValue(), Scope: runbookgraph.RootScope{}, SourceRange: ref.SourceRange}, true
+			}
+		}
+		return runbookgraph.Reference{}, false
+	}
+	if _, ok := scope.(runbookgraph.StepConfigScope); ok {
+		return runbookStepScopedReferenceFromTraversal(scope, traversal)
+	}
+	if _, ok := scope.(runbookgraph.StepInstanceScope); ok {
+		return runbookStepScopedReferenceFromTraversal(scope, traversal)
+	}
+	return runbookgraph.Reference{}, false
+}
+
+func runbookStepScopedReferenceFromTraversal(scope runbookgraph.Scope, traversal hcl.Traversal) (runbookgraph.Reference, bool) {
+	if traversal == nil {
+		return runbookgraph.Reference{}, false
+	}
+	switch traversal.RootName() {
+	case "var":
+		ref, diags := runbookaddrs.ParseRunbookReference(traversal)
+		if diags.HasErrors() {
+			return runbookgraph.Reference{}, false
+		}
+		if target, ok := ref.Target.(addrs.InputVariable); ok {
+			return runbookgraph.Reference{Target: target, Scope: runbookgraph.RootScope{}, SourceRange: ref.SourceRange}, true
+		}
+	case "step":
+		ref, _, diags := runbookaddrs.ParseStepOutputReference(traversal)
+		if diags.HasErrors() {
+			return runbookgraph.Reference{}, false
+		}
+		if target, ok := ref.Target.(runbookaddrs.StepOutputValue); ok {
+			return runbookgraph.Reference{Target: target.ConfigStepOutputValue(), Scope: runbookgraph.RootScope{}, SourceRange: ref.SourceRange}, true
+		}
+	case "workspace":
+		return runbookgraph.Reference{}, false
+	default:
+		ref, diags := runbookaddrs.ParseInStepReference(traversal)
+		if diags.HasErrors() {
+			return runbookgraph.Reference{}, false
+		}
+		if target := scopedReferenceTarget(ref.Target); target != nil {
+			return runbookgraph.Reference{Target: target, Scope: scope, SourceRange: ref.SourceRange}, true
+		}
+	}
+	return runbookgraph.Reference{}, false
+}
+
+func scopedReferenceTarget(target any) runbookgraph.ReferenceTarget {
+	switch addr := target.(type) {
+	case addrs.InputVariable:
+		return addr
+	case addrs.LocalValue:
+		return addr
+	case runbookaddrs.ActionInstance:
+		return addr
+	case runbookaddrs.DataSource:
+		return addr
+	case runbookaddrs.List:
+		return addr
+	case runbookaddrs.StepOutputValue:
+		return addr
+	case runbookaddrs.WorkspaceActionInstance:
+		return addr
+	case runbookaddrs.WorkspaceOutputValue:
+		return addr
+	default:
+		return nil
 	}
 }

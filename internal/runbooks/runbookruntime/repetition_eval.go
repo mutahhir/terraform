@@ -30,40 +30,57 @@ func newRepetitionEvaluator(ctx *RunbookContext) *repetitionEvaluator {
 
 func (e *repetitionEvaluator) stepInstances(step *Step) (map[addrs.InstanceKey]*StepInstance, bool, tfdiags.Diagnostics) {
 	baseAddr := runbookaddrs.StepInstance{Step: step.Addr()}
-	if step.config.Count == nil && step.config.ForEach == nil {
-		return map[addrs.InstanceKey]*StepInstance{
-			addrs.NoKey: {
-				step: step,
-				addr: baseAddr,
-			},
-		}, false, nil
+	insts, unknown, diags := e.instancesForExpressions(step, step.config.Count, step.config.ForEach)
+	if diags.HasErrors() || unknown {
+		return nil, unknown, diags
+	}
+	ret := make(map[addrs.InstanceKey]*StepInstance, len(insts))
+	for key, repetition := range insts {
+		ret[key] = &StepInstance{
+			step:       step,
+			addr:       runbookaddrs.StepInstance{Step: baseAddr.Step, Key: key},
+			repetition: repetition,
+		}
 	}
 
-	if step.config.Count != nil {
-		count, unknown, diags := e.evaluateCount(step)
+	return ret, false, diags
+}
+
+func (e *repetitionEvaluator) actionInstances(step *Step, action *configs.Action) (map[addrs.InstanceKey]instances.RepetitionData, bool, tfdiags.Diagnostics) {
+	if action == nil {
+		return map[addrs.InstanceKey]instances.RepetitionData{addrs.NoKey: {}}, false, nil
+	}
+	return e.instancesForExpressions(step, action.Count, action.ForEach)
+}
+
+func (e *repetitionEvaluator) resourceInstances(step *Step, resource *configs.Resource) (map[addrs.InstanceKey]instances.RepetitionData, bool, tfdiags.Diagnostics) {
+	if resource == nil {
+		return map[addrs.InstanceKey]instances.RepetitionData{addrs.NoKey: {}}, false, nil
+	}
+	return e.instancesForExpressions(step, resource.Count, resource.ForEach)
+}
+
+func (e *repetitionEvaluator) instancesForExpressions(step *Step, countExpr, forEachExpr hcl.Expression) (map[addrs.InstanceKey]instances.RepetitionData, bool, tfdiags.Diagnostics) {
+	if countExpr == nil && forEachExpr == nil {
+		return map[addrs.InstanceKey]instances.RepetitionData{addrs.NoKey: {}}, false, nil
+	}
+	if countExpr != nil {
+		count, unknown, diags := e.evaluateCountExpr(step, countExpr)
 		if diags.HasErrors() || unknown {
 			return nil, unknown, diags
 		}
-		ret := make(map[addrs.InstanceKey]*StepInstance, count)
+		ret := make(map[addrs.InstanceKey]instances.RepetitionData, count)
 		for i := range count {
-			key := addrs.IntKey(i)
-			ret[key] = &StepInstance{
-				step: step,
-				addr: runbookaddrs.StepInstance{Step: baseAddr.Step, Key: key},
-				repetition: instances.RepetitionData{
-					CountIndex: cty.NumberIntVal(int64(i)),
-				},
-			}
+			ret[addrs.IntKey(i)] = instances.RepetitionData{CountIndex: cty.NumberIntVal(int64(i))}
 		}
 		return ret, false, diags
 	}
-
-	forEachVal, unknown, diags := e.evaluateForEach(step)
+	forEachVal, unknown, diags := e.evaluateForEachExpr(step, forEachExpr)
 	if diags.HasErrors() || unknown {
 		return nil, unknown, diags
 	}
 
-	ret := make(map[addrs.InstanceKey]*StepInstance)
+	ret := make(map[addrs.InstanceKey]instances.RepetitionData)
 	ty := forEachVal.Type()
 	switch {
 	case ty.IsMapType() || ty.IsObjectType():
@@ -74,32 +91,14 @@ func (e *repetitionEvaluator) stepInstances(step *Step) (map[addrs.InstanceKey]*
 		}
 		sort.Strings(keys)
 		for _, keyStr := range keys {
-			key := addrs.StringKey(keyStr)
-			ret[key] = &StepInstance{
-				step: step,
-				addr: runbookaddrs.StepInstance{Step: baseAddr.Step, Key: key},
-				repetition: instances.RepetitionData{
-					EachKey:   cty.StringVal(keyStr),
-					EachValue: elems[keyStr],
-				},
-			}
+			ret[addrs.StringKey(keyStr)] = instances.RepetitionData{EachKey: cty.StringVal(keyStr), EachValue: elems[keyStr]}
 		}
 	case ty.IsSetType() && ty.ElementType().Equals(cty.String):
 		elems := forEachVal.AsValueSlice()
-		sort.Slice(elems, func(i, j int) bool {
-			return elems[i].AsString() < elems[j].AsString()
-		})
+		sort.Slice(elems, func(i, j int) bool { return elems[i].AsString() < elems[j].AsString() })
 		for _, elem := range elems {
 			keyStr := elem.AsString()
-			key := addrs.StringKey(keyStr)
-			ret[key] = &StepInstance{
-				step: step,
-				addr: runbookaddrs.StepInstance{Step: baseAddr.Step, Key: key},
-				repetition: instances.RepetitionData{
-					EachKey:   cty.StringVal(keyStr),
-					EachValue: elem,
-				},
-			}
+			ret[addrs.StringKey(keyStr)] = instances.RepetitionData{EachKey: cty.StringVal(keyStr), EachValue: elem}
 		}
 	default:
 		panic(fmt.Sprintf("invalid for_each value %#v", forEachVal))
@@ -109,8 +108,12 @@ func (e *repetitionEvaluator) stepInstances(step *Step) (map[addrs.InstanceKey]*
 }
 
 func (e *repetitionEvaluator) evaluateCount(step *Step) (int, bool, tfdiags.Diagnostics) {
+	return e.evaluateCountExpr(step, step.config.Count)
+}
+
+func (e *repetitionEvaluator) evaluateCountExpr(step *Step, expr hcl.Expression) (int, bool, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
-	val, moreDiags := e.evalExpr(step, step.config.Count)
+	val, moreDiags := e.evalExpr(step, expr)
 	diags = diags.Append(moreDiags)
 	if diags.HasErrors() {
 		return -1, false, diags
@@ -122,7 +125,7 @@ func (e *repetitionEvaluator) evaluateCount(step *Step) (int, bool, tfdiags.Diag
 			Severity: hcl.DiagError,
 			Summary:  "Invalid count argument",
 			Detail:   `The given "count" argument value is null. An integer is required.`,
-			Subject:  step.config.Count.Range().Ptr(),
+			Subject:  expr.Range().Ptr(),
 		})
 		return -1, false, diags
 	}
@@ -135,7 +138,7 @@ func (e *repetitionEvaluator) evaluateCount(step *Step) (int, bool, tfdiags.Diag
 			Severity: hcl.DiagError,
 			Summary:  "Invalid count argument",
 			Detail:   fmt.Sprintf(`The given "count" argument value is unsuitable: %s.`, err),
-			Subject:  step.config.Count.Range().Ptr(),
+			Subject:  expr.Range().Ptr(),
 		})
 		return -1, false, diags
 	}
@@ -144,7 +147,7 @@ func (e *repetitionEvaluator) evaluateCount(step *Step) (int, bool, tfdiags.Diag
 			Severity: hcl.DiagError,
 			Summary:  "Invalid count argument",
 			Detail:   `The given "count" argument value is unsuitable: must be greater than or equal to zero.`,
-			Subject:  step.config.Count.Range().Ptr(),
+			Subject:  expr.Range().Ptr(),
 		})
 		return -1, false, diags
 	}
@@ -152,8 +155,12 @@ func (e *repetitionEvaluator) evaluateCount(step *Step) (int, bool, tfdiags.Diag
 }
 
 func (e *repetitionEvaluator) evaluateForEach(step *Step) (cty.Value, bool, tfdiags.Diagnostics) {
+	return e.evaluateForEachExpr(step, step.config.ForEach)
+}
+
+func (e *repetitionEvaluator) evaluateForEachExpr(step *Step, expr hcl.Expression) (cty.Value, bool, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
-	val, moreDiags := e.evalExpr(step, step.config.ForEach)
+	val, moreDiags := e.evalExpr(step, expr)
 	diags = diags.Append(moreDiags)
 	if diags.HasErrors() {
 		return cty.DynamicVal, false, diags
@@ -167,7 +174,7 @@ func (e *repetitionEvaluator) evaluateForEach(step *Step) (cty.Value, bool, tfdi
 			Severity: hcl.DiagError,
 			Summary:  summary,
 			Detail:   `Sensitive values, or values derived from sensitive values, cannot be used as for_each arguments. If used, the sensitive value could be exposed as a step instance key.`,
-			Subject:  step.config.ForEach.Range().Ptr(),
+			Subject:  expr.Range().Ptr(),
 		})
 		return cty.DynamicVal, false, diags
 	}
@@ -177,7 +184,7 @@ func (e *repetitionEvaluator) evaluateForEach(step *Step) (cty.Value, bool, tfdi
 			Severity: hcl.DiagError,
 			Summary:  summary,
 			Detail:   detail + ` The for_each expression produced a null value.`,
-			Subject:  step.config.ForEach.Range().Ptr(),
+			Subject:  expr.Range().Ptr(),
 		})
 		return cty.DynamicVal, false, diags
 	}
@@ -198,7 +205,7 @@ func (e *repetitionEvaluator) evaluateForEach(step *Step) (cty.Value, bool, tfdi
 				Severity: hcl.DiagError,
 				Summary:  summary,
 				Detail:   fmt.Sprintf(`%s "for_each" supports maps and sets of strings, but you have provided a set containing type %s.`, detail, ty.ElementType().FriendlyName()),
-				Subject:  step.config.ForEach.Range().Ptr(),
+				Subject:  expr.Range().Ptr(),
 			})
 			return cty.DynamicVal, false, diags
 		}
@@ -208,7 +215,7 @@ func (e *repetitionEvaluator) evaluateForEach(step *Step) (cty.Value, bool, tfdi
 					Severity: hcl.DiagError,
 					Summary:  summary,
 					Detail:   fmt.Sprintf(`%s The for_each value must not contain null elements, but the element at index %d was null.`, detail, i),
-					Subject:  step.config.ForEach.Range().Ptr(),
+					Subject:  expr.Range().Ptr(),
 				})
 			}
 		}
@@ -220,7 +227,7 @@ func (e *repetitionEvaluator) evaluateForEach(step *Step) (cty.Value, bool, tfdi
 			Severity: hcl.DiagError,
 			Summary:  summary,
 			Detail:   detail,
-			Subject:  step.config.ForEach.Range().Ptr(),
+			Subject:  expr.Range().Ptr(),
 		})
 		return cty.DynamicVal, false, diags
 	}
