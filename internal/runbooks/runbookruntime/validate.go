@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/dag"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookgraph"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
@@ -25,13 +26,13 @@ type repetitionValidationScope struct {
 func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 	graph, diags := (&RunbookPlanGraphBuilder{
 		Context:   c,
-		Operation: walkValidate,
+		Operation: runbookgraph.WalkValidate,
 	}).Build()
 	if diags.HasErrors() {
 		return diags
 	}
 	if graph != nil {
-		diags = diags.Append(graph.Walk(newRunbookGraphWalker(c, graph, walkValidate)))
+		diags = diags.Append(runbookgraph.Walk(graph, newRunbookGraphWalker(c, graph, runbookgraph.WalkValidate)))
 	}
 	return diags
 }

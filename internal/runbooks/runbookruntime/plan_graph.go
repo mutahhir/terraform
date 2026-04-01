@@ -9,22 +9,14 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/dag"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookgraph"
 	"github.com/hashicorp/terraform/internal/tfdiags"
-)
-
-type walkOperation byte
-
-const (
-	walkInvalid walkOperation = iota
-	walkValidate
-	walkPlan
-	walkExecute
 )
 
 type PlanGraph struct {
 	Config *runbookconfig.RunbookConfig
 
-	Operation walkOperation
+	Operation runbookgraph.WalkOperation
 
 	Graph           *dag.AcyclicGraph
 	Root            *nodeRunbookRoot
@@ -33,49 +25,17 @@ type PlanGraph struct {
 	InstancesByStep map[string]map[addrs.InstanceKey]*StepInstance
 }
 
-func (g *PlanGraph) Walk(walker *RunbookGraphWalker) tfdiags.Diagnostics {
-	if g == nil || g.Graph == nil || walker == nil {
+func (g *PlanGraph) DAG() *dag.AcyclicGraph {
+	if g == nil {
 		return nil
 	}
-
-	walkFn := func(v dag.Vertex) tfdiags.Diagnostics {
-		var diags tfdiags.Diagnostics
-
-		if executable, ok := v.(runbookGraphNodeExecutable); ok {
-			diags = diags.Append(walker.execute(executable))
-			if diags.HasErrors() {
-				return diags
-			}
-		}
-
-		if expandable, ok := v.(runbookGraphNodeDynamicExpandable); ok {
-			subgraph, moreDiags := walker.expand(expandable)
-			diags = diags.Append(moreDiags)
-			if diags.HasErrors() {
-				return diags
-			}
-			if subgraph != nil {
-				if len(subgraph.Graph.Cycles()) != 0 {
-					return diags.Append(tfdiags.Sourceless(
-						tfdiags.Error,
-						"Invalid runbook graph",
-						"Cannot walk a runbook subgraph while it contains cycles.",
-					))
-				}
-				diags = diags.Append(subgraph.Walk(walker.child(subgraph)))
-			}
-		}
-
-		return diags
-	}
-
-	return g.Graph.Walk(walkFn)
+	return g.Graph
 }
 
 type RunbookPlanGraphBuilder struct {
 	Context   *RunbookContext
 	Opts      *PlanOpts
-	Operation walkOperation
+	Operation runbookgraph.WalkOperation
 }
 
 func (b *RunbookPlanGraphBuilder) Build() (*PlanGraph, tfdiags.Diagnostics) {
@@ -88,7 +48,7 @@ func (b *RunbookPlanGraphBuilder) Build() (*PlanGraph, tfdiags.Diagnostics) {
 		))
 	}
 
-	builder := &BasicGraphBuilder{
+	builder := &runbookgraph.BasicGraphBuilder[*PlanGraph]{
 		Name: "RunbookPlanGraphBuilder",
 		Graph: &PlanGraph{
 			Config:          b.Context.config,
@@ -98,12 +58,12 @@ func (b *RunbookPlanGraphBuilder) Build() (*PlanGraph, tfdiags.Diagnostics) {
 			StepVertices:    map[string]*nodeExpandRunbookStepInstance{},
 			InstancesByStep: map[string]map[addrs.InstanceKey]*StepInstance{},
 		},
-		Steps: []GraphTransformer{
+		Steps: []runbookgraph.GraphTransformer[*PlanGraph]{
 			&ConfigTransformer{Context: b.Context},
 			&RootVariableTransformer{Context: b.Context},
 			&OutputTransformer{Context: b.Context},
 			&StepTransformer{Context: b.Context, Operation: b.Operation},
-			&runbookTransitiveReductionTransformer{},
+			&runbookgraph.TransitiveReductionTransformer[*PlanGraph]{},
 		},
 	}
 	graph, moreDiags := builder.Build()

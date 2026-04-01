@@ -6,6 +6,7 @@ package runbookruntime
 import (
 	"maps"
 
+	"github.com/hashicorp/terraform/internal/runbooks/runbookgraph"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -44,14 +45,14 @@ func (c *RunbookContext) Plan(opts *PlanOpts) (*Plan, tfdiags.Diagnostics) {
 	builder := &RunbookPlanGraphBuilder{
 		Context:   c,
 		Opts:      opts,
-		Operation: walkPlan,
+		Operation: runbookgraph.WalkPlan,
 	}
 	graph, moreDiags := builder.Build()
 	diags = diags.Append(moreDiags)
 	if diags.HasErrors() {
 		return nil, diags
 	}
-	diags = diags.Append(graph.Walk(newRunbookGraphWalker(c, graph, walkPlan)))
+	diags = diags.Append(runbookgraph.Walk(graph, newRunbookGraphWalker(c, graph, runbookgraph.WalkPlan)))
 	if diags.HasErrors() {
 		return nil, diags
 	}

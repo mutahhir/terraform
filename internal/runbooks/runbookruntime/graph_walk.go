@@ -6,84 +6,31 @@ package runbookruntime
 import (
 	"fmt"
 	"sort"
-	"sync"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/dag"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookgraph"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
-type runbookGraphNodeExecutable interface {
-	ExecuteRunbook(*RunbookGraphWalker) tfdiags.Diagnostics
+type WalkerData struct {
+	Context *RunbookContext
 }
 
-type runbookGraphNodeDynamicExpandable interface {
-	DynamicExpand(*RunbookGraphWalker) (*PlanGraph, tfdiags.Diagnostics)
-}
+type RunbookGraphWalker = runbookgraph.Walker[*PlanGraph, *WalkerData]
 
-type runbookGraphNode interface {
-	dag.Vertex
-	runbookGraphNodeExecutable
-}
-
-type RunbookGraphWalker struct {
-	Context   *RunbookContext
-	Graph     *PlanGraph
-	RootGraph *PlanGraph
-	Operation walkOperation
-
-	mu *sync.Mutex
-}
-
-func newRunbookGraphWalker(ctx *RunbookContext, graph *PlanGraph, operation walkOperation) *RunbookGraphWalker {
-	return &RunbookGraphWalker{
-		Context:   ctx,
-		Graph:     graph,
-		RootGraph: graph,
-		Operation: operation,
-		mu:        &sync.Mutex{},
-	}
-}
-
-func (w *RunbookGraphWalker) child(graph *PlanGraph) *RunbookGraphWalker {
-	if w == nil {
-		return nil
-	}
-	return &RunbookGraphWalker{
-		Context:   w.Context,
-		Graph:     graph,
-		RootGraph: w.RootGraph,
-		Operation: w.Operation,
-		mu:        w.mu,
-	}
-}
-
-func (w *RunbookGraphWalker) execute(node runbookGraphNodeExecutable) tfdiags.Diagnostics {
-	if w == nil || node == nil {
-		return nil
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return node.ExecuteRunbook(w)
-}
-
-func (w *RunbookGraphWalker) expand(node runbookGraphNodeDynamicExpandable) (*PlanGraph, tfdiags.Diagnostics) {
-	if w == nil || node == nil {
-		return nil, nil
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return node.DynamicExpand(w)
+func newRunbookGraphWalker(ctx *RunbookContext, graph *PlanGraph, operation runbookgraph.WalkOperation) *RunbookGraphWalker {
+	return runbookgraph.NewWalker(&WalkerData{Context: ctx}, graph, operation)
 }
 
 type nodeRunbookRoot struct{}
 
 func (n *nodeRunbookRoot) Hashcode() interface{} { return "runbook.root" }
 func (n *nodeRunbookRoot) Name() string          { return "runbook.root" }
-func (n *nodeRunbookRoot) ExecuteRunbook(*RunbookGraphWalker) tfdiags.Diagnostics {
+func (n *nodeRunbookRoot) ExecuteGraphNode(*RunbookGraphWalker) tfdiags.Diagnostics {
 	return nil
 }
 
@@ -94,7 +41,7 @@ type nodeRootVariable struct {
 
 func (n *nodeRootVariable) Hashcode() interface{} { return "runbook.var." + n.NameValue }
 func (n *nodeRootVariable) Name() string          { return "var." + n.NameValue }
-func (n *nodeRootVariable) ExecuteRunbook(*RunbookGraphWalker) tfdiags.Diagnostics {
+func (n *nodeRootVariable) ExecuteGraphNode(*RunbookGraphWalker) tfdiags.Diagnostics {
 	return nil
 }
 
@@ -104,11 +51,11 @@ type nodeRunbookOutput struct {
 
 func (n *nodeRunbookOutput) Hashcode() interface{} { return "runbook.output." + n.NameValue }
 func (n *nodeRunbookOutput) Name() string          { return "output." + n.NameValue }
-func (n *nodeRunbookOutput) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Context == nil {
+func (n *nodeRunbookOutput) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Data == nil || w.Data.Context == nil {
 		return nil
 	}
-	return w.Context.validateRunbookOutput(n.NameValue)
+	return w.Data.Context.validateRunbookOutput(n.NameValue)
 }
 
 type nodeExpandRunbookStep struct {
@@ -129,16 +76,16 @@ func (n *nodeExpandRunbookStep) Name() string {
 	return n.Step.Name()
 }
 
-func (n *nodeExpandRunbookStep) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Context == nil {
+func (n *nodeExpandRunbookStep) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Data == nil || w.Data.Context == nil {
 		return nil
 	}
-	return w.Context.validateStepShell(n.Step)
+	return w.Data.Context.validateStepShell(n.Step)
 }
 
 func (n *nodeExpandRunbookStep) DynamicExpand(w *RunbookGraphWalker) (*PlanGraph, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
-	if w == nil || w.Operation != walkPlan || n.Step == nil {
+	if w == nil || w.Operation != runbookgraph.WalkPlan || n.Step == nil {
 		return nil, diags
 	}
 
@@ -219,7 +166,7 @@ func (n *nodeExpandRunbookStepInstance) Name() string {
 	return n.Instance.Addr().String()
 }
 
-func (n *nodeExpandRunbookStepInstance) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
+func (n *nodeExpandRunbookStepInstance) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
 	if w == nil || w.RootGraph == nil || n.Instance == nil {
 		return nil
 	}
@@ -239,11 +186,11 @@ func (n *nodeRunbookStepLocal) Hashcode() interface{} {
 	return "runbook.step." + n.Step.Name() + ".local." + n.Local.Name
 }
 
-func (n *nodeRunbookStepLocal) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Context == nil || n.Step == nil {
+func (n *nodeRunbookStepLocal) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
 		return nil
 	}
-	return w.Context.validateStepLocal(n.Step.Name(), n.Local)
+	return w.Data.Context.validateStepLocal(n.Step.Name(), n.Local)
 }
 
 type nodeRunbookAction struct {
@@ -258,11 +205,11 @@ func (n *nodeRunbookAction) Hashcode() interface{} {
 	return "runbook.step." + n.Step.Name() + ".action." + n.Action.Addr().String()
 }
 
-func (n *nodeRunbookAction) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Context == nil || n.Step == nil {
+func (n *nodeRunbookAction) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
 		return nil
 	}
-	return w.Context.validateStepAction(n.Step.Name(), n.Action)
+	return w.Data.Context.validateStepAction(n.Step.Name(), n.Action)
 }
 
 type nodeRunbookDataSource struct {
@@ -277,11 +224,11 @@ func (n *nodeRunbookDataSource) Hashcode() interface{} {
 	return "runbook.step." + n.Step.Name() + ".data." + n.DataSource.Addr().String()
 }
 
-func (n *nodeRunbookDataSource) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Context == nil || n.Step == nil {
+func (n *nodeRunbookDataSource) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
 		return nil
 	}
-	return w.Context.validateStepDataSource(n.Step.Name(), n.DataSource)
+	return w.Data.Context.validateStepDataSource(n.Step.Name(), n.DataSource)
 }
 
 type nodeRunbookList struct {
@@ -296,11 +243,11 @@ func (n *nodeRunbookList) Hashcode() interface{} {
 	return "runbook.step." + n.Step.Name() + ".list." + n.List.Addr().String()
 }
 
-func (n *nodeRunbookList) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Context == nil || n.Step == nil {
+func (n *nodeRunbookList) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
 		return nil
 	}
-	return w.Context.validateStepList(n.Step.Name(), n.List)
+	return w.Data.Context.validateStepList(n.Step.Name(), n.List)
 }
 
 type nodeRunbookStepOutput struct {
@@ -315,11 +262,11 @@ func (n *nodeRunbookStepOutput) Hashcode() interface{} {
 	return "runbook.step." + n.Step.Name() + ".output." + n.Output.Name
 }
 
-func (n *nodeRunbookStepOutput) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.Context == nil || n.Step == nil {
+func (n *nodeRunbookStepOutput) ExecuteGraphNode(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Data == nil || w.Data.Context == nil || n.Step == nil {
 		return nil
 	}
-	return w.Context.validateStepOutputValue(n.Step.Name(), n.Output)
+	return w.Data.Context.validateStepOutputValue(n.Step.Name(), n.Output)
 }
 
 func (c *RunbookContext) resetGraphBuildState() {

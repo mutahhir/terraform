@@ -11,11 +11,12 @@ import (
 	"github.com/hashicorp/terraform/internal/dag"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookgraph"
 )
 
 type StepTransformer struct {
 	Context   *RunbookContext
-	Operation walkOperation
+	Operation runbookgraph.WalkOperation
 }
 
 type stepInternalVertices struct {
