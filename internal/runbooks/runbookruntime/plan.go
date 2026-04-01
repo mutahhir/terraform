@@ -4,19 +4,21 @@
 package runbookruntime
 
 import (
-	"fmt"
-	"sort"
+	"maps"
 
-	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/tfdiags"
+	"github.com/zclconf/go-cty/cty"
 )
 
-type Plan struct {
-	Steps []*StepInstance
+type PlanOpts struct {
+	PlanTimeInputs *PlanTimeInputs
 }
 
-func (c *RunbookContext) BuildPlan() (*Plan, tfdiags.Diagnostics) {
+type Plan struct {
+	Graph *PlanGraph
+}
+
+func (c *RunbookContext) Plan(opts *PlanOpts) (*Plan, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if c == nil {
 		return nil, diags.Append(tfdiags.Sourceless(
@@ -26,55 +28,33 @@ func (c *RunbookContext) BuildPlan() (*Plan, tfdiags.Diagnostics) {
 		))
 	}
 
-	orderedSteps := c.StepExecutionOrder()
-	if orderedSteps == nil {
-		return nil, diags.Append(tfdiags.Sourceless(
-			tfdiags.Error,
-			"Invalid runbook plan",
-			"Cannot build a runbook plan while the step dependency graph contains cycles or unresolved vertices.",
-		))
+	originalInputs := c.planTimeInputs
+	if opts != nil && opts.PlanTimeInputs != nil {
+		c.planTimeInputs = PlanTimeInputs{
+			Variables:        map[string]cty.Value{},
+			WorkspaceOutputs: map[string]cty.Value{},
+		}
+		maps.Copy(c.planTimeInputs.Variables, opts.PlanTimeInputs.Variables)
+		maps.Copy(c.planTimeInputs.WorkspaceOutputs, opts.PlanTimeInputs.WorkspaceOutputs)
+		defer func() {
+			c.planTimeInputs = originalInputs
+		}()
 	}
 
-	ret := &Plan{Steps: make([]*StepInstance, 0)}
-	for _, step := range orderedSteps {
-		instances, unknown, moreDiags := step.CheckInstances()
-		diags = diags.Append(moreDiags)
-		if moreDiags.HasErrors() {
-			continue
-		}
-		if unknown {
-			var subject *hcl.Range
-			if cfg := step.Config(); cfg != nil {
-				switch {
-				case cfg.Count != nil:
-					subject = cfg.Count.Range().Ptr()
-				case cfg.ForEach != nil:
-					subject = cfg.ForEach.Range().Ptr()
-				}
-			}
-			diags = diags.Append(&hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Unknown step repetition during planning",
-				Detail:   fmt.Sprintf("The repetition for step %q is not fully known at plan time. Runbooks require all step instances to be determined before execution planning.", step.Name()),
-				Subject:  subject,
-			})
-			continue
-		}
-
-		keys := make([]addrs.InstanceKey, 0, len(instances))
-		for key := range instances {
-			keys = append(keys, key)
-		}
-		sort.Slice(keys, func(i, j int) bool {
-			return keys[i].String() < keys[j].String()
-		})
-		for _, key := range keys {
-			ret.Steps = append(ret.Steps, instances[key])
-		}
+	builder := &RunbookPlanGraphBuilder{
+		Context:   c,
+		Opts:      opts,
+		Operation: walkPlan,
 	}
-
+	graph, moreDiags := builder.Build()
+	diags = diags.Append(moreDiags)
 	if diags.HasErrors() {
 		return nil, diags
 	}
-	return ret, diags
+	diags = diags.Append(graph.Walk(newRunbookGraphWalker(c, graph, walkPlan)))
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	return &Plan{Graph: graph}, diags
 }

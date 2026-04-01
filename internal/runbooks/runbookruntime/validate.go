@@ -22,6 +22,77 @@ type repetitionValidationScope struct {
 }
 
 func (c *RunbookContext) Validate() tfdiags.Diagnostics {
+	graph, diags := (&RunbookPlanGraphBuilder{
+		Context:   c,
+		Operation: walkValidate,
+	}).Build()
+	if diags.HasErrors() {
+		return diags
+	}
+	if graph != nil {
+		diags = diags.Append(graph.Walk(newRunbookGraphWalker(c, graph, walkValidate)))
+	}
+	return diags
+}
+
+func (c *RunbookContext) validateStep(step *Step) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if c == nil || step == nil || step.Config() == nil {
+		return diags
+	}
+	stepCfg := step.Config()
+
+	diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, stepCfg.Count, stepCfg.ForEach))
+
+	for _, local := range stepCfg.Locals {
+		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, local.Expr))
+	}
+
+	for _, action := range stepCfg.Actions {
+		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, action.Count, action.ForEach))
+		scope := repetitionValidationScope{countAvailable: action.Count != nil, eachAvailable: action.ForEach != nil}
+		diags = diags.Append(c.validateBodyExpressions(stepCfg.Name, scope, action.Config))
+	}
+
+	for _, dataSource := range stepCfg.DataSources {
+		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, dataSource.Count, dataSource.ForEach))
+		scope := repetitionValidationScope{countAvailable: dataSource.Count != nil, eachAvailable: dataSource.ForEach != nil}
+		diags = diags.Append(c.validateBodyExpressions(stepCfg.Name, scope, dataSource.Config))
+	}
+
+	for _, list := range stepCfg.ListResources {
+		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, list.Count, list.ForEach))
+		scope := repetitionValidationScope{
+			countAvailable: list.Count != nil,
+			eachAvailable:  list.ForEach != nil,
+		}
+		if list.List != nil {
+			diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, scope, list.List.IncludeResource, list.List.Limit))
+		}
+		diags = diags.Append(c.validateBodyExpressions(stepCfg.Name, scope, list.Config))
+	}
+
+	for _, execution := range stepCfg.Executions {
+		for _, action := range execution.InvokeAction {
+			diags = diags.Append(c.validateExecutableAction(stepCfg.Name, action))
+		}
+	}
+
+	for _, output := range stepCfg.Outputs {
+		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, output.Expr))
+	}
+
+	for _, condition := range stepCfg.Preconditions {
+		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, condition.Condition, condition.ErrorMessage))
+	}
+	for _, condition := range stepCfg.Postconditions {
+		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, condition.Condition, condition.ErrorMessage))
+	}
+
+	return diags
+}
+
+func (c *RunbookContext) validateRunbookOutput(outputName string) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if c == nil || c.config == nil {
 		return diags.Append(tfdiags.Sourceless(
@@ -30,66 +101,12 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 			"A runbook runtime context requires a non-nil runbook configuration.",
 		))
 	}
-
-	c.usedWorkspaceOutputNames = c.usedWorkspaceOutputNames[:0]
-	for stepName := range c.workspaceOutputsByStep {
-		c.workspaceOutputsByStep[stepName] = c.workspaceOutputsByStep[stepName][:0]
+	output := c.config.Outputs[outputName]
+	if output == nil {
+		return diags
 	}
 
-	for _, step := range c.config.Steps {
-		diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, step.Count, step.ForEach))
-
-		for _, local := range step.Locals {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, local.Expr))
-		}
-
-		for _, action := range step.Actions {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, action.Count, action.ForEach))
-			scope := repetitionValidationScope{countAvailable: action.Count != nil, eachAvailable: action.ForEach != nil}
-			diags = diags.Append(c.validateBodyExpressions(step.Name, scope, action.Config))
-		}
-
-		for _, dataSource := range step.DataSources {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, dataSource.Count, dataSource.ForEach))
-			scope := repetitionValidationScope{countAvailable: dataSource.Count != nil, eachAvailable: dataSource.ForEach != nil}
-			diags = diags.Append(c.validateBodyExpressions(step.Name, scope, dataSource.Config))
-		}
-
-		for _, list := range step.ListResources {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, list.Count, list.ForEach))
-			scope := repetitionValidationScope{
-				countAvailable: list.Count != nil,
-				eachAvailable:  list.ForEach != nil,
-			}
-			if list.List != nil {
-				diags = diags.Append(c.validateScopedExpressions(step.Name, scope, list.List.IncludeResource, list.List.Limit))
-			}
-			diags = diags.Append(c.validateBodyExpressions(step.Name, scope, list.Config))
-		}
-
-		for _, execution := range step.Executions {
-			for _, action := range execution.InvokeAction {
-				diags = diags.Append(c.validateExecutableAction(step.Name, action))
-			}
-		}
-
-		for _, output := range step.Outputs {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, output.Expr))
-		}
-
-		for _, condition := range step.Preconditions {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, condition.Condition, condition.ErrorMessage))
-		}
-		for _, condition := range step.Postconditions {
-			diags = diags.Append(c.validateScopedExpressions(step.Name, repetitionValidationScope{}, condition.Condition, condition.ErrorMessage))
-		}
-	}
-
-	for _, output := range c.config.Outputs {
-		diags = diags.Append(c.validateScopedExpressions("", repetitionValidationScope{}, output.Expr))
-	}
-
-	diags = diags.Append(c.validateStepDependencyCycles())
+	diags = diags.Append(c.validateScopedExpressions("", repetitionValidationScope{}, output.Expr))
 
 	return diags
 }
