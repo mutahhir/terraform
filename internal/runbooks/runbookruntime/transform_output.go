@@ -14,9 +14,9 @@ func (t *OutputTransformer) Transform(g *PlanGraph) error {
 		return nil
 	}
 	for name := range t.Context.config.Outputs {
-		vertex := runbookOutputVertex{NameValue: name}
-		g.Graph.Add(vertex)
-		g.Graph.Connect(dag.BasicEdge(g.Root, vertex))
+		node := &nodeRunbookOutput{NameValue: name}
+		g.Graph.Add(node)
+		g.Graph.Connect(dag.BasicEdge(g.Root, node))
 	}
 	return nil
 }

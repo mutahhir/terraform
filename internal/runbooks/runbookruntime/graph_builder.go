@@ -29,8 +29,8 @@ func (b *BasicGraphBuilder) Build() (*PlanGraph, tfdiags.Diagnostics) {
 	if g == nil {
 		g = &PlanGraph{
 			Graph:           &dag.AcyclicGraph{},
-			ConfigSteps:     map[string]runbookStepVertex{},
-			StepVertices:    map[string]planStepVertex{},
+			ConfigSteps:     map[string]*nodeExpandRunbookStep{},
+			StepVertices:    map[string]*nodeExpandRunbookStepInstance{},
 			InstancesByStep: map[string]map[addrs.InstanceKey]*StepInstance{},
 		}
 	}

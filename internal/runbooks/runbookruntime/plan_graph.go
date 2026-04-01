@@ -27,9 +27,9 @@ type PlanGraph struct {
 	Operation walkOperation
 
 	Graph           *dag.AcyclicGraph
-	Root            runbookRootVertex
-	ConfigSteps     map[string]runbookStepVertex
-	StepVertices    map[string]planStepVertex
+	Root            *nodeRunbookRoot
+	ConfigSteps     map[string]*nodeExpandRunbookStep
+	StepVertices    map[string]*nodeExpandRunbookStepInstance
 	InstancesByStep map[string]map[addrs.InstanceKey]*StepInstance
 }
 
@@ -94,8 +94,8 @@ func (b *RunbookPlanGraphBuilder) Build() (*PlanGraph, tfdiags.Diagnostics) {
 			Config:          b.Context.config,
 			Operation:       b.Operation,
 			Graph:           &dag.AcyclicGraph{},
-			ConfigSteps:     map[string]runbookStepVertex{},
-			StepVertices:    map[string]planStepVertex{},
+			ConfigSteps:     map[string]*nodeExpandRunbookStep{},
+			StepVertices:    map[string]*nodeExpandRunbookStepInstance{},
 			InstancesByStep: map[string]map[addrs.InstanceKey]*StepInstance{},
 		},
 		Steps: []GraphTransformer{
@@ -117,7 +117,7 @@ func (b *RunbookPlanGraphBuilder) Build() (*PlanGraph, tfdiags.Diagnostics) {
 			cycleNames := make([]string, 0, len(cycle))
 			for _, raw := range cycle {
 				switch v := raw.(type) {
-				case runbookStepVertex:
+				case *nodeExpandRunbookStep:
 					cycleNames = append(cycleNames, v.Name())
 				}
 			}
@@ -140,15 +140,4 @@ func (b *RunbookPlanGraphBuilder) Build() (*PlanGraph, tfdiags.Diagnostics) {
 	}
 
 	return graph, diags
-}
-
-type planStepVertex struct {
-	Instance *StepInstance
-}
-
-func (v planStepVertex) Hashcode() interface{} {
-	if v.Instance == nil {
-		return nil
-	}
-	return v.Instance.Addr().String()
 }

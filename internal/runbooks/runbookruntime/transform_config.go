@@ -14,7 +14,7 @@ func (t *ConfigTransformer) Transform(g *PlanGraph) error {
 	if t.Context != nil {
 		t.Context.resetGraphBuildState()
 	}
-	g.Root = runbookRootVertex{}
+	g.Root = &nodeRunbookRoot{}
 	g.Graph.Add(g.Root)
 	return nil
 }

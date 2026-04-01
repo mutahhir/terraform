@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 
 	"github.com/hashicorp/terraform/internal/addrs"
+	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/dag"
 	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -35,7 +36,7 @@ func (c *RunbookContext) Validate() tfdiags.Diagnostics {
 	return diags
 }
 
-func (c *RunbookContext) validateStep(step *Step) tfdiags.Diagnostics {
+func (c *RunbookContext) validateStepShell(step *Step) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	if c == nil || step == nil || step.Config() == nil {
 		return diags
@@ -44,42 +45,10 @@ func (c *RunbookContext) validateStep(step *Step) tfdiags.Diagnostics {
 
 	diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, stepCfg.Count, stepCfg.ForEach))
 
-	for _, local := range stepCfg.Locals {
-		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, local.Expr))
-	}
-
-	for _, action := range stepCfg.Actions {
-		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, action.Count, action.ForEach))
-		scope := repetitionValidationScope{countAvailable: action.Count != nil, eachAvailable: action.ForEach != nil}
-		diags = diags.Append(c.validateBodyExpressions(stepCfg.Name, scope, action.Config))
-	}
-
-	for _, dataSource := range stepCfg.DataSources {
-		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, dataSource.Count, dataSource.ForEach))
-		scope := repetitionValidationScope{countAvailable: dataSource.Count != nil, eachAvailable: dataSource.ForEach != nil}
-		diags = diags.Append(c.validateBodyExpressions(stepCfg.Name, scope, dataSource.Config))
-	}
-
-	for _, list := range stepCfg.ListResources {
-		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, list.Count, list.ForEach))
-		scope := repetitionValidationScope{
-			countAvailable: list.Count != nil,
-			eachAvailable:  list.ForEach != nil,
-		}
-		if list.List != nil {
-			diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, scope, list.List.IncludeResource, list.List.Limit))
-		}
-		diags = diags.Append(c.validateBodyExpressions(stepCfg.Name, scope, list.Config))
-	}
-
 	for _, execution := range stepCfg.Executions {
 		for _, action := range execution.InvokeAction {
 			diags = diags.Append(c.validateExecutableAction(stepCfg.Name, action))
 		}
-	}
-
-	for _, output := range stepCfg.Outputs {
-		diags = diags.Append(c.validateScopedExpressions(stepCfg.Name, repetitionValidationScope{}, output.Expr))
 	}
 
 	for _, condition := range stepCfg.Preconditions {
@@ -90,6 +59,58 @@ func (c *RunbookContext) validateStep(step *Step) tfdiags.Diagnostics {
 	}
 
 	return diags
+}
+
+func (c *RunbookContext) validateStepLocal(stepName string, local *configs.Local) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if c == nil || local == nil {
+		return diags
+	}
+	return diags.Append(c.validateScopedExpressions(stepName, repetitionValidationScope{}, local.Expr))
+}
+
+func (c *RunbookContext) validateStepAction(stepName string, action *configs.Action) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if c == nil || action == nil {
+		return diags
+	}
+	diags = diags.Append(c.validateScopedExpressions(stepName, repetitionValidationScope{}, action.Count, action.ForEach))
+	scope := repetitionValidationScope{countAvailable: action.Count != nil, eachAvailable: action.ForEach != nil}
+	diags = diags.Append(c.validateBodyExpressions(stepName, scope, action.Config))
+	return diags
+}
+
+func (c *RunbookContext) validateStepDataSource(stepName string, dataSource *configs.Resource) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if c == nil || dataSource == nil {
+		return diags
+	}
+	diags = diags.Append(c.validateScopedExpressions(stepName, repetitionValidationScope{}, dataSource.Count, dataSource.ForEach))
+	scope := repetitionValidationScope{countAvailable: dataSource.Count != nil, eachAvailable: dataSource.ForEach != nil}
+	diags = diags.Append(c.validateBodyExpressions(stepName, scope, dataSource.Config))
+	return diags
+}
+
+func (c *RunbookContext) validateStepList(stepName string, list *configs.Resource) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if c == nil || list == nil {
+		return diags
+	}
+	diags = diags.Append(c.validateScopedExpressions(stepName, repetitionValidationScope{}, list.Count, list.ForEach))
+	scope := repetitionValidationScope{countAvailable: list.Count != nil, eachAvailable: list.ForEach != nil}
+	if list.List != nil {
+		diags = diags.Append(c.validateScopedExpressions(stepName, scope, list.List.IncludeResource, list.List.Limit))
+	}
+	diags = diags.Append(c.validateBodyExpressions(stepName, scope, list.Config))
+	return diags
+}
+
+func (c *RunbookContext) validateStepOutputValue(stepName string, output *configs.Output) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if c == nil || output == nil {
+		return diags
+	}
+	return diags.Append(c.validateScopedExpressions(stepName, repetitionValidationScope{}, output.Expr))
 }
 
 func (c *RunbookContext) validateRunbookOutput(outputName string) tfdiags.Diagnostics {

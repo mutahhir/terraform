@@ -24,6 +24,11 @@ type runbookGraphNodeDynamicExpandable interface {
 	DynamicExpand(*RunbookGraphWalker) (*PlanGraph, tfdiags.Diagnostics)
 }
 
+type runbookGraphNode interface {
+	dag.Vertex
+	runbookGraphNodeExecutable
+}
+
 type RunbookGraphWalker struct {
 	Context   *RunbookContext
 	Graph     *PlanGraph
@@ -74,77 +79,77 @@ func (w *RunbookGraphWalker) expand(node runbookGraphNodeDynamicExpandable) (*Pl
 	return node.DynamicExpand(w)
 }
 
-type runbookRootVertex struct{}
+type nodeRunbookRoot struct{}
 
-func (v runbookRootVertex) Hashcode() interface{} { return "runbook.root" }
-func (v runbookRootVertex) Name() string          { return "runbook.root" }
-func (v runbookRootVertex) ExecuteRunbook(*RunbookGraphWalker) tfdiags.Diagnostics {
+func (n *nodeRunbookRoot) Hashcode() interface{} { return "runbook.root" }
+func (n *nodeRunbookRoot) Name() string          { return "runbook.root" }
+func (n *nodeRunbookRoot) ExecuteRunbook(*RunbookGraphWalker) tfdiags.Diagnostics {
 	return nil
 }
 
-type runbookVariableVertex struct {
+type nodeRootVariable struct {
 	NameValue string
 	Variable  *configs.Variable
 }
 
-func (v runbookVariableVertex) Hashcode() interface{} { return "runbook.var." + v.NameValue }
-func (v runbookVariableVertex) Name() string          { return "var." + v.NameValue }
-func (v runbookVariableVertex) ExecuteRunbook(*RunbookGraphWalker) tfdiags.Diagnostics {
+func (n *nodeRootVariable) Hashcode() interface{} { return "runbook.var." + n.NameValue }
+func (n *nodeRootVariable) Name() string          { return "var." + n.NameValue }
+func (n *nodeRootVariable) ExecuteRunbook(*RunbookGraphWalker) tfdiags.Diagnostics {
 	return nil
 }
 
-type runbookOutputVertex struct {
+type nodeRunbookOutput struct {
 	NameValue string
 }
 
-func (v runbookOutputVertex) Hashcode() interface{} { return "runbook.output." + v.NameValue }
-func (v runbookOutputVertex) Name() string          { return "output." + v.NameValue }
-func (v runbookOutputVertex) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
+func (n *nodeRunbookOutput) Hashcode() interface{} { return "runbook.output." + n.NameValue }
+func (n *nodeRunbookOutput) Name() string          { return "output." + n.NameValue }
+func (n *nodeRunbookOutput) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
 	if w == nil || w.Context == nil {
 		return nil
 	}
-	return w.Context.validateRunbookOutput(v.NameValue)
+	return w.Context.validateRunbookOutput(n.NameValue)
 }
 
-type runbookStepVertex struct {
+type nodeExpandRunbookStep struct {
 	Step *Step
 }
 
-func (v runbookStepVertex) Hashcode() interface{} {
-	if v.Step == nil {
+func (n *nodeExpandRunbookStep) Hashcode() interface{} {
+	if n.Step == nil {
 		return nil
 	}
-	return "runbook.step." + v.Step.Name()
+	return "runbook.step." + n.Step.Name()
 }
 
-func (v runbookStepVertex) Name() string {
-	if v.Step == nil {
+func (n *nodeExpandRunbookStep) Name() string {
+	if n.Step == nil {
 		return ""
 	}
-	return v.Step.Name()
+	return n.Step.Name()
 }
 
-func (v runbookStepVertex) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
+func (n *nodeExpandRunbookStep) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
 	if w == nil || w.Context == nil {
 		return nil
 	}
-	return w.Context.validateStep(v.Step)
+	return w.Context.validateStepShell(n.Step)
 }
 
-func (v runbookStepVertex) DynamicExpand(w *RunbookGraphWalker) (*PlanGraph, tfdiags.Diagnostics) {
+func (n *nodeExpandRunbookStep) DynamicExpand(w *RunbookGraphWalker) (*PlanGraph, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
-	if w == nil || w.Operation != walkPlan || v.Step == nil {
+	if w == nil || w.Operation != walkPlan || n.Step == nil {
 		return nil, diags
 	}
 
-	instances, unknown, moreDiags := v.Step.CheckInstances()
+	instances, unknown, moreDiags := n.Step.CheckInstances()
 	diags = diags.Append(moreDiags)
 	if diags.HasErrors() {
 		return nil, diags
 	}
 	if unknown {
 		var subject *hcl.Range
-		if cfg := v.Step.Config(); cfg != nil {
+		if cfg := n.Step.Config(); cfg != nil {
 			switch {
 			case cfg.Count != nil:
 				subject = cfg.Count.Range().Ptr()
@@ -155,25 +160,25 @@ func (v runbookStepVertex) DynamicExpand(w *RunbookGraphWalker) (*PlanGraph, tfd
 		diags = diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Unknown step repetition during planning",
-			Detail:   fmt.Sprintf("The repetition for step %q is not fully known at plan time. Runbooks require all step instances to be determined before execution planning.", v.Step.Name()),
+			Detail:   fmt.Sprintf("The repetition for step %q is not fully known at plan time. Runbooks require all step instances to be determined before execution planning.", n.Step.Name()),
 			Subject:  subject,
 		})
 		return nil, diags
 	}
 
 	if w.RootGraph != nil {
-		w.RootGraph.InstancesByStep[v.Step.Name()] = instances
+		w.RootGraph.InstancesByStep[n.Step.Name()] = instances
 	}
 
 	subgraph := &PlanGraph{
 		Config:          w.Graph.Config,
 		Operation:       w.Operation,
 		Graph:           &dag.AcyclicGraph{},
-		ConfigSteps:     map[string]runbookStepVertex{},
-		StepVertices:    map[string]planStepVertex{},
+		ConfigSteps:     map[string]*nodeExpandRunbookStep{},
+		StepVertices:    map[string]*nodeExpandRunbookStepInstance{},
 		InstancesByStep: map[string]map[addrs.InstanceKey]*StepInstance{},
 	}
-	subgraph.Root = runbookRootVertex{}
+	subgraph.Root = &nodeRunbookRoot{}
 	subgraph.Graph.Add(subgraph.Root)
 
 	keys := make([]string, 0, len(instances))
@@ -188,7 +193,7 @@ func (v runbookStepVertex) DynamicExpand(w *RunbookGraphWalker) (*PlanGraph, tfd
 	}
 	sort.Strings(keys)
 	for _, addr := range keys {
-		vertex := planStepVertex{Instance: byAddr[addr]}
+		vertex := &nodeExpandRunbookStepInstance{Instance: byAddr[addr]}
 		subgraph.Graph.Add(vertex)
 		subgraph.Graph.Connect(dag.BasicEdge(subgraph.Root, vertex))
 	}
@@ -196,12 +201,125 @@ func (v runbookStepVertex) DynamicExpand(w *RunbookGraphWalker) (*PlanGraph, tfd
 	return subgraph, diags
 }
 
-func (v planStepVertex) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
-	if w == nil || w.RootGraph == nil || v.Instance == nil {
+type nodeExpandRunbookStepInstance struct {
+	Instance *StepInstance
+}
+
+func (n *nodeExpandRunbookStepInstance) Hashcode() interface{} {
+	if n.Instance == nil {
 		return nil
 	}
-	w.RootGraph.StepVertices[v.Instance.Addr().String()] = v
+	return n.Instance.Addr().String()
+}
+
+func (n *nodeExpandRunbookStepInstance) Name() string {
+	if n.Instance == nil {
+		return ""
+	}
+	return n.Instance.Addr().String()
+}
+
+func (n *nodeExpandRunbookStepInstance) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.RootGraph == nil || n.Instance == nil {
+		return nil
+	}
+	w.RootGraph.StepVertices[n.Instance.Addr().String()] = n
 	return nil
+}
+
+type nodeRunbookStepLocal struct {
+	Step  *Step
+	Local *configs.Local
+}
+
+func (n *nodeRunbookStepLocal) Hashcode() interface{} {
+	if n.Step == nil || n.Local == nil {
+		return nil
+	}
+	return "runbook.step." + n.Step.Name() + ".local." + n.Local.Name
+}
+
+func (n *nodeRunbookStepLocal) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Context == nil || n.Step == nil {
+		return nil
+	}
+	return w.Context.validateStepLocal(n.Step.Name(), n.Local)
+}
+
+type nodeRunbookAction struct {
+	Step   *Step
+	Action *configs.Action
+}
+
+func (n *nodeRunbookAction) Hashcode() interface{} {
+	if n.Step == nil || n.Action == nil {
+		return nil
+	}
+	return "runbook.step." + n.Step.Name() + ".action." + n.Action.Addr().String()
+}
+
+func (n *nodeRunbookAction) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Context == nil || n.Step == nil {
+		return nil
+	}
+	return w.Context.validateStepAction(n.Step.Name(), n.Action)
+}
+
+type nodeRunbookDataSource struct {
+	Step       *Step
+	DataSource *configs.Resource
+}
+
+func (n *nodeRunbookDataSource) Hashcode() interface{} {
+	if n.Step == nil || n.DataSource == nil {
+		return nil
+	}
+	return "runbook.step." + n.Step.Name() + ".data." + n.DataSource.Addr().String()
+}
+
+func (n *nodeRunbookDataSource) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Context == nil || n.Step == nil {
+		return nil
+	}
+	return w.Context.validateStepDataSource(n.Step.Name(), n.DataSource)
+}
+
+type nodeRunbookList struct {
+	Step *Step
+	List *configs.Resource
+}
+
+func (n *nodeRunbookList) Hashcode() interface{} {
+	if n.Step == nil || n.List == nil {
+		return nil
+	}
+	return "runbook.step." + n.Step.Name() + ".list." + n.List.Addr().String()
+}
+
+func (n *nodeRunbookList) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Context == nil || n.Step == nil {
+		return nil
+	}
+	return w.Context.validateStepList(n.Step.Name(), n.List)
+}
+
+type nodeRunbookStepOutput struct {
+	Step   *Step
+	Output *configs.Output
+}
+
+func (n *nodeRunbookStepOutput) Hashcode() interface{} {
+	if n.Step == nil || n.Output == nil {
+		return nil
+	}
+	return "runbook.step." + n.Step.Name() + ".output." + n.Output.Name
+}
+
+func (n *nodeRunbookStepOutput) ExecuteRunbook(w *RunbookGraphWalker) tfdiags.Diagnostics {
+	if w == nil || w.Context == nil || n.Step == nil {
+		return nil
+	}
+	return w.Context.validateStepOutputValue(n.Step.Name(), n.Output)
 }
 
 func (c *RunbookContext) resetGraphBuildState() {

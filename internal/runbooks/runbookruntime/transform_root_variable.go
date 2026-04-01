@@ -14,9 +14,9 @@ func (t *RootVariableTransformer) Transform(g *PlanGraph) error {
 		return nil
 	}
 	for name, variable := range t.Context.config.Variables {
-		vertex := runbookVariableVertex{NameValue: name, Variable: variable}
-		g.Graph.Add(vertex)
-		g.Graph.Connect(dag.BasicEdge(g.Root, vertex))
+		node := &nodeRootVariable{NameValue: name, Variable: variable}
+		g.Graph.Add(node)
+		g.Graph.Connect(dag.BasicEdge(g.Root, node))
 	}
 	return nil
 }
