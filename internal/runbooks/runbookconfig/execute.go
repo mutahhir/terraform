@@ -2,18 +2,17 @@ package runbookconfig
 
 import (
 	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 )
 
 type Execution struct {
-	InvokeAction []runbookaddrs.ExecutableAction
+	InvokeAction []hcl.Traversal
 }
 
 func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 	var diags hcl.Diagnostics
 
 	exec := &Execution{
-		InvokeAction: make([]runbookaddrs.ExecutableAction, 0),
+		InvokeAction: make([]hcl.Traversal, 0),
 	}
 
 	content, moreDiags := block.Body.Content(executeSchema)
@@ -26,45 +25,17 @@ func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 			diags = append(diags, invokeDiags...)
 
 			attr := invokeContent.Attributes["action"]
+			if attr == nil {
+				continue
+			}
+
 			traversal, traversalDiags := hcl.AbsTraversalForExpr(attr.Expr)
 			diags = append(diags, traversalDiags...)
 			if traversalDiags.HasErrors() {
 				continue
 			}
 
-			var action runbookaddrs.ExecutableAction
-			ref, refDiags := runbookaddrs.ParseReference(traversal)
-			diags = append(diags, refDiags.ToHCL()...)
-			if refDiags.HasErrors() {
-				continue
-			}
-			if len(ref.Remaining) > 0 {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid invoke_action reference",
-					Detail:   "The action reference must not include additional traversal after the action address.",
-					Subject:  ref.Remaining.SourceRange().Ptr(),
-				})
-				continue
-			}
-
-			var ok bool
-			action, ok = ref.Target.(runbookaddrs.ExecutableAction)
-			if !ok {
-				detail := "The action attribute must refer to an action declared in the current step or in the workspace."
-				if traversal.RootName() == "workspace" {
-					detail = "The action attribute must refer to a workspace action, not another kind of external reference."
-				}
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid invoke_action reference",
-					Detail:   detail,
-					Subject:  attr.Expr.Range().Ptr(),
-				})
-				continue
-			}
-
-			exec.InvokeAction = append(exec.InvokeAction, action)
+			exec.InvokeAction = append(exec.InvokeAction, traversal)
 		}
 	}
 

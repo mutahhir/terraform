@@ -1,7 +1,0 @@
-// Copyright IBM Corp. 2014, 2026
-// SPDX-License-Identifier: BUSL-1.1
-
-// Package runbookaddrs builds on the top-level "addrs" package to provide
-// the addresses for the extra layer of concepts that the runbook
-// configuration language and its runtime are concerned about.
-package runbookaddrs
