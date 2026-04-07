@@ -4,18 +4,16 @@
 package runbookgraph
 
 import (
-	"github.com/hashicorp/terraform/internal/dag"
+	"github.com/hashicorp/terraform/internal/runbooks/runbookaddrs"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
-type GraphNodeExecutable[G Graph, D any] interface {
-	dag.Vertex
-	ExecuteGraphNode(*Walker[G, D]) tfdiags.Diagnostics
+type GraphNodeExecutable interface {
+	Execute(*RunbookContext)
 }
 
-type GraphNodeDynamicExpandable[G Graph, D any] interface {
-	dag.Vertex
-	DynamicExpand(*Walker[G, D]) (G, tfdiags.Diagnostics)
+type GraphNodeDynamicExpandable interface {
+	DynamicExpand(*RunbookContext) (*Graph, tfdiags.Diagnostics)
 }
 
 type GraphNodeScope interface {
@@ -33,13 +31,11 @@ type Reference struct {
 }
 
 type GraphNodeReferenceable interface {
-	GraphNodeScope
-	ReferenceableAddrs() []ReferenceTarget
+	Referenceable() runbookaddrs.Referenceable
 }
 
 type GraphNodeReferencer interface {
-	GraphNodeScope
-	References() []Reference
+	References() []*runbookaddrs.Reference
 }
 
 type GraphNodeReferenceOutside interface {

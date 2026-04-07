@@ -79,7 +79,7 @@ func runbookReferenceFromTraversal(scope runbookgraph.Scope, traversal hcl.Trave
 				return runbookgraph.Reference{Target: target, Scope: runbookgraph.RootScope{}, SourceRange: ref.SourceRange}, true
 			}
 		case "step":
-			ref, _, diags := runbookaddrs.ParseStepOutputReference(traversal)
+			ref, diags := runbookaddrs.ParseStepOutputReference(traversal)
 			if diags.HasErrors() {
 				return runbookgraph.Reference{}, false
 			}
@@ -112,7 +112,7 @@ func runbookStepScopedReferenceFromTraversal(scope runbookgraph.Scope, traversal
 			return runbookgraph.Reference{Target: target, Scope: runbookgraph.RootScope{}, SourceRange: ref.SourceRange}, true
 		}
 	case "step":
-		ref, _, diags := runbookaddrs.ParseStepOutputReference(traversal)
+		ref, diags := runbookaddrs.ParseStepOutputReference(traversal)
 		if diags.HasErrors() {
 			return runbookgraph.Reference{}, false
 		}

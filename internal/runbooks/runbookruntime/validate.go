@@ -163,7 +163,7 @@ func (c *RunbookContext) validateExpressionRepetitionReferences(scope repetition
 			continue
 		}
 
-		ref, refDiags := runbookaddrs.ParseScopedReference(traversal)
+		ref, refDiags := runbookaddrs.ParseReference(traversal)
 		diags = diags.Append(refDiags)
 		if refDiags.HasErrors() {
 			continue
@@ -299,7 +299,7 @@ func (c *RunbookContext) validateExpressionStepExternalReferences(currentStepNam
 			continue
 		}
 
-		ref, _, refDiags := runbookaddrs.ParseStepOutputReference(traversal)
+		ref, refDiags := runbookaddrs.ParseStepOutputReference(traversal)
 		diags = diags.Append(refDiags)
 		if refDiags.HasErrors() {
 			continue
@@ -411,14 +411,13 @@ func (c *RunbookContext) validateExpressionWorkspaceReferences(currentStepName s
 			continue
 		}
 
-		target, rng, _, refDiags := runbookaddrs.ParseWorkspaceReference(traversal)
+		ref, refDiags := runbookaddrs.ParseReference(traversal)
 		diags = diags.Append(refDiags)
 		if refDiags.HasErrors() {
 			continue
 		}
 
-		_ = rng
-		if addr, ok := target.(runbookaddrs.WorkspaceOutputValue); ok {
+		if addr, ok := ref.Target.(runbookaddrs.WorkspaceOutputValue); ok {
 			if !c.workspaceOutputExists(addr) {
 				diags = diags.Append(&hcl.Diagnostic{
 					Severity: hcl.DiagError,

@@ -33,63 +33,35 @@ func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 			}
 
 			var action runbookaddrs.ExecutableAction
-			switch traversal.RootName() {
-			case "workspace":
-				target, rng, remain, refDiags := runbookaddrs.ParseWorkspaceReference(traversal)
-				diags = append(diags, refDiags.ToHCL()...)
-				if refDiags.HasErrors() {
-					continue
-				}
-				_ = rng
-				if len(remain) > 0 {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  "Invalid invoke_action reference",
-						Detail:   "The action reference must not include additional traversal after the action address.",
-						Subject:  remain.SourceRange().Ptr(),
-					})
-					continue
-				}
+			ref, refDiags := runbookaddrs.ParseReference(traversal)
+			diags = append(diags, refDiags.ToHCL()...)
+			if refDiags.HasErrors() {
+				continue
+			}
+			if len(ref.Remaining) > 0 {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid invoke_action reference",
+					Detail:   "The action reference must not include additional traversal after the action address.",
+					Subject:  ref.Remaining.SourceRange().Ptr(),
+				})
+				continue
+			}
 
-				var ok bool
-				action, ok = target.(runbookaddrs.ExecutableAction)
-				if !ok {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  "Invalid invoke_action reference",
-						Detail:   "The action attribute must refer to a workspace action, not another kind of external reference.",
-						Subject:  attr.Expr.Range().Ptr(),
-					})
-					continue
+			var ok bool
+			action, ok = ref.Target.(runbookaddrs.ExecutableAction)
+			if !ok {
+				detail := "The action attribute must refer to an action declared in the current step or in the workspace."
+				if traversal.RootName() == "workspace" {
+					detail = "The action attribute must refer to a workspace action, not another kind of external reference."
 				}
-
-			default:
-				ref, refDiags := runbookaddrs.ParseInStepReference(traversal)
-				diags = append(diags, refDiags.ToHCL()...)
-				if refDiags.HasErrors() {
-					continue
-				}
-				if len(ref.Remaining) > 0 {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  "Invalid invoke_action reference",
-						Detail:   "The action reference must not include additional traversal after the action address.",
-						Subject:  ref.Remaining.SourceRange().Ptr(),
-					})
-					continue
-				}
-
-				var ok bool
-				action, ok = ref.Target.(runbookaddrs.ExecutableAction)
-				if !ok {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  "Invalid invoke_action reference",
-						Detail:   "The action attribute must refer to an action declared in the current step or in the workspace.",
-						Subject:  attr.Expr.Range().Ptr(),
-					})
-					continue
-				}
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid invoke_action reference",
+					Detail:   detail,
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+				continue
 			}
 
 			exec.InvokeAction = append(exec.InvokeAction, action)

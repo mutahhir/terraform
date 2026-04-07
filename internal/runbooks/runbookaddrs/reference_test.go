@@ -12,18 +12,50 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 )
 
+func TestParseReference_CoversAllRunbookReferenceKinds(t *testing.T) {
+	tests := map[string]any{
+		"var.name":                     addrs.InputVariable{Name: "name"},
+		"step.deploy.result":           StepOutputValue{Step: StepInstance{Step: ConfigStep{Name: "deploy"}}, Name: "result"},
+		"workspace.output.result":      WorkspaceOutputValue{Output: addrs.AbsOutputValue{Module: addrs.RootModuleInstance, OutputValue: addrs.OutputValue{Name: "result"}}},
+		"workspace.action.http.notify": WorkspaceActionInstance{Action: addrs.AbsAction{Module: addrs.RootModuleInstance, Action: addrs.Action{Type: "http", Name: "notify"}}, Key: addrs.NoKey},
+		"action.http.notify":           ActionInstance{Type: "http", Name: "notify"},
+		"data.aws_instance.example":    DataSource{Type: "aws_instance", Name: "example"},
+		"list.aws_instance.example":    List{Type: "aws_instance", Name: "example"},
+		"local.name":                   addrs.LocalValue{Name: "name"},
+		"count.index":                  addrs.CountAttr{Name: "index"},
+		"each.key":                     addrs.ForEachAttr{Name: "key"},
+	}
+
+	for expr, want := range tests {
+		t.Run(expr, func(t *testing.T) {
+			traversal, diags := hclsyntax.ParseTraversalAbs([]byte(expr), "", hcl.InitialPos)
+			if diags.HasErrors() {
+				t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
+			}
+
+			got, refDiags := ParseReference(traversal)
+			if refDiags.HasErrors() {
+				t.Fatalf("unexpected reference diagnostics: %s", refDiags.Err())
+			}
+			if !reflect.DeepEqual(got.Target, want) {
+				t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", got.Target, want)
+			}
+		})
+	}
+}
+
 func TestParseStepOutputReference_StepOutput(t *testing.T) {
 	traversal, diags := hclsyntax.ParseTraversalAbs([]byte("step.deploy.result"), "", hcl.InitialPos)
 	if diags.HasErrors() {
 		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
 	}
 
-	got, remain, refDiags := ParseStepOutputReference(traversal)
+	got, refDiags := ParseStepOutputReference(traversal)
 	if refDiags.HasErrors() {
 		t.Fatalf("unexpected reference diagnostics: %s", refDiags.Err())
 	}
-	if len(remain) != 0 {
-		t.Fatalf("expected no remaining traversal, got %d steps", len(remain))
+	if len(got.Remaining) != 0 {
+		t.Fatalf("expected no remaining traversal, got %d steps", len(got.Remaining))
 	}
 
 	want := StepOutputValue{
@@ -41,12 +73,12 @@ func TestParseStepOutputReference_IndexedStepOutput(t *testing.T) {
 		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
 	}
 
-	got, remain, refDiags := ParseStepOutputReference(traversal)
+	got, refDiags := ParseStepOutputReference(traversal)
 	if refDiags.HasErrors() {
 		t.Fatalf("unexpected reference diagnostics: %s", refDiags.Err())
 	}
-	if len(remain) != 0 {
-		t.Fatalf("expected no remaining traversal, got %d steps", len(remain))
+	if len(got.Remaining) != 0 {
+		t.Fatalf("expected no remaining traversal, got %d steps", len(got.Remaining))
 	}
 
 	want := StepOutputValue{
@@ -67,20 +99,20 @@ func TestParseWorkspaceReference_WorkspaceAction(t *testing.T) {
 		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
 	}
 
-	target, _, remain, refDiags := ParseWorkspaceReference(traversal)
+	got, refDiags := ParseReference(traversal)
 	if refDiags.HasErrors() {
 		t.Fatalf("unexpected reference diagnostics: %s", refDiags.Err())
 	}
-	if len(remain) != 0 {
-		t.Fatalf("expected no remaining traversal, got %d steps", len(remain))
+	if len(got.Remaining) != 0 {
+		t.Fatalf("expected no remaining traversal, got %d steps", len(got.Remaining))
 	}
 
 	want := WorkspaceActionInstance{Action: addrs.AbsAction{
 		Module: addrs.RootModuleInstance,
 		Action: addrs.Action{Type: "http", Name: "notify"},
 	}, Key: addrs.NoKey}
-	if !reflect.DeepEqual(target, want) {
-		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", target, want)
+	if !reflect.DeepEqual(got.Target, want) {
+		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", got.Target, want)
 	}
 }
 
@@ -90,20 +122,20 @@ func TestParseWorkspaceReference_WorkspaceOutput(t *testing.T) {
 		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
 	}
 
-	target, _, remain, refDiags := ParseWorkspaceReference(traversal)
+	got, refDiags := ParseReference(traversal)
 	if refDiags.HasErrors() {
 		t.Fatalf("unexpected reference diagnostics: %s", refDiags.Err())
 	}
-	if len(remain) != 0 {
-		t.Fatalf("expected no remaining traversal, got %d steps", len(remain))
+	if len(got.Remaining) != 0 {
+		t.Fatalf("expected no remaining traversal, got %d steps", len(got.Remaining))
 	}
 
 	want := WorkspaceOutputValue{Output: addrs.AbsOutputValue{
 		Module:      addrs.RootModuleInstance,
 		OutputValue: addrs.OutputValue{Name: "result"},
 	}}
-	if !reflect.DeepEqual(target, want) {
-		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", target, want)
+	if !reflect.DeepEqual(got.Target, want) {
+		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", got.Target, want)
 	}
 }
 
@@ -113,20 +145,20 @@ func TestParseWorkspaceReference_WorkspaceModuleAction(t *testing.T) {
 		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
 	}
 
-	target, _, remain, refDiags := ParseWorkspaceReference(traversal)
+	got, refDiags := ParseReference(traversal)
 	if refDiags.HasErrors() {
 		t.Fatalf("unexpected reference diagnostics: %s", refDiags.Err())
 	}
-	if len(remain) != 0 {
-		t.Fatalf("expected no remaining traversal, got %d steps", len(remain))
+	if len(got.Remaining) != 0 {
+		t.Fatalf("expected no remaining traversal, got %d steps", len(got.Remaining))
 	}
 
 	want := WorkspaceActionInstance{Action: addrs.AbsAction{
 		Module: addrs.RootModuleInstance.Child("child", addrs.NoKey),
 		Action: addrs.Action{Type: "http", Name: "notify"},
 	}, Key: addrs.NoKey}
-	if !reflect.DeepEqual(target, want) {
-		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", target, want)
+	if !reflect.DeepEqual(got.Target, want) {
+		t.Fatalf("wrong target\ngot:  %#v\nwant: %#v", got.Target, want)
 	}
 }
 
@@ -136,7 +168,7 @@ func TestParseWorkspaceReference_InvalidWorkspaceModuleOutput(t *testing.T) {
 		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
 	}
 
-	_, _, _, refDiags := ParseWorkspaceReference(traversal)
+	_, refDiags := ParseReference(traversal)
 	if !refDiags.HasErrors() {
 		t.Fatal("expected diagnostics but got none")
 	}
