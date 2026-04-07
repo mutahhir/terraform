@@ -1,4 +1,4 @@
-package runbookconfig
+package runbookconfigs
 
 import (
 	"testing"
