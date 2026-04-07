@@ -157,21 +157,19 @@ func decodeStepBlock(stepBlock *hcl.Block) (*Step, hcl.Diagnostics) {
 		case "locals":
 			locals, cfgDiags := configs.DecodeLocalsBlock(innerBlock)
 			diags = append(diags, cfgDiags...)
-			if locals != nil {
-				for _, local := range locals {
-					if rng, exists := localNames[local.Name]; exists {
-						diags = append(diags, &hcl.Diagnostic{
-							Severity: hcl.DiagError,
-							Summary:  "Duplicate local value declaration",
-							Detail:   "This step already has a local value named " + local.Name + " defined at " + rng.String() + ".",
-							Subject:  local.DeclRange.Ptr(),
-						})
-						continue
-					}
-
-					localNames[local.Name] = local.DeclRange
-					step.Locals = append(step.Locals, local)
+			for _, local := range locals {
+				if rng, exists := localNames[local.Name]; exists {
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  "Duplicate local value declaration",
+						Detail:   "This step already has a local value named " + local.Name + " defined at " + rng.String() + ".",
+						Subject:  local.DeclRange.Ptr(),
+					})
+					continue
 				}
+
+				localNames[local.Name] = local.DeclRange
+				step.Locals = append(step.Locals, local)
 			}
 		case "execute":
 			cfg, cfgDiags := decodeExecutionBlock(innerBlock)
