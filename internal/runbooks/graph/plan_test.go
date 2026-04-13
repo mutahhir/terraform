@@ -6,6 +6,8 @@ package runbookgraph
 import (
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/dag"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
@@ -101,12 +103,112 @@ func TestNodeExpandStepDynamicExpandCreatesStepInstance(t *testing.T) {
 	}
 }
 
+func TestNodeExpandStepDynamicExpandIncludesInnerContentNodes(t *testing.T) {
+	step := &runbookconfigs.Step{
+		Name:           "deploy",
+		Actions:        []*configs.Action{{Type: "shell", Name: "run"}},
+		DataSources:    []*configs.Resource{{Type: "server", Name: "selected"}},
+		ListResources:  []*configs.Resource{{Type: "server", Name: "all"}},
+		Locals:         []*configs.Local{{Name: "region"}},
+		Executions:     []*runbookconfigs.Execution{{}},
+		Preconditions:  []*runbookconfigs.Condition{{Kind: runbookconfigs.PreconditionCondition, DeclRange: hcl.Range{Filename: "test.hcl", Start: hcl.Pos{Line: 1}, End: hcl.Pos{Line: 1, Column: 10}}}},
+		Postconditions: []*runbookconfigs.Condition{{Kind: runbookconfigs.PostconditionCondition, DeclRange: hcl.Range{Filename: "test.hcl", Start: hcl.Pos{Line: 2}, End: hcl.Pos{Line: 2, Column: 10}}}},
+		Outputs:        []*configs.Output{{Name: "result"}},
+	}
+
+	graph, diags := (&NodeExpandStep{StepName: "deploy", Config: step}).DynamicExpand(nil)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+
+	instance := &NodeStepInstance{StepName: "deploy"}
+	if !graph.HasVertex(instance) {
+		t.Fatal("expected step instance node")
+	}
+
+	children := graph.DownEdges(instance)
+	if !children.Include(&NodeStepAction{StepName: "deploy", Action: &configs.Action{Type: "shell", Name: "run"}}) {
+		t.Fatal("expected step action node")
+	}
+	if !children.Include(&NodeStepData{StepName: "deploy", Data: &configs.Resource{Type: "server", Name: "selected"}}) {
+		t.Fatal("expected step data node")
+	}
+	if !children.Include(&NodeStepList{StepName: "deploy", List: &configs.Resource{Type: "server", Name: "all"}}) {
+		t.Fatal("expected step list node")
+	}
+	if !children.Include(&NodeStepLocal{StepName: "deploy", Local: &configs.Local{Name: "region"}}) {
+		t.Fatal("expected step local node")
+	}
+	if !children.Include(&NodeStepExecution{StepName: "deploy", Index: 0}) {
+		t.Fatal("expected step execution node")
+	}
+	if !children.Include(&NodeStepOutput{StepName: "deploy", Output: &configs.Output{Name: "result"}}) {
+		t.Fatal("expected step output node")
+	}
+
+	preFound := false
+	postFound := false
+	for _, vertex := range graph.Vertices() {
+		condition, ok := vertex.(*NodeStepCondition)
+		if !ok || condition.StepName != "deploy" {
+			continue
+		}
+		if condition.Condition.Kind == runbookconfigs.PreconditionCondition {
+			preFound = true
+		}
+		if condition.Condition.Kind == runbookconfigs.PostconditionCondition {
+			postFound = true
+		}
+	}
+	if !preFound {
+		t.Fatal("expected precondition node")
+	}
+	if !postFound {
+		t.Fatal("expected postcondition node")
+	}
+}
+
+func TestNodeExpandStepDynamicExpandConnectsInnerReferences(t *testing.T) {
+	step := &runbookconfigs.Step{
+		Name:        "deploy",
+		Locals:      []*configs.Local{{Name: "region", Expr: mustParseExpression(t, `data.server.selected.id`)}},
+		DataSources: []*configs.Resource{{Type: "server", Name: "selected"}},
+		Actions:     []*configs.Action{{Type: "shell", Name: "run", Config: mustParseBody(t, `value = local.region`)}},
+		Executions:  []*runbookconfigs.Execution{{InvokeAction: []hcl.Traversal{mustParseTraversal(t, `action.shell.run`)}}},
+		Outputs:     []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `local.region`)}},
+	}
+
+	graph, diags := (&NodeExpandStep{StepName: "deploy", Config: step}).DynamicExpand(nil)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+
+	localNode := &NodeStepLocal{StepName: "deploy", Local: &configs.Local{Name: "region"}}
+	dataNode := &NodeStepData{StepName: "deploy", Data: &configs.Resource{Type: "server", Name: "selected"}}
+	actionNode := &NodeStepAction{StepName: "deploy", Action: &configs.Action{Type: "shell", Name: "run"}}
+	executionNode := &NodeStepExecution{StepName: "deploy", Index: 0}
+	outputNode := &NodeStepOutput{StepName: "deploy", Output: &configs.Output{Name: "result"}}
+
+	if !graph.DownEdges(localNode).Include(dataNode) {
+		t.Fatalf("expected local to depend on referenced data, got: %#v", graph.DownEdges(localNode).List())
+	}
+	if !graph.DownEdges(actionNode).Include(localNode) {
+		t.Fatal("expected action to depend on referenced local")
+	}
+	if !graph.DownEdges(executionNode).Include(actionNode) {
+		t.Fatal("expected execution to depend on referenced action")
+	}
+	if !graph.DownEdges(outputNode).Include(localNode) {
+		t.Fatal("expected output to depend on referenced local")
+	}
+}
+
 func TestPlanBuilderSteps(t *testing.T) {
 	builder := &PlanBuilder{}
 	steps := builder.Steps()
 
-	if len(steps) != 5 {
-		t.Fatalf("expected 5 build steps, got %d", len(steps))
+	if len(steps) != 6 {
+		t.Fatalf("expected 6 build steps, got %d", len(steps))
 	}
 
 	if _, ok := steps[0].(*terraform.RootVariableTransformer); !ok {
@@ -118,16 +220,19 @@ func TestPlanBuilderSteps(t *testing.T) {
 	if _, ok := steps[2].(*PlanOutputTransformer); !ok {
 		t.Fatal("expected output transformer third")
 	}
-	if _, ok := steps[3].(*terraform.RootTransformer); !ok {
-		t.Fatal("expected terraform root transformer fourth")
+	if _, ok := steps[3].(*StepOutputReferenceTransformer); !ok {
+		t.Fatal("expected step output reference transformer fourth")
 	}
-	if _, ok := steps[4].(*terraform.TransitiveReductionTransformer); !ok {
-		t.Fatal("expected terraform transitive reduction transformer fifth")
+	if _, ok := steps[4].(*terraform.RootTransformer); !ok {
+		t.Fatal("expected terraform root transformer fifth")
+	}
+	if _, ok := steps[5].(*terraform.TransitiveReductionTransformer); !ok {
+		t.Fatal("expected terraform transitive reduction transformer sixth")
 	}
 
 	builder.StepsRuntime = map[string]*runtime.Step{"discover": {Name: "discover"}}
 	steps = builder.Steps()
-	if len(steps) != 5 {
+	if len(steps) != 6 {
 		t.Fatalf("expected runtime steps not to change build step count yet, got %d", len(steps))
 	}
 }
@@ -150,6 +255,33 @@ func TestPlanBuilderBuildIncludesStepExpansionNode(t *testing.T) {
 
 	if !graph.HasVertex(&NodeExpandStep{StepName: "discover"}) {
 		t.Fatal("expected builder to include step expansion node")
+	}
+}
+
+func TestStepOutputReferenceTransformerConnectsCrossStepDependencies(t *testing.T) {
+	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
+		Variables: map[string]*configs.Variable{
+			"input": {Name: "input"},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"producer": {
+				Name:    "producer",
+				Outputs: []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `var.input`)}},
+			},
+			"consumer": {
+				Name:    "consumer",
+				Outputs: []*configs.Output{{Name: "final", Expr: mustParseExpression(t, `step.producer.result`)}},
+			},
+		},
+	})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+
+	consumer := &NodeExpandStep{StepName: "consumer"}
+	producer := &NodeExpandStep{StepName: "producer"}
+	if !graph.DownEdges(consumer).Include(producer) {
+		t.Fatal("expected consumer step to depend on referenced producer step")
 	}
 }
 
@@ -226,4 +358,31 @@ func vertexNamed(g *terraform.Graph, name string) dag.Vertex {
 		}
 	}
 	return nil
+}
+
+func mustParseExpression(t *testing.T, src string) hcl.Expression {
+	t.Helper()
+	expr, diags := hclsyntax.ParseExpression([]byte(src), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		t.Fatalf("parse expression %q: %s", src, diags.Error())
+	}
+	return expr
+}
+
+func mustParseTraversal(t *testing.T, src string) hcl.Traversal {
+	t.Helper()
+	trav, diags := hcl.AbsTraversalForExpr(mustParseExpression(t, src))
+	if diags.HasErrors() {
+		t.Fatalf("parse traversal %q: %s", src, diags.Error())
+	}
+	return trav
+}
+
+func mustParseBody(t *testing.T, src string) hcl.Body {
+	t.Helper()
+	file, diags := hclsyntax.ParseConfig([]byte(src), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		t.Fatalf("parse body %q: %s", src, diags.Error())
+	}
+	return file.Body
 }

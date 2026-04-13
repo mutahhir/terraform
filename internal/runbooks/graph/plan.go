@@ -38,6 +38,7 @@ func (b *PlanBuilder) Steps() []terraform.GraphTransformer {
 		},
 		&PlanStepTransformer{Config: b.Config},
 		&PlanOutputTransformer{Config: b.Config},
+		&StepOutputReferenceTransformer{},
 		&terraform.RootTransformer{},
 	}
 
