@@ -7,20 +7,20 @@ import (
 	"sync"
 
 	"github.com/hashicorp/terraform/internal/configs"
-	"github.com/hashicorp/terraform/internal/runbooks/runbookconfig"
+	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	"github.com/hashicorp/terraform/internal/terraform"
 )
 
 // EvalContext tracks the values that are available while evaluating a runbook.
 type EvalContext struct {
-	config *runbookconfig.RunbookConfig
+	config *runbookconfigs.RunbookConfig
 
 	variables     terraform.InputValues
 	variablesLock sync.Mutex
 }
 
 type EvalContextOpts struct {
-	Config *runbookconfig.RunbookConfig
+	Config *runbookconfigs.RunbookConfig
 }
 
 func NewEvalContext(opts EvalContextOpts) *EvalContext {
@@ -31,7 +31,7 @@ func NewEvalContext(opts EvalContextOpts) *EvalContext {
 	}
 }
 
-func (ec *EvalContext) Config() *runbookconfig.RunbookConfig {
+func (ec *EvalContext) Config() *runbookconfigs.RunbookConfig {
 	return ec.config
 }
 
