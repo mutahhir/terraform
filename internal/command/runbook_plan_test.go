@@ -17,6 +17,8 @@ func TestRunbookPlanCommand(t *testing.T) {
 	writeFile(t, td+"/main.tf", ``)
 	writeFile(t, td+"/main.tfrun.hcl", `
 runbook {
+  terraform_version = ">= 1.0.0"
+
   required_providers {
     test = {
       source = "hashicorp/test"
@@ -59,6 +61,8 @@ func TestRunbookPlanCommandJSON(t *testing.T) {
 	writeFile(t, td+"/main.tf", ``)
 	writeFile(t, td+"/main.tfrun.hcl", `
 runbook {
+  terraform_version = ">= 1.0.0"
+
   required_providers {
     test = {
       source = "hashicorp/test"
@@ -108,6 +112,40 @@ step "discover" {
 	}
 	if !found {
 		t.Fatalf("expected %q message in output: %s", "runbook_plan", output.Stdout())
+	}
+}
+
+func TestRunbookPlanCommandShowsDiagnosticSnippet(t *testing.T) {
+	td := t.TempDir()
+	writeFile(t, td+"/main.tf", ``)
+	writeFile(t, td+"/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "discover" {
+  precondition {
+    condition     = false
+    error_message = "this should show source"
+  }
+}
+`)
+	t.Chdir(td)
+
+	view, done := testView(t)
+	c := &RunbookPlanCommand{Meta: Meta{View: view}}
+
+	code := c.Run([]string{"-no-color"})
+	output := done(t)
+	if code != 1 {
+		t.Fatalf("unexpected exit code %d: %s", code, output.Stderr())
+	}
+	stderr := output.Stderr()
+	if strings.Contains(stderr, "(source code not available)") {
+		t.Fatalf("expected source snippet in diagnostic, got: %s", stderr)
+	}
+	if !strings.Contains(stderr, `condition     = false`) {
+		t.Fatalf("expected source code snippet in diagnostic, got: %s", stderr)
 	}
 }
 

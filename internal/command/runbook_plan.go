@@ -51,6 +51,9 @@ func (c *RunbookPlanCommand) Run(rawArgs []string) int {
 		view.Diagnostics(diags)
 		return 1
 	}
+	c.View.SetConfigSources(func() map[string][]byte {
+		return runbookConfigSources(runbookDir)
+	})
 
 	parser := runbookconfigs.NewRunbookParser(nil)
 	config, parseDiags := parser.LoadRunbookConfigDir(runbookDir, workspaceDir)
@@ -87,6 +90,26 @@ func (c *RunbookPlanCommand) Run(rawArgs []string) int {
 
 	view.Plan(plan)
 	return 0
+}
+
+func runbookConfigSources(runbookDir string) map[string][]byte {
+	ret := map[string][]byte{}
+	entries, err := os.ReadDir(runbookDir)
+	if err != nil {
+		return ret
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".tfrun.hcl") {
+			continue
+		}
+		path := filepath.Join(runbookDir, entry.Name())
+		src, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		ret[path] = src
+	}
+	return ret
 }
 
 func (c *RunbookPlanCommand) Help() string {

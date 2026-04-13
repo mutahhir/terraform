@@ -198,26 +198,32 @@ func newProviderSchemaCache(config *runbookconfigs.RunbookConfig, opts *Validate
 }
 
 func (c *providerSchemaCache) provider(providerType terraformaddrs.Provider) (providers.Interface, providers.ProviderSchema, tfdiags.Diagnostics) {
+	return c.providerWithSubject(providerType, nil)
+}
+
+func (c *providerSchemaCache) providerWithSubject(providerType terraformaddrs.Provider, subject *hcl.Range) (providers.Interface, providers.ProviderSchema, tfdiags.Diagnostics) {
 	if schema, ok := c.schemas[providerType]; ok {
 		return c.clients[providerType], schema, nil
 	}
 
 	factory := c.providers[providerType]
 	if factory == nil {
-		return nil, providers.ProviderSchema{}, tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
-			tfdiags.Error,
-			"Missing provider implementation",
-			fmt.Sprintf("No provider factory is configured for %s.", providerType),
-		))
+		return nil, providers.ProviderSchema{}, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Missing provider implementation",
+			Detail:   fmt.Sprintf("No provider factory is configured for %s.", providerType),
+			Subject:  subject,
+		})
 	}
 
 	provider, err := factory()
 	if err != nil {
-		return nil, providers.ProviderSchema{}, tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
-			tfdiags.Error,
-			"Failed to initialize provider",
-			err.Error(),
-		))
+		return nil, providers.ProviderSchema{}, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Failed to initialize provider",
+			Detail:   err.Error(),
+			Subject:  subject,
+		})
 	}
 
 	schemaResp := provider.GetProviderSchema()
@@ -231,11 +237,19 @@ func (c *providerSchemaCache) provider(providerType terraformaddrs.Provider) (pr
 }
 
 func actionProviderSchema(config *runbookconfigs.RunbookConfig, cache *providerSchemaCache, action *configs.Action) (providers.Interface, providers.ProviderSchema, tfdiags.Diagnostics) {
-	return cache.provider(providerTypeForAction(config, action))
+	var subject *hcl.Range
+	if action != nil {
+		subject = &action.TypeRange
+	}
+	return cache.providerWithSubject(providerTypeForAction(config, action), subject)
 }
 
 func resourceProviderSchema(config *runbookconfigs.RunbookConfig, cache *providerSchemaCache, resource *configs.Resource) (providers.Interface, providers.ProviderSchema, tfdiags.Diagnostics) {
-	return cache.provider(providerTypeForResource(config, resource))
+	var subject *hcl.Range
+	if resource != nil {
+		subject = &resource.TypeRange
+	}
+	return cache.providerWithSubject(providerTypeForResource(config, resource), subject)
 }
 
 func providerTypeForAction(config *runbookconfigs.RunbookConfig, action *configs.Action) terraformaddrs.Provider {

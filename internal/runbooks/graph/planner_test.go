@@ -1,6 +1,7 @@
 package runbookgraph
 
 import (
+	"errors"
 	"testing"
 
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
@@ -11,6 +12,7 @@ import (
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runtime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/terraform"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -260,6 +262,74 @@ func TestBuildPlanConfiguresProvidersFromRunbookProviderBlocks(t *testing.T) {
 	if got := provider.ConfigureProviderRequest.Config.GetAttr("region"); got != cty.StringVal("us-east-1") {
 		t.Fatalf("wrong configured region %#v", got)
 	}
+}
+
+func TestBuildPlanPassesFullListBlockValueToProvider(t *testing.T) {
+	providerType := terraformaddrs.NewDefaultProvider("test")
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			ListResourceTypes: map[string]providers.Schema{
+				"test_list": {
+					Body: &configschema.Block{
+						BlockTypes: map[string]*configschema.NestedBlock{
+							"config": {
+								Block: configschema.Block{
+									Attributes: map[string]*configschema.Attribute{
+										"region": {Type: cty.String, Optional: true},
+									},
+								},
+								Nesting: configschema.NestingSingle,
+							},
+						},
+					},
+				},
+			},
+		},
+		ListResourceFn: func(req providers.ListResourceRequest) providers.ListResourceResponse {
+			if !req.Config.Type().HasAttribute("config") {
+				return providers.ListResourceResponse{Diagnostics: tfdiags.Diagnostics{}.Append(assertFailed("expected list config wrapper"))}
+			}
+			if got := req.Config.GetAttr("config").GetAttr("region"); got != cty.StringVal("us-east-1") {
+				return providers.ListResourceResponse{Diagnostics: tfdiags.Diagnostics{}.Append(assertFailed("wrong wrapped list config"))}
+			}
+			return providers.ListResourceResponse{Result: cty.ObjectVal(map[string]cty.Value{"data": cty.EmptyTupleVal})}
+		},
+	}
+
+	_, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		ProviderRequirements: &configs.RequiredProviders{
+			RequiredProviders: map[string]*configs.RequiredProvider{
+				"test": {Type: providerType},
+			},
+		},
+		ProviderConfigs: map[string]*configs.Provider{
+			"test": {Name: "test"},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"discover": {
+				Name: "discover",
+				ListResources: []*configs.Resource{{
+					Mode:   terraformaddrs.ListResourceMode,
+					Type:   "test_list",
+					Name:   "query",
+					Config: mustParseBody(t, `config { region = "us-east-1" }`),
+					List:   &configs.ListResource{},
+				}},
+			},
+		},
+	}, &PlannerOpts{
+		Providers: map[terraformaddrs.Provider]providers.Factory{
+			providerType: fixedPlannerProviderFactory(provider),
+		},
+	})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+}
+
+func assertFailed(msg string) error {
+	return errors.New(msg)
 }
 
 func mustBuildGraph(t *testing.T, builder *PlanBuilder) *terraform.Graph {

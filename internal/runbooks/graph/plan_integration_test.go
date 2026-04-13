@@ -18,6 +18,42 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+func TestBuildPlanConditionFailureDiagnosticsIncludeSourceRange(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
+	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+variable "enabled" {
+  type    = bool
+  default = false
+}
+
+step "deploy" {
+  precondition {
+    condition     = var.enabled
+    error_message = "expected source-ranged failure"
+  }
+}
+`)
+
+	parser := runbookconfigs.NewRunbookParser(fs)
+	config, parseDiags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if parseDiags.HasErrors() {
+		t.Fatalf("unexpected parse diagnostics: %s", parseDiags.Error())
+	}
+
+	_, buildDiags := BuildPlan(config, &PlannerOpts{})
+	if !buildDiags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
+	}
+	if src := buildDiags[0].Source(); src.Subject == nil || src.Subject.Filename != "/runbook/main.tfrun.hcl" {
+		t.Fatalf("expected source-ranged diagnostic, got: %#v", src)
+	}
+}
+
 func TestPlanBuilderBuildIntegrationEmptyStepVariableAndOutput(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)

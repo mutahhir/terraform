@@ -3,6 +3,7 @@ package runbookgraph
 import (
 	"fmt"
 
+	"github.com/hashicorp/hcl/v2"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/providers"
@@ -127,14 +128,14 @@ func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	}
 	schemaResp := provider.GetProviderSchema()
 	listSchema := schemaResp.SchemaForListResourceType(n.List.Type)
-	configVal := cty.EmptyObjectVal
+	blockVal := cty.EmptyObjectVal
 	if listSchema.FullSchema != nil {
 		value, _, valueDiags := ctx.EvaluateBlock(n.List.Config, listSchema.FullSchema)
 		diags = diags.Append(valueDiags)
 		if diags.HasErrors() {
 			return diags
 		}
-		configVal = value
+		blockVal = value
 	}
 	includeResource := false
 	if n.List.List != nil && n.List.List.IncludeResource != nil {
@@ -159,7 +160,13 @@ func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 			limit, _ = bf.Int64()
 		}
 	}
-	resp := provider.ListResource(providers.ListResourceRequest{TypeName: n.List.Type, Config: configVal, IncludeResourceObject: includeResource, Limit: limit})
+	unmarkedBlockVal, _ := blockVal.UnmarkDeep()
+	if !unmarkedBlockVal.IsNull() && listSchema.ConfigSchema != nil && unmarkedBlockVal.Type().HasAttribute("config") && unmarkedBlockVal.GetAttr("config").IsNull() {
+		mp := unmarkedBlockVal.AsValueMap()
+		mp["config"] = listSchema.ConfigSchema.EmptyValue()
+		unmarkedBlockVal = cty.ObjectVal(mp)
+	}
+	resp := provider.ListResource(providers.ListResourceRequest{TypeName: n.List.Type, Config: unmarkedBlockVal, IncludeResourceObject: includeResource, Limit: limit})
 	diags = diags.Append(resp.Diagnostics)
 	if !diags.HasErrors() {
 		ctx.SetStepList(n.StepName, n.List.Addr(), resp.Result)
@@ -284,7 +291,12 @@ func (n *NodeStepCondition) Execute(ctx *EvalContext, _ walkOperation) tfdiags.D
 			return diags
 		}
 		ctx.SetStepStatus(n.StepName, runbookruntime.StepStatusFailed, message)
-		return diags.Append(tfdiags.Sourceless(tfdiags.Error, fmt.Sprintf("%s failed", n.Condition.Kind), message))
+		return diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("%s failed", n.Condition.Kind),
+			Detail:   message,
+			Subject:  n.Condition.DeclRange.Ptr(),
+		})
 	}
 	return diags
 }
@@ -327,7 +339,7 @@ func runbookProvider(ctx *EvalContext, providerType terraformaddrs.Provider) (pr
 		}
 		return provider, nil
 	}
-	return nil, tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(tfdiags.Error, "Missing provider", fmt.Sprintf("Provider %s is not configured for runbook execution.", providerType.ForDisplay())))
+	return nil, missingProviderDiagnostic(providerType, nil)
 }
 
 func runbookProviderConfigValue(ctx *EvalContext, providerType terraformaddrs.Provider) (cty.Value, tfdiags.Diagnostics) {
@@ -365,7 +377,7 @@ func runbookProviderConfigValue(ctx *EvalContext, providerType terraformaddrs.Pr
 func providerSchemaForExecution(ctx *EvalContext, providerType terraformaddrs.Provider) (providers.ProviderSchema, tfdiags.Diagnostics) {
 	provider, ok := ctx.Provider(providerType)
 	if !ok {
-		return providers.ProviderSchema{}, tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(tfdiags.Error, "Missing provider", fmt.Sprintf("Provider %s is not configured for runbook execution.", providerType.ForDisplay())))
+		return providers.ProviderSchema{}, missingProviderDiagnostic(providerType, nil)
 	}
 	resp := provider.GetProviderSchema()
 	if resp.Diagnostics.HasErrors() {
@@ -384,6 +396,15 @@ func providerConfigForType(config *runbookconfigs.RunbookConfig, providerType te
 		}
 	}
 	return nil
+}
+
+func missingProviderDiagnostic(providerType terraformaddrs.Provider, subject *hcl.Range) tfdiags.Diagnostics {
+	return tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  "Missing provider",
+		Detail:   fmt.Sprintf("Provider %s is not configured for runbook execution.", providerType.ForDisplay()),
+		Subject:  subject,
+	})
 }
 
 func actionConfigForStep(config *runbookconfigs.RunbookConfig, stepName string, addr terraformaddrs.Action) *configs.Action {

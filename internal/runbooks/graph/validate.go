@@ -52,20 +52,22 @@ func validateProviderConfig(config *runbookconfigs.RunbookConfig, ctx ProviderVa
 	providerType := providerTypeForConfig(config, providerConfig)
 	factory := providerFactory(providerType, opts)
 	if factory == nil {
-		return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
-			tfdiags.Error,
-			"Missing provider implementation",
-			fmt.Sprintf("No provider factory is configured for %s.", providerType),
-		))
+		return tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Missing provider implementation",
+			Detail:   fmt.Sprintf("No provider factory is configured for %s.", providerType),
+			Subject:  providerConfig.DeclRange.Ptr(),
+		})
 	}
 
 	provider, err := factory()
 	if err != nil {
-		return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
-			tfdiags.Error,
-			"Failed to initialize provider",
-			err.Error(),
-		))
+		return tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Failed to initialize provider",
+			Detail:   err.Error(),
+			Subject:  providerConfig.DeclRange.Ptr(),
+		})
 	}
 
 	addr := addrs.AbsProviderConfig{
