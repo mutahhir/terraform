@@ -41,22 +41,15 @@ func (b *PlanBuilder) Steps() []terraform.GraphTransformer {
 		&terraform.RootTransformer{},
 	}
 
-	if b.StepsRuntime != nil {
-		steps = append(steps, &StepDetailsTransformer{
-			Config: b.Config,
-			Steps:  b.StepsRuntime,
-		})
-	}
-
 	steps = append(steps, &terraform.TransitiveReductionTransformer{})
 
 	return steps
 }
 
-func stepNodesByName(g *terraform.Graph) map[string]*NodeStep {
-	ret := make(map[string]*NodeStep)
+func stepNodesByName(g *terraform.Graph) map[string]*NodeExpandStep {
+	ret := make(map[string]*NodeExpandStep)
 	for _, vertex := range g.Vertices() {
-		node, ok := vertex.(*NodeStep)
+		node, ok := vertex.(*NodeExpandStep)
 		if !ok {
 			continue
 		}
@@ -119,7 +112,7 @@ func (t *PlanStepTransformer) Transform(g *terraform.Graph) error {
 	}
 
 	for _, step := range sortSteps(t.Config.Steps) {
-		g.Add(&NodeStep{StepName: step.Name})
+		g.Add(&NodeExpandStep{StepName: step.Name, Config: step})
 	}
 
 	return nil

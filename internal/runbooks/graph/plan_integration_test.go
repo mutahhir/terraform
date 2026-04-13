@@ -41,14 +41,14 @@ step "deploy" {}
 	}
 
 	inputNode := rootVariableNode(graph, "name")
-	stepNode := &NodeStep{StepName: "deploy"}
+	stepNode := &NodeExpandStep{StepName: "deploy"}
 	outputNode := &NodeOutputVariable{Output: &configs.Output{Name: "summary"}}
 
 	if inputNode == nil {
 		t.Fatal("expected terraform root input variable node")
 	}
 	if !graph.HasVertex(stepNode) {
-		t.Fatal("expected empty step node")
+		t.Fatal("expected empty step expansion node")
 	}
 	if !graph.HasVertex(outputNode) {
 		t.Fatal("expected output node")
@@ -62,7 +62,7 @@ step "deploy" {}
 		t.Fatal("expected root to connect to input variable")
 	}
 	if !deps.Include(stepNode) {
-		t.Fatal("expected root to connect to empty step")
+		t.Fatal("expected root to connect to empty step expansion node")
 	}
 	if !deps.Include(outputNode) {
 		t.Fatal("expected root to connect to output")

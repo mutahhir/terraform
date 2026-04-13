@@ -36,8 +36,8 @@ func TestNewPlanBuildsVariableStepAndOutputNodes(t *testing.T) {
 	if inputNode.Config == nil || inputNode.Config.Name != "input" {
 		t.Fatal("expected terraform root input variable node to carry config")
 	}
-	if !graph.HasVertex(&NodeStep{StepName: "discover"}) {
-		t.Fatal("expected step node")
+	if !graph.HasVertex(&NodeExpandStep{StepName: "discover"}) {
+		t.Fatal("expected step expansion node")
 	}
 	outputNode := &NodeOutputVariable{Output: &configs.Output{Name: "result"}}
 	if !graph.HasVertex(outputNode) {
@@ -52,64 +52,52 @@ func TestNewPlanBuildsVariableStepAndOutputNodes(t *testing.T) {
 	if !rootDeps.Include(inputNode) {
 		t.Fatal("expected root to connect to input variable")
 	}
-	if !rootDeps.Include(&NodeStep{StepName: "discover"}) {
-		t.Fatal("expected root to connect to step")
+	if !rootDeps.Include(&NodeExpandStep{StepName: "discover"}) {
+		t.Fatal("expected root to connect to step expansion node")
 	}
 	if !rootDeps.Include(outputNode) {
 		t.Fatal("expected root to connect to output")
 	}
 }
 
-func TestStepDetailsTransformerReplacesStepNodes(t *testing.T) {
+func TestNodeExpandStepDynamicExpandCreatesStepInstance(t *testing.T) {
 	configStep := &runbookconfigs.Step{Name: "discover"}
-	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
-		Steps: map[string]*runbookconfigs.Step{
-			"discover": configStep,
-		},
-	})
+	node := &NodeExpandStep{
+		StepName: "discover",
+		Config:   configStep,
+		Runtime:  &runtime.Step{Name: "discover", Config: configStep},
+	}
+
+	graph, diags := node.DynamicExpand(nil)
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
-
-	runtimeStep := &runtime.Step{Name: "discover", Config: configStep}
-	if err := (&StepDetailsTransformer{
-		Config: &runbookconfigs.RunbookConfig{
-			Steps: map[string]*runbookconfigs.Step{
-				"discover": configStep,
-			},
-		},
-		Steps: map[string]*runtime.Step{
-			"discover": runtimeStep,
-		},
-	}).Transform(graph); err != nil {
-		t.Fatalf("unexpected transform error: %s", err)
+	if graph == nil {
+		t.Fatal("expected expanded subgraph")
+	}
+	if !graph.HasVertex(&NodeStepInstance{StepName: "discover"}) {
+		t.Fatal("expected step instance node in expanded graph")
+	}
+	if !hasVertexNamed(graph, "root") {
+		t.Fatal("expected rooted expanded subgraph")
 	}
 
-	if graph.HasVertex(&NodeStep{StepName: "discover"}) {
-		t.Fatal("expected bare step node to be replaced")
-	}
-
-	details := &NodeStepDetails{StepName: "discover"}
-	if !graph.HasVertex(details) {
-		t.Fatal("expected detailed step node")
-	}
-
-	var found *NodeStepDetails
+	var found *NodeStepInstance
 	for _, vertex := range graph.Vertices() {
-		node, ok := vertex.(*NodeStepDetails)
+		node, ok := vertex.(*NodeStepInstance)
 		if ok && node.StepName == "discover" {
 			found = node
 			break
 		}
 	}
 	if found == nil {
-		t.Fatal("expected to find detailed step node")
+		t.Fatal("expected to find step instance node")
 	}
 	if found.Config != configStep {
-		t.Fatal("expected detailed node to keep config")
+		t.Fatal("expected step instance to keep config")
 	}
-	if found.Step != runtimeStep {
-		t.Fatal("expected detailed node to keep runtime step")
+	if found.Runtime == nil || found.Runtime.Config != configStep {
+		t.Fatal("expected step instance to keep runtime details")
 	}
 }
 
@@ -139,21 +127,13 @@ func TestPlanBuilderSteps(t *testing.T) {
 
 	builder.StepsRuntime = map[string]*runtime.Step{"discover": {Name: "discover"}}
 	steps = builder.Steps()
-	if len(steps) != 6 {
-		t.Fatalf("expected 6 build steps when runtime steps are provided, got %d", len(steps))
-	}
-	if _, ok := steps[4].(*StepDetailsTransformer); !ok {
-		t.Fatal("expected step details transformer before reduction")
-	}
-	if _, ok := steps[5].(*terraform.TransitiveReductionTransformer); !ok {
-		t.Fatal("expected terraform transitive reduction transformer last")
+	if len(steps) != 5 {
+		t.Fatalf("expected runtime steps not to change build step count yet, got %d", len(steps))
 	}
 }
 
-func TestPlanBuilderBuildIncludesStepDetailsTransformer(t *testing.T) {
+func TestPlanBuilderBuildIncludesStepExpansionNode(t *testing.T) {
 	configStep := &runbookconfigs.Step{Name: "discover"}
-	runtimeStep := &runtime.Step{Name: "discover", Config: configStep}
-
 	graph, diags := (&PlanBuilder{
 		Config: &runbookconfigs.RunbookConfig{
 			Steps: map[string]*runbookconfigs.Step{
@@ -161,18 +141,15 @@ func TestPlanBuilderBuildIncludesStepDetailsTransformer(t *testing.T) {
 			},
 		},
 		StepsRuntime: map[string]*runtime.Step{
-			"discover": runtimeStep,
+			"discover": {Name: "discover", Config: configStep},
 		},
 	}).Build()
 	if diags.HasErrors() {
 		t.Fatalf("unexpected build diagnostics: %s", diags.Err())
 	}
 
-	if !graph.HasVertex(&NodeStepDetails{StepName: "discover"}) {
-		t.Fatal("expected builder to include detailed step node")
-	}
-	if graph.HasVertex(&NodeStep{StepName: "discover"}) {
-		t.Fatal("expected builder to replace bare step node when runtime steps are provided")
+	if !graph.HasVertex(&NodeExpandStep{StepName: "discover"}) {
+		t.Fatal("expected builder to include step expansion node")
 	}
 }
 
@@ -202,9 +179,9 @@ func TestRootVariableConfigBuildsTerraformConfig(t *testing.T) {
 
 func TestTerraformTransitiveReductionRemovesRedundantEdges(t *testing.T) {
 	graph := &terraform.Graph{}
-	a := &NodeStep{StepName: "a"}
-	b := &NodeStep{StepName: "b"}
-	c := &NodeStep{StepName: "c"}
+	a := &NodeExpandStep{StepName: "a"}
+	b := &NodeExpandStep{StepName: "b"}
+	c := &NodeExpandStep{StepName: "c"}
 
 	graph.Add(a)
 	graph.Add(b)
