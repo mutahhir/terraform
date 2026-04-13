@@ -203,6 +203,31 @@ func TestNodeExpandStepDynamicExpandConnectsInnerReferences(t *testing.T) {
 	}
 }
 
+func TestNodeExpandStepDynamicExpandMakesPostconditionsDependOnExecute(t *testing.T) {
+	postcondition := &runbookconfigs.Condition{
+		Kind:      runbookconfigs.PostconditionCondition,
+		DeclRange: hcl.Range{Filename: "test.hcl", Start: hcl.Pos{Line: 4}, End: hcl.Pos{Line: 4, Column: 10}},
+		Condition: mustParseExpression(t, `step.result`),
+	}
+	step := &runbookconfigs.Step{
+		Name:           "deploy",
+		Executions:     []*runbookconfigs.Execution{{}},
+		Postconditions: []*runbookconfigs.Condition{postcondition},
+		Outputs:        []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `"done"`)}},
+	}
+
+	graph, diags := (&NodeExpandStep{StepName: "deploy", Config: step}).DynamicExpand(nil)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+
+	executionNode := &NodeStepExecution{StepName: "deploy", Index: 0}
+	postconditionNode := &NodeStepCondition{StepName: "deploy", Condition: postcondition}
+	if !graph.DownEdges(postconditionNode).Include(executionNode) {
+		t.Fatal("expected postcondition to depend on execute")
+	}
+}
+
 func TestPlanBuilderSteps(t *testing.T) {
 	builder := &PlanBuilder{}
 	steps := builder.Steps()
@@ -282,6 +307,30 @@ func TestStepOutputReferenceTransformerConnectsCrossStepDependencies(t *testing.
 	producer := &NodeExpandStep{StepName: "producer"}
 	if !graph.DownEdges(consumer).Include(producer) {
 		t.Fatal("expected consumer step to depend on referenced producer step")
+	}
+}
+
+func TestStepOutputReferenceTransformerConnectsCrossStepDependenciesFromLocals(t *testing.T) {
+	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"producer": {
+				Name:    "producer",
+				Outputs: []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `"ok"`)}},
+			},
+			"consumer": {
+				Name:   "consumer",
+				Locals: []*configs.Local{{Name: "copied", Expr: mustParseExpression(t, `steps.producer.result`)}},
+			},
+		},
+	})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+
+	consumer := &NodeExpandStep{StepName: "consumer"}
+	producer := &NodeExpandStep{StepName: "producer"}
+	if !graph.DownEdges(consumer).Include(producer) {
+		t.Fatal("expected consumer step to depend on referenced producer step from local expression")
 	}
 }
 

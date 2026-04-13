@@ -80,18 +80,19 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 		g.Connect(dag.BasicEdge(instance, child))
 		executions = append(executions, child)
 	}
-	conditions := make([]*NodeStepCondition, 0, len(n.Config.Preconditions)+len(n.Config.Postconditions))
+	preconditions := make([]*NodeStepCondition, 0, len(n.Config.Preconditions))
 	for _, condition := range n.Config.Preconditions {
 		child := &NodeStepCondition{StepName: n.StepName, Condition: condition}
 		g.Add(child)
 		g.Connect(dag.BasicEdge(instance, child))
-		conditions = append(conditions, child)
+		preconditions = append(preconditions, child)
 	}
+	postconditions := make([]*NodeStepCondition, 0, len(n.Config.Postconditions))
 	for _, condition := range n.Config.Postconditions {
 		child := &NodeStepCondition{StepName: n.StepName, Condition: condition}
 		g.Add(child)
 		g.Connect(dag.BasicEdge(instance, child))
-		conditions = append(conditions, child)
+		postconditions = append(postconditions, child)
 	}
 	outputs := make([]*NodeStepOutput, 0, len(n.Config.Outputs))
 	for _, output := range n.Config.Outputs {
@@ -116,8 +117,14 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 	for _, execution := range executions {
 		connectStepReferences(&g, n.StepName, execution, referencesForStepExecution(execution.Execution), refTargets)
 	}
-	for _, condition := range conditions {
+	for _, condition := range preconditions {
 		connectStepReferences(&g, n.StepName, condition, referencesForStepCondition(condition.Condition), refTargets)
+	}
+	for _, condition := range postconditions {
+		connectStepReferences(&g, n.StepName, condition, referencesForStepCondition(condition.Condition), refTargets)
+		for _, execution := range executions {
+			g.Connect(dag.BasicEdge(condition, execution))
+		}
 	}
 	for _, output := range outputs {
 		connectStepReferences(&g, n.StepName, output, referencesForStepOutput(output.Output), refTargets)
