@@ -66,6 +66,22 @@ func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdia
 		diags = diags.Append(executable.Execute(ctx, op))
 	}
 
+	if op == walkOperationPlan {
+		for _, vertex := range order {
+			stepName, ok := stepNameForVertex(vertex)
+			if !ok {
+				continue
+			}
+			step, ok := ctx.Step(stepName)
+			if !ok {
+				continue
+			}
+			if step.Status == runbookruntime.StepStatusPlanned {
+				ctx.SetStepStatus(stepName, runbookruntime.StepStatusCompleted, "")
+			}
+		}
+	}
+
 	return diags
 }
 

@@ -41,7 +41,7 @@ func decodeConditionBlock(block *hcl.Block) (*Condition, hcl.Diagnostics) {
 	content, moreDiags := block.Body.Content(conditionSchema)
 	diags = append(diags, moreDiags...)
 
-	cr.Condition = content.Attributes["assert"].Expr
+	cr.Condition = content.Attributes["condition"].Expr
 
 	if len(cr.Condition.Variables()) == 0 {
 		// A condition expression that doesn't refer to any variable is

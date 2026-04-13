@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/addrs"
+	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/lang"
@@ -480,7 +481,7 @@ func (ec *EvalContext) EvaluateBlock(body hcl.Body, schema *configschema.Block) 
 		return schema.EmptyValue(), nil, nil
 	}
 
-	scope := &lang.Scope{Data: providerEvalData{ctx: ec}}
+	scope := &lang.Scope{Data: providerEvalData{ctx: ec}, ParseRef: terraformaddrs.ParseRef}
 	val, diags := scope.EvalBlock(body, schema)
 	return val, body, diags
 }
