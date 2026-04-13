@@ -6,6 +6,7 @@ package runbookgraph
 import (
 	"testing"
 
+	"github.com/hashicorp/terraform/internal/configs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	"github.com/spf13/afero"
 )
@@ -41,7 +42,7 @@ step "deploy" {}
 
 	inputNode := rootVariableNode(graph, "name")
 	stepNode := &NodeStep{StepName: "deploy"}
-	outputNode := outputNode(graph, "summary")
+	outputNode := &NodeOutputVariable{Output: &configs.Output{Name: "summary"}}
 
 	if inputNode == nil {
 		t.Fatal("expected terraform root input variable node")
@@ -49,8 +50,8 @@ step "deploy" {}
 	if !graph.HasVertex(stepNode) {
 		t.Fatal("expected empty step node")
 	}
-	if outputNode == nil {
-		t.Fatal("expected terraform output node")
+	if !graph.HasVertex(outputNode) {
+		t.Fatal("expected output node")
 	}
 	if !hasVertexNamed(graph, "root") {
 		t.Fatal("expected root node")

@@ -31,18 +31,13 @@ func (b *PlanBuilder) Build() (*terraform.Graph, tfdiags.Diagnostics) {
 }
 
 func (b *PlanBuilder) Steps() []terraform.GraphTransformer {
-	config := rootRunbookConfig(b.Config)
-
 	steps := []terraform.GraphTransformer{
 		&terraform.RootVariableTransformer{
-			Config:    config,
+			Config:    rootVariableConfig(b.Config),
 			RawValues: b.InputValues,
 		},
 		&PlanStepTransformer{Config: b.Config},
-		&terraform.OutputTransformer{
-			Config:   config,
-			Planning: true,
-		},
+		&PlanOutputTransformer{Config: b.Config},
 		&terraform.RootTransformer{},
 	}
 
@@ -70,24 +65,14 @@ func stepNodesByName(g *terraform.Graph) map[string]*NodeStep {
 	return ret
 }
 
-func rootRunbookConfig(config *runbookconfigs.RunbookConfig) *configs.Config {
+func rootVariableConfig(config *runbookconfigs.RunbookConfig) *configs.Config {
 	if config == nil {
 		return nil
 	}
 
 	root := configs.NewEmptyConfig()
 	root.Module.Variables = config.Variables
-	root.Module.Outputs = config.Outputs
 	return root
-}
-
-func sortVariables(in map[string]*configs.Variable) []*configs.Variable {
-	names := sortNames(in)
-	ret := make([]*configs.Variable, 0, len(names))
-	for _, name := range names {
-		ret = append(ret, in[name])
-	}
-	return ret
 }
 
 func sortSteps(in map[string]*runbookconfigs.Step) []*runbookconfigs.Step {
@@ -135,6 +120,22 @@ func (t *PlanStepTransformer) Transform(g *terraform.Graph) error {
 
 	for _, step := range sortSteps(t.Config.Steps) {
 		g.Add(&NodeStep{StepName: step.Name})
+	}
+
+	return nil
+}
+
+type PlanOutputTransformer struct {
+	Config *runbookconfigs.RunbookConfig
+}
+
+func (t *PlanOutputTransformer) Transform(g *terraform.Graph) error {
+	if t == nil || t.Config == nil {
+		return nil
+	}
+
+	for _, output := range sortOutputs(t.Config.Outputs) {
+		g.Add(&NodeOutputVariable{Output: output})
 	}
 
 	return nil

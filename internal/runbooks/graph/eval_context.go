@@ -6,9 +6,15 @@ package runbookgraph
 import (
 	"sync"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
+	"github.com/hashicorp/terraform/internal/configs/configschema"
+	"github.com/hashicorp/terraform/internal/lang"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	"github.com/hashicorp/terraform/internal/terraform"
+	"github.com/hashicorp/terraform/internal/tfdiags"
+	"github.com/zclconf/go-cty/cty"
 )
 
 // EvalContext tracks the values that are available while evaluating a runbook.
@@ -55,4 +61,18 @@ func (ec *EvalContext) GetVariable(name string) (*terraform.InputValue, bool) {
 
 	value, ok := ec.variables[name]
 	return value, ok
+}
+
+func (ec *EvalContext) ProviderInput(addrs.AbsProviderConfig) map[string]cty.Value {
+	return nil
+}
+
+func (ec *EvalContext) EvaluateBlock(body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {
+	if schema == nil {
+		return cty.EmptyObjectVal, body, nil
+	}
+
+	scope := &lang.Scope{Data: providerEvalData{ctx: ec}}
+	val, diags := scope.EvalBlock(body, schema)
+	return val, body, diags
 }

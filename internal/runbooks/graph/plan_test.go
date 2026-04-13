@@ -39,9 +39,9 @@ func TestNewPlanBuildsVariableStepAndOutputNodes(t *testing.T) {
 	if !graph.HasVertex(&NodeStep{StepName: "discover"}) {
 		t.Fatal("expected step node")
 	}
-	outputNode := outputNode(graph, "result")
-	if outputNode == nil {
-		t.Fatal("expected terraform output node")
+	outputNode := &NodeOutputVariable{Output: &configs.Output{Name: "result"}}
+	if !graph.HasVertex(outputNode) {
+		t.Fatal("expected output node")
 	}
 	if !hasVertexNamed(graph, "root") {
 		t.Fatal("expected root node")
@@ -127,10 +127,8 @@ func TestPlanBuilderSteps(t *testing.T) {
 	if _, ok := steps[1].(*PlanStepTransformer); !ok {
 		t.Fatal("expected steps transformer second")
 	}
-	if outputTransformer, ok := steps[2].(*terraform.OutputTransformer); !ok {
-		t.Fatal("expected terraform output transformer third")
-	} else if !outputTransformer.Planning {
-		t.Fatal("expected terraform output transformer to be in planning mode")
+	if _, ok := steps[2].(*PlanOutputTransformer); !ok {
+		t.Fatal("expected output transformer third")
 	}
 	if _, ok := steps[3].(*terraform.RootTransformer); !ok {
 		t.Fatal("expected terraform root transformer fourth")
@@ -178,15 +176,11 @@ func TestPlanBuilderBuildIncludesStepDetailsTransformer(t *testing.T) {
 	}
 }
 
-func TestRootRunbookConfigBuildsTerraformConfig(t *testing.T) {
+func TestRootVariableConfigBuildsTerraformConfig(t *testing.T) {
 	variable := &configs.Variable{Name: "input"}
-	output := &configs.Output{Name: "result"}
-	config := rootRunbookConfig(&runbookconfigs.RunbookConfig{
+	config := rootVariableConfig(&runbookconfigs.RunbookConfig{
 		Variables: map[string]*configs.Variable{
 			"input": variable,
-		},
-		Outputs: map[string]*configs.Output{
-			"result": output,
 		},
 	})
 	if config == nil || config.Module == nil {
@@ -198,8 +192,11 @@ func TestRootRunbookConfigBuildsTerraformConfig(t *testing.T) {
 	if config.Module.Variables["input"] != variable {
 		t.Fatal("expected variable to be exposed through terraform config")
 	}
-	if config.Module.Outputs["result"] != output {
-		t.Fatal("expected output to be exposed through terraform config")
+	if len(config.Module.Outputs) != 0 {
+		t.Fatal("expected variable adapter to stay scoped to variables")
+	}
+	if len(config.Module.ProviderConfigs) != 0 {
+		t.Fatal("expected variable adapter to stay scoped to variables")
 	}
 }
 
@@ -240,15 +237,6 @@ func rootVariableNode(g *terraform.Graph, name string) *terraform.NodeRootVariab
 		node, ok := vertex.(*terraform.NodeRootVariable)
 		if ok && node.Addr.Name == name {
 			return node
-		}
-	}
-	return nil
-}
-
-func outputNode(g *terraform.Graph, name string) dag.Vertex {
-	for _, vertex := range g.Vertices() {
-		if dag.VertexName(vertex) == "output."+name+" (expand)" {
-			return vertex
 		}
 	}
 	return nil
