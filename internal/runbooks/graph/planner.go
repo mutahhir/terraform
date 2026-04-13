@@ -12,6 +12,8 @@ import (
 type PlannerOpts struct {
 	InputValues terraform.InputValues
 	Providers   map[terraformaddrs.Provider]providers.Factory
+	UI          UI
+	Hooks       []Hook
 }
 
 type Plan struct {
@@ -27,7 +29,7 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 	}
 
 	validateOpts := &ValidateOpts{}
-	evalCtx := NewEvalContext(EvalContextOpts{Config: config})
+	evalCtx := NewEvalContext(EvalContextOpts{Config: config, UI: optsUI(opts), Hooks: optsHooks(opts)})
 	if opts != nil {
 		for name, value := range opts.InputValues {
 			evalCtx.SetVariable(name, value)
@@ -66,4 +68,18 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 	}
 
 	return &Plan{Config: config, Graph: graph, Steps: evalCtx.StepsInOrder()}, diags
+}
+
+func optsUI(opts *PlannerOpts) UI {
+	if opts == nil {
+		return nil
+	}
+	return opts.UI
+}
+
+func optsHooks(opts *PlannerOpts) []Hook {
+	if opts == nil {
+		return nil
+	}
+	return opts.Hooks
 }

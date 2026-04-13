@@ -23,6 +23,10 @@ action "http" "notify" {}
 action "http" "child_notify" {}
 `)
 	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
 variable "name" {
   type = string
 }
@@ -84,6 +88,86 @@ step "deploy" {
 	}
 	if len(step.Executions[0].InvokeAction) != 2 {
 		t.Fatalf("wrong invoke_action count %d", len(step.Executions[0].InvokeAction))
+	}
+}
+
+func TestLoadRunbookConfigDirInvokeActionSyntax(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "deploy" {
+  action "http" "notify" {}
+
+  execute {
+    invoke_action {
+      action = action.http.notify
+    }
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	got, diags := p.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Error())
+	}
+	if got == nil {
+		t.Fatal("expected config but got nil")
+	}
+	step, exists := got.Steps["deploy"]
+	if !exists {
+		t.Fatal("expected deploy step")
+	}
+	if len(step.Executions) != 1 {
+		t.Fatalf("wrong execution count %d", len(step.Executions))
+	}
+	if len(step.Executions[0].InvokeAction) != 1 {
+		t.Fatalf("wrong invoke_action count %d", len(step.Executions[0].InvokeAction))
+	}
+}
+
+func TestLoadRunbookConfigDirMissingTerraformVersion(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {}
+
+step "deploy" {}
+`)
+
+	p := NewRunbookParser(fs)
+	_, diags := p.LoadRunbookConfigDir("/runbook", "/workspace")
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
+	}
+}
+
+func TestLoadRunbookConfigDirMissingRunbookBlock(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `step "deploy" {}`)
+
+	p := NewRunbookParser(fs)
+	_, diags := p.LoadRunbookConfigDir("/runbook", "/workspace")
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
+	}
+}
+
+func TestLoadRunbookConfigDirDuplicateRunbookBlock(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/a.tfrun.hcl", `runbook { terraform_version = ">= 1.0.0" }`)
+	writeTestFile(t, fs, "/runbook/b.tfrun.hcl", `runbook { terraform_version = ">= 1.0.0" }`)
+
+	p := NewRunbookParser(fs)
+	_, diags := p.LoadRunbookConfigDir("/runbook", "/workspace")
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
 	}
 }
 

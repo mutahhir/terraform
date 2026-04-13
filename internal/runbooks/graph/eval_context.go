@@ -8,12 +8,14 @@ import (
 	"sync"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/terraform/internal/addrs"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/lang"
 	"github.com/hashicorp/terraform/internal/providers"
+	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/terraform"
@@ -24,6 +26,8 @@ import (
 // EvalContext tracks the values that are available while evaluating a runbook.
 type EvalContext struct {
 	config *runbookconfigs.RunbookConfig
+	ui     UI
+	hooks  []Hook
 
 	variables     terraform.InputValues
 	variablesLock sync.Mutex
@@ -38,11 +42,15 @@ type EvalContext struct {
 
 type EvalContextOpts struct {
 	Config *runbookconfigs.RunbookConfig
+	UI     UI
+	Hooks  []Hook
 }
 
 func NewEvalContext(opts EvalContextOpts) *EvalContext {
 	return &EvalContext{
 		config:        opts.Config,
+		ui:            opts.UI,
+		hooks:         append([]Hook(nil), opts.Hooks...),
 		variables:     make(terraform.InputValues),
 		variablesLock: sync.Mutex{},
 		providers:     make(map[addrs.Provider]providers.Interface),
@@ -50,6 +58,35 @@ func NewEvalContext(opts EvalContextOpts) *EvalContext {
 		steps:         make(map[string]*stepEvalState),
 		stepOrder:     make([]string, 0),
 		stepsLock:     sync.Mutex{},
+	}
+}
+
+func (ec *EvalContext) UI() UI {
+	return ec.ui
+}
+
+func (ec *EvalContext) Hooks() []Hook {
+	return ec.hooks
+}
+
+func (ec *EvalContext) EmitPlannedStep(step *runbookruntime.Step) {
+	if step == nil {
+		return
+	}
+	if ec.ui != nil {
+		ec.ui.PlannedStep(step)
+	}
+	for _, hook := range ec.hooks {
+		hook.PlannedStep(step)
+	}
+}
+
+func (ec *EvalContext) EmitStepPlanInfo(info StepPlanInfo) {
+	if ec.ui != nil {
+		ec.ui.PlannedStepInfo(info)
+	}
+	for _, hook := range ec.hooks {
+		hook.PlannedStepInfo(info)
 	}
 }
 
@@ -350,8 +387,11 @@ func (ec *EvalContext) EvaluateExpr(stepName string, expr hcl.Expression) (cty.V
 	if expr == nil {
 		return cty.NilVal, nil
 	}
-
-	hclCtx := &hcl.EvalContext{Variables: ec.expressionVariables(stepName)}
+	scope := &lang.Scope{BaseDir: ".", PureOnly: true}
+	hclCtx := &hcl.EvalContext{
+		Variables: ec.expressionVariables(stepName),
+		Functions: scope.Functions(),
+	}
 	value, hclDiags := expr.Value(hclCtx)
 	return value, tfdiags.Diagnostics{}.Append(hclDiags)
 }
@@ -362,7 +402,7 @@ func (ec *EvalContext) expressionVariables(stepName string) map[string]cty.Value
 	varAttrs := map[string]cty.Value{}
 	ec.variablesLock.Lock()
 	for name, value := range ec.variables {
-		if value != nil {
+		if value != nil && value.Value != cty.NilVal {
 			varAttrs[name] = value.Value
 		}
 	}
@@ -376,8 +416,8 @@ func (ec *EvalContext) expressionVariables(stepName string) map[string]cty.Value
 				varAttrs[name] = variable.Default
 				continue
 			}
-			if variable.Type != cty.NilType {
-				varAttrs[name] = cty.UnknownVal(variable.Type)
+			if ty := variableValueType(variable); ty != cty.NilType {
+				varAttrs[name] = cty.UnknownVal(ty)
 				continue
 			}
 			varAttrs[name] = cty.DynamicVal
@@ -419,7 +459,9 @@ func (ec *EvalContext) expressionVariables(stepName string) map[string]cty.Value
 		}
 		stepAttrs[name] = cty.ObjectVal(copyValueMap(state.outputs))
 	}
-	variables["step"] = cty.ObjectVal(stepAttrs)
+	stepVals := cty.ObjectVal(stepAttrs)
+	variables["step"] = stepVals
+	variables["steps"] = stepVals
 
 	return variables
 }
@@ -453,11 +495,18 @@ func nestedResourceValues(src map[string]cty.Value) cty.Value {
 	}
 	byType := make(map[string]map[string]cty.Value)
 	for addrStr, value := range src {
-		addr, diags := addrs.ParseAbsResourceStr(addrStr)
-		if diags.HasErrors() {
+		traversal, hclDiags := hclsyntax.ParseTraversalAbs([]byte(addrStr), "", hcl.Pos{Line: 1, Column: 1})
+		if hclDiags.HasErrors() {
 			continue
 		}
-		resource := addr.Resource
+		ref, diags := runbookaddrs.ParseRef(traversal)
+		if diags.HasErrors() || ref == nil {
+			continue
+		}
+		resource, ok := ref.Subject.(addrs.Resource)
+		if !ok {
+			continue
+		}
 		if byType[resource.Type] == nil {
 			byType[resource.Type] = make(map[string]cty.Value)
 		}
@@ -482,6 +531,20 @@ func (ec *EvalContext) EvaluateBlock(body hcl.Body, schema *configschema.Block) 
 	}
 
 	scope := &lang.Scope{Data: providerEvalData{ctx: ec}, ParseRef: terraformaddrs.ParseRef}
-	val, diags := scope.EvalBlock(body, schema)
+	var diags tfdiags.Diagnostics
+	body, expandDiags := scope.ExpandBlock(body, schema)
+	diags = diags.Append(expandDiags)
+	val, evalDiags := scope.EvalBlock(body, schema)
+	diags = diags.Append(evalDiags)
 	return val, body, diags
+}
+
+func variableValueType(variable *configs.Variable) cty.Type {
+	if variable == nil {
+		return cty.NilType
+	}
+	if variable.ConstraintType != cty.NilType {
+		return variable.ConstraintType
+	}
+	return variable.Type
 }

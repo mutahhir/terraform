@@ -18,6 +18,7 @@ func (p *RunbookParser) parseRunbookConfigFile(body hcl.Body, diags hcl.Diagnost
 	for _, block := range content.Blocks {
 		switch block.Type {
 		case "runbook":
+			file.RunbookDeclRanges = append(file.RunbookDeclRanges, block.DefRange)
 			content, contentDiags := block.Body.Content(runbookBlockSchema)
 			diags = append(diags, contentDiags...)
 
@@ -78,8 +79,14 @@ func sniffCoreVersionRequirements(body hcl.Body) ([]configs.VersionConstraint, h
 		content, _, blockDiags := block.Body.PartialContent(runbookConfigFileVersionSniffBlockSchema)
 		diags = append(diags, blockDiags...)
 
-		attr, exists := content.Attributes["required_version"]
+		attr, exists := content.Attributes["terraform_version"]
 		if !exists {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Missing required attribute 'terraform_version'",
+				Detail:   "The runbook block must declare terraform_version.",
+				Subject:  block.DefRange.Ptr(),
+			})
 			continue
 		}
 
@@ -117,7 +124,7 @@ var runbookConfigFileSchema = &hcl.BodySchema{
 
 var runbookBlockSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
-		{Name: "required_version"},
+		{Name: "terraform_version"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{
@@ -138,7 +145,7 @@ var runbookConfigFileTerraformBlockSniffRootSchema = &hcl.BodySchema{
 var runbookConfigFileVersionSniffBlockSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{
-			Name: "required_version",
+			Name: "terraform_version",
 		},
 	},
 }

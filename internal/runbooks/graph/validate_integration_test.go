@@ -21,6 +21,8 @@ func TestValidateIntegrationRunbookProviderConfigValid(t *testing.T) {
 	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
 	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
 runbook {
+  terraform_version = ">= 1.0.0"
+
   required_providers {
     test = {
       source = "hashicorp/test"
@@ -63,6 +65,8 @@ func TestValidateIntegrationRunbookProviderConfigInvalid(t *testing.T) {
 	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
 	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
 runbook {
+  terraform_version = ">= 1.0.0"
+
   required_providers {
     test = {
       source = "hashicorp/test"

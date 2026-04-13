@@ -174,6 +174,94 @@ func TestBuildPlanReturnsProviderDeclarationDiagnostics(t *testing.T) {
 	}
 }
 
+func TestBuildPlanUsesRequiredProviderSourceForStepActions(t *testing.T) {
+	providerType := terraformaddrs.MustParseProviderSourceString("registry.terraform.io/austinvalle/bufo")
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Actions: map[string]providers.ActionSchema{
+				"bufo_print": {ConfigSchema: &configschema.Block{}},
+			},
+		},
+	}
+
+	_, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		ProviderRequirements: &configs.RequiredProviders{
+			RequiredProviders: map[string]*configs.RequiredProvider{
+				"bufo": {Type: providerType},
+			},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"discover": {
+				Name:    "discover",
+				Actions: []*configs.Action{{Type: "bufo_print", Name: "summary"}},
+			},
+		},
+	}, &PlannerOpts{
+		Providers: map[terraformaddrs.Provider]providers.Factory{
+			providerType: fixedPlannerProviderFactory(provider),
+		},
+	})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !provider.ValidateActionConfigCalled {
+		t.Fatal("expected action config validation during plan")
+	}
+}
+
+func TestBuildPlanConfiguresProvidersFromRunbookProviderBlocks(t *testing.T) {
+	providerType := terraformaddrs.NewDefaultProvider("test")
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{
+				Attributes: map[string]*configschema.Attribute{
+					"region": {Type: cty.String, Optional: true},
+				},
+			}},
+			DataSources: map[string]providers.Schema{
+				"test_data": {Body: &configschema.Block{}},
+			},
+		},
+		ReadDataSourceResponse: &providers.ReadDataSourceResponse{State: cty.EmptyObjectVal},
+	}
+
+	_, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		ProviderRequirements: &configs.RequiredProviders{
+			RequiredProviders: map[string]*configs.RequiredProvider{
+				"test": {Type: providerType},
+			},
+		},
+		ProviderConfigs: map[string]*configs.Provider{
+			"test": {
+				Name:   "test",
+				Config: mustParseBody(t, `region = var.region`),
+			},
+		},
+		Variables: map[string]*configs.Variable{
+			"region": {Name: "region", Default: cty.StringVal("us-east-1")},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"discover": {
+				Name:        "discover",
+				DataSources: []*configs.Resource{{Mode: terraformaddrs.DataResourceMode, Type: "test_data", Name: "current"}},
+			},
+		},
+	}, &PlannerOpts{
+		Providers: map[terraformaddrs.Provider]providers.Factory{
+			providerType: fixedPlannerProviderFactory(provider),
+		},
+	})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !provider.ConfigureProviderCalled {
+		t.Fatal("expected provider to be configured during plan")
+	}
+	if got := provider.ConfigureProviderRequest.Config.GetAttr("region"); got != cty.StringVal("us-east-1") {
+		t.Fatalf("wrong configured region %#v", got)
+	}
+}
+
 func mustBuildGraph(t *testing.T, builder *PlanBuilder) *terraform.Graph {
 	t.Helper()
 	graph, diags := builder.Build()

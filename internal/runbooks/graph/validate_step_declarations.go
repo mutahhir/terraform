@@ -242,14 +242,29 @@ func providerTypeForAction(config *runbookconfigs.RunbookConfig, action *configs
 	if action != nil && action.Provider != (terraformaddrs.Provider{}) {
 		return action.Provider
 	}
-	return terraformaddrs.ImpliedProviderForUnqualifiedType(action.Addr().ImpliedProvider())
+	if action != nil {
+		return providerTypeForLocalName(config, action.ProviderConfigAddr().LocalName)
+	}
+	return terraformaddrs.Provider{}
 }
 
 func providerTypeForResource(config *runbookconfigs.RunbookConfig, resource *configs.Resource) terraformaddrs.Provider {
 	if resource != nil && resource.Provider != (terraformaddrs.Provider{}) {
 		return resource.Provider
 	}
-	return terraformaddrs.ImpliedProviderForUnqualifiedType(resource.Addr().ImpliedProvider())
+	if resource != nil {
+		return providerTypeForLocalName(config, resource.ProviderConfigAddr().LocalName)
+	}
+	return terraformaddrs.Provider{}
+}
+
+func providerTypeForLocalName(config *runbookconfigs.RunbookConfig, localName string) terraformaddrs.Provider {
+	if config != nil && config.ProviderRequirements != nil {
+		if req, ok := config.ProviderRequirements.RequiredProviders[localName]; ok {
+			return req.Type
+		}
+	}
+	return terraformaddrs.ImpliedProviderForUnqualifiedType(localName)
 }
 
 func evaluateExpr(ctx *EvalContext, expr hcl.Expression) (cty.Value, tfdiags.Diagnostics) {

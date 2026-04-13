@@ -29,6 +29,7 @@ func (n *NodeStepAction) Execute(ctx *EvalContext, op walkOperation) tfdiags.Dia
 	if op != walkOperationPlan {
 		return nil
 	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "action", Subject: n.Action.Addr().String(), Status: runbookruntime.StepStatusPlanned})
 	providerType := providerTypeForAction(ctx.Config(), n.Action)
 	provider, diags := runbookProvider(ctx, providerType)
 	if diags.HasErrors() {
@@ -72,6 +73,7 @@ func (n *NodeStepData) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	if op != walkOperationPlan {
 		return nil
 	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "data", Subject: n.Data.Addr().String(), Status: runbookruntime.StepStatusPlanned})
 	providerType := providerTypeForResource(ctx.Config(), n.Data)
 	provider, diags := runbookProvider(ctx, providerType)
 	if diags.HasErrors() {
@@ -80,6 +82,10 @@ func (n *NodeStepData) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	schemaResp := provider.GetProviderSchema()
 	resourceSchema := schemaResp.SchemaForResourceAddr(n.Data.Addr())
 	configVal := cty.EmptyObjectVal
+	providerMetaVal := cty.EmptyObjectVal
+	if schemaResp.ProviderMeta.Body != nil {
+		providerMetaVal = schemaResp.ProviderMeta.Body.EmptyValue()
+	}
 	if resourceSchema.Body != nil {
 		value, _, valueDiags := ctx.EvaluateBlock(n.Data.Config, resourceSchema.Body)
 		diags = diags.Append(valueDiags)
@@ -88,7 +94,7 @@ func (n *NodeStepData) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 		}
 		configVal = value
 	}
-	resp := provider.ReadDataSource(providers.ReadDataSourceRequest{TypeName: n.Data.Type, Config: configVal})
+	resp := provider.ReadDataSource(providers.ReadDataSourceRequest{TypeName: n.Data.Type, Config: configVal, ProviderMeta: providerMetaVal})
 	diags = diags.Append(resp.Diagnostics)
 	if !diags.HasErrors() {
 		ctx.SetStepData(n.StepName, n.Data.Addr(), resp.State)
@@ -113,6 +119,7 @@ func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	if op != walkOperationPlan {
 		return nil
 	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "list", Subject: n.List.Addr().String(), Status: runbookruntime.StepStatusPlanned})
 	providerType := providerTypeForResource(ctx.Config(), n.List)
 	provider, diags := runbookProvider(ctx, providerType)
 	if diags.HasErrors() {
@@ -174,6 +181,7 @@ func (n *NodeStepLocal) Name() string {
 }
 
 func (n *NodeStepLocal) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diagnostics {
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "local", Subject: n.Local.Name, Status: runbookruntime.StepStatusPlanned})
 	value, diags := ctx.EvaluateExpr(n.StepName, n.Local.Expr)
 	if diags.HasErrors() {
 		return diags
@@ -200,6 +208,7 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 	if op != walkOperationExecute {
 		return nil
 	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "execute", Subject: fmt.Sprintf("execute.%d", n.Index), Status: runbookruntime.StepStatusRunning})
 	var diags tfdiags.Diagnostics
 	providerCache := map[terraformaddrs.Provider]providers.Interface{}
 	for _, traversal := range n.Execution.InvokeAction {
@@ -255,6 +264,7 @@ func (n *NodeStepCondition) Name() string {
 }
 
 func (n *NodeStepCondition) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diagnostics {
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: string(n.Condition.Kind), Subject: n.Condition.DeclRange.String(), Status: runbookruntime.StepStatusPlanned})
 	value, diags := ctx.EvaluateExpr(n.StepName, n.Condition.Condition)
 	if diags.HasErrors() {
 		ctx.SetStepStatus(n.StepName, runbookruntime.StepStatusFailed, "condition evaluation failed")
@@ -293,6 +303,7 @@ func (n *NodeStepOutput) Name() string {
 }
 
 func (n *NodeStepOutput) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diagnostics {
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "output", Subject: n.Output.Name, Status: runbookruntime.StepStatusPlanned})
 	value, diags := ctx.EvaluateExpr(n.StepName, n.Output.Expr)
 	if diags.HasErrors() {
 		return diags
@@ -306,13 +317,73 @@ func (n *NodeStepOutput) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diag
 
 func runbookProvider(ctx *EvalContext, providerType terraformaddrs.Provider) (providers.Interface, tfdiags.Diagnostics) {
 	if provider, ok := ctx.Provider(providerType); ok {
-		resp := provider.ConfigureProvider(providers.ConfigureProviderRequest{Config: cty.EmptyObjectVal})
+		configVal, diags := runbookProviderConfigValue(ctx, providerType)
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		resp := provider.ConfigureProvider(providers.ConfigureProviderRequest{Config: configVal})
 		if resp.Diagnostics.HasErrors() {
 			return nil, resp.Diagnostics
 		}
 		return provider, nil
 	}
 	return nil, tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(tfdiags.Error, "Missing provider", fmt.Sprintf("Provider %s is not configured for runbook execution.", providerType.ForDisplay())))
+}
+
+func runbookProviderConfigValue(ctx *EvalContext, providerType terraformaddrs.Provider) (cty.Value, tfdiags.Diagnostics) {
+	config := ctx.Config()
+	providerConfig := providerConfigForType(config, providerType)
+	if providerConfig == nil {
+		return cty.EmptyObjectVal, nil
+	}
+
+	addr := terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
+		Provider: providerType,
+		Alias:    providerConfig.Alias,
+	}
+	configBody := buildRunbookProviderConfig(ctx, addr, providerConfig)
+
+	schemaResp, diags := providerSchemaForExecution(ctx, providerType)
+	if diags.HasErrors() {
+		return cty.NilVal, diags
+	}
+	configSchema := schemaResp.Provider.Body
+	if configSchema == nil {
+		return cty.EmptyObjectVal, nil
+	}
+
+	configVal, _, evalDiags := ctx.EvaluateBlock(configBody, configSchema)
+	diags = diags.Append(evalDiags)
+	if diags.HasErrors() {
+		return cty.NilVal, diags
+	}
+	unmarkedConfigVal, _ := configVal.UnmarkDeep()
+	return unmarkedConfigVal, nil
+}
+
+func providerSchemaForExecution(ctx *EvalContext, providerType terraformaddrs.Provider) (providers.ProviderSchema, tfdiags.Diagnostics) {
+	provider, ok := ctx.Provider(providerType)
+	if !ok {
+		return providers.ProviderSchema{}, tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(tfdiags.Error, "Missing provider", fmt.Sprintf("Provider %s is not configured for runbook execution.", providerType.ForDisplay())))
+	}
+	resp := provider.GetProviderSchema()
+	if resp.Diagnostics.HasErrors() {
+		return providers.ProviderSchema{}, resp.Diagnostics
+	}
+	return resp, nil
+}
+
+func providerConfigForType(config *runbookconfigs.RunbookConfig, providerType terraformaddrs.Provider) *configs.Provider {
+	if config == nil {
+		return nil
+	}
+	for _, providerConfig := range config.ProviderConfigs {
+		if providerConfig != nil && providerTypeForConfig(config, providerConfig) == providerType && providerConfig.Alias == "" {
+			return providerConfig
+		}
+	}
+	return nil
 }
 
 func actionConfigForStep(config *runbookconfigs.RunbookConfig, stepName string, addr terraformaddrs.Action) *configs.Action {

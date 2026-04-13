@@ -31,6 +31,7 @@ func (n *NodeStepInstance) Execute(ctx *EvalContext, op walkOperation) tfdiags.D
 		if step.Status == runtime.StepStatusPending {
 			step.Status = runtime.StepStatusPlanned
 		}
+		ctx.EmitPlannedStep(step)
 	case walkOperationExecute:
 		if step.Status == runtime.StepStatusPending || step.Status == runtime.StepStatusPlanned {
 			step.Status = runtime.StepStatusRunning

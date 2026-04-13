@@ -6,6 +6,7 @@ package runbookgraph
 import (
 	"testing"
 
+	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	"github.com/hashicorp/terraform/internal/terraform"
@@ -52,5 +53,91 @@ func TestEvalContextWorkspaceConfig(t *testing.T) {
 	ctx = NewEvalContext(EvalContextOpts{})
 	if ctx.WorkspaceConfig() != nil {
 		t.Fatal("expected nil workspace config when no runbook config is set")
+	}
+}
+
+func TestEvalContextExpressionVariablesIgnoreUnsetInputPlaceholders(t *testing.T) {
+	config := &runbookconfigs.RunbookConfig{
+		Variables: map[string]*configs.Variable{
+			"name": {
+				Name:    "name",
+				Default: cty.StringVal("default-name"),
+			},
+		},
+	}
+
+	ctx := NewEvalContext(EvalContextOpts{Config: config})
+	ctx.SetVariable("name", &terraform.InputValue{Value: cty.NilVal})
+
+	vars := ctx.expressionVariables("")
+	got := vars["var"].GetAttr("name")
+	if got != cty.StringVal("default-name") {
+		t.Fatalf("wrong variable value %#v", got)
+	}
+}
+
+func TestEvalContextExpressionVariablesExposeSameStepDataByTypeAndName(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+	ctx.SetStepData("discover", terraformaddrs.Resource{
+		Mode: terraformaddrs.DataResourceMode,
+		Type: "aws_caller_identity",
+		Name: "current",
+	}, cty.ObjectVal(map[string]cty.Value{
+		"account_id": cty.StringVal("123456789012"),
+	}))
+
+	vars := ctx.expressionVariables("discover")
+	got := vars["data"].GetAttr("aws_caller_identity").GetAttr("current").GetAttr("account_id")
+	if got != cty.StringVal("123456789012") {
+		t.Fatalf("wrong data value %#v", got)
+	}
+}
+
+func TestEvalContextEvaluateExprSupportsFunctions(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `format("hello-%s", "world")`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("hello-world") {
+		t.Fatalf("wrong expression value %#v", value)
+	}
+}
+
+func TestEvalContextExpressionVariablesExposePluralStepsAlias(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+	ctx.SetStepOutput("discover", "result", cty.StringVal("srv-123"))
+
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `steps.discover.result`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("srv-123") {
+		t.Fatalf("wrong expression value %#v", value)
+	}
+}
+
+func TestEvalContextExpressionVariablesExposeListResultsUnderData(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+	ctx.SetStepList("discover", terraformaddrs.Resource{
+		Mode: terraformaddrs.ListResourceMode,
+		Type: "aws_lambda_function",
+		Name: "managed",
+	}, cty.ObjectVal(map[string]cty.Value{
+		"data": cty.TupleVal([]cty.Value{
+			cty.ObjectVal(map[string]cty.Value{
+				"identity": cty.ObjectVal(map[string]cty.Value{
+					"function_name": cty.StringVal("runbook-scratchpad-ops-smoke"),
+				}),
+			}),
+		}),
+	}))
+
+	value, diags := ctx.EvaluateExpr("discover", mustParseExpression(t, `list.aws_lambda_function.managed.data[0].identity.function_name`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("runbook-scratchpad-ops-smoke") {
+		t.Fatalf("wrong expression value %#v", value)
 	}
 }

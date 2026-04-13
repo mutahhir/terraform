@@ -179,7 +179,7 @@ func (providerEvalData) GetTerraformAttr(addrs.TerraformAttr, tfdiags.SourceRang
 }
 func (d providerEvalData) GetInputVariable(addr addrs.InputVariable, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	if d.ctx != nil {
-		if value, ok := d.ctx.GetVariable(addr.Name); ok && value != nil {
+		if value, ok := d.ctx.GetVariable(addr.Name); ok && value != nil && value.Value != cty.NilVal {
 			return value.Value, nil
 		}
 		if d.ctx.config != nil {
@@ -187,8 +187,8 @@ func (d providerEvalData) GetInputVariable(addr addrs.InputVariable, rng tfdiags
 				if variable.Default != cty.NilVal {
 					return variable.Default, nil
 				}
-				if variable.Type != cty.NilType {
-					return cty.UnknownVal(variable.Type), nil
+				if ty := variableValueType(variable); ty != cty.NilType {
+					return cty.UnknownVal(ty), nil
 				}
 			}
 		}

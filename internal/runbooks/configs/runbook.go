@@ -9,6 +9,7 @@ import (
 // RunbookFile describes the contents of a single Runbook HCL file.
 // Borrowing the concept from internal/configs
 type RunbookFile struct {
+	RunbookDeclRanges      []hcl.Range
 	CoreVersionConstraints []configs.VersionConstraint
 	ProviderConfigs        []*configs.Provider
 	RequiredProviders      []*configs.RequiredProviders
@@ -46,8 +47,25 @@ func NewRunbook(files []*RunbookFile) (*RunbookConfig, hcl.Diagnostics) {
 	}
 
 	var diags hcl.Diagnostics
+	var firstRunbookDecl *hcl.Range
+	runbookDeclCount := 0
 
 	for _, file := range files {
+		for _, declRange := range file.RunbookDeclRanges {
+			runbookDeclCount++
+			if firstRunbookDecl == nil {
+				declCopy := declRange
+				firstRunbookDecl = &declCopy
+				continue
+			}
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate runbook block",
+				Detail:   "A runbook configuration directory must contain exactly one runbook block.",
+				Subject:  declRange.Ptr(),
+			})
+		}
+
 		for _, step := range file.Steps {
 			if existing, exists := ret.Steps[step.Name]; exists {
 				diags = append(diags, &hcl.Diagnostic{
@@ -116,6 +134,14 @@ func NewRunbook(files []*RunbookFile) (*RunbookConfig, hcl.Diagnostics) {
 			}
 			ret.ProviderRequirements = reqs
 		}
+	}
+
+	if runbookDeclCount == 0 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Missing runbook block",
+			Detail:   "A runbook configuration directory must contain exactly one runbook block.",
+		})
 	}
 
 	if ret.ProviderRequirements == nil {
