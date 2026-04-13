@@ -5,6 +5,7 @@ import (
 
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runtime "github.com/hashicorp/terraform/internal/runbooks/runtime"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type NodeStepInstance struct {
@@ -21,4 +22,19 @@ func (n *NodeStepInstance) Hashcode() interface{} {
 
 func (n *NodeStepInstance) Name() string {
 	return fmt.Sprintf("step.%s", n.StepName)
+}
+
+func (n *NodeStepInstance) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
+	step := ctx.EnsureStep(n.StepName, n.Config, n.Runtime)
+	switch op {
+	case walkOperationPlan:
+		if step.Status == runtime.StepStatusPending {
+			step.Status = runtime.StepStatusPlanned
+		}
+	case walkOperationExecute:
+		if step.Status == runtime.StepStatusPending || step.Status == runtime.StepStatusPlanned {
+			step.Status = runtime.StepStatusRunning
+		}
+	}
+	return nil
 }

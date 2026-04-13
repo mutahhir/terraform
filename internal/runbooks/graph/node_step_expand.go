@@ -28,12 +28,16 @@ func (n *NodeExpandStep) Name() string {
 	return fmt.Sprintf("step.%s (expand)", n.StepName)
 }
 
-func (n *NodeExpandStep) DynamicExpand(ctx terraform.EvalContext) (*terraform.Graph, tfdiags.Diagnostics) {
+func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdiags.Diagnostics) {
 	var g terraform.Graph
+	runtimeStep := n.Runtime
+	if ctx != nil {
+		runtimeStep = ctx.EnsureStep(n.StepName, n.Config, n.Runtime)
+	}
 	instance := &NodeStepInstance{
 		StepName: n.StepName,
 		Config:   n.Config,
-		Runtime:  n.Runtime,
+		Runtime:  runtimeStep,
 	}
 	g.Add(instance)
 	refTargets := map[string]dag.Vertex{}
@@ -139,6 +143,6 @@ func connectStepReferences(g *terraform.Graph, currentStep string, from dag.Vert
 }
 
 var (
-	_ dag.Vertex                           = (*NodeExpandStep)(nil)
-	_ terraform.GraphNodeDynamicExpandable = (*NodeExpandStep)(nil)
+	_ dag.Vertex                 = (*NodeExpandStep)(nil)
+	_ GraphNodeDynamicExpandable = (*NodeExpandStep)(nil)
 )

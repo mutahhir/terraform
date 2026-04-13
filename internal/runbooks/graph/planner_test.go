@@ -1,0 +1,190 @@
+package runbookgraph
+
+import (
+	"testing"
+
+	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
+	"github.com/hashicorp/terraform/internal/configs"
+	"github.com/hashicorp/terraform/internal/configs/configschema"
+	"github.com/hashicorp/terraform/internal/providers"
+	testing_provider "github.com/hashicorp/terraform/internal/providers/testing"
+	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
+	runtime "github.com/hashicorp/terraform/internal/runbooks/runtime"
+	"github.com/hashicorp/terraform/internal/terraform"
+	"github.com/zclconf/go-cty/cty"
+)
+
+func TestBuildPlanCreatesOrderedStepInstances(t *testing.T) {
+	plan, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		Variables: map[string]*configs.Variable{
+			"input": {Name: "input"},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"producer": {
+				Name:    "producer",
+				Outputs: []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `var.input`)}},
+			},
+			"consumer": {
+				Name:    "consumer",
+				Outputs: []*configs.Output{{Name: "final", Expr: mustParseExpression(t, `step.producer.result`)}},
+			},
+		},
+	}, nil)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if plan == nil {
+		t.Fatal("expected plan")
+	}
+	if plan.Graph == nil {
+		t.Fatal("expected backing graph")
+	}
+	if len(plan.Steps) != 2 {
+		t.Fatalf("expected 2 planned steps, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].Name != "producer" {
+		t.Fatalf("expected producer first, got %s", plan.Steps[0].Name)
+	}
+	if plan.Steps[1].Name != "consumer" {
+		t.Fatalf("expected consumer second, got %s", plan.Steps[1].Name)
+	}
+	if plan.Steps[0].Index != 0 || plan.Steps[1].Index != 0 {
+		t.Fatal("expected singleton step instances to use index 0")
+	}
+	if plan.Steps[0].Config == nil || plan.Steps[1].Config == nil {
+		t.Fatal("expected planned steps to retain config")
+	}
+}
+
+func TestBuildPlanPreservesRuntimeOutputsWhenProvided(t *testing.T) {
+	stepConfig := &runbookconfigs.Step{Name: "discover"}
+	plan, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"discover": stepConfig,
+		},
+	}, nil)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected 1 planned step, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].Outputs != cty.NilVal {
+		t.Fatal("expected planned step outputs to default to nil when runtime outputs are absent")
+	}
+
+	graph := mustBuildGraph(t, &PlanBuilder{Config: &runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{"discover": stepConfig},
+	}, StepsRuntime: map[string]*runtime.Step{
+		"discover": {Name: "discover", Config: stepConfig, Outputs: cty.StringVal("ok")},
+	}})
+	evalCtx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{"discover": stepConfig},
+	}})
+	runtimeDiags := walkGraph(graph, evalCtx, walkOperationPlan)
+	if runtimeDiags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", runtimeDiags.Err())
+	}
+	withRuntime := evalCtx.StepsInOrder()
+	if len(withRuntime) != 1 {
+		t.Fatalf("expected 1 expanded runtime step, got %d", len(withRuntime))
+	}
+	if got := withRuntime[0].Outputs.AsString(); got != "ok" {
+		t.Fatalf("expected runtime outputs to be preserved, got %q", got)
+	}
+}
+
+func TestBuildPlanValidatesProviderBackedStepDeclarations(t *testing.T) {
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Actions: map[string]providers.ActionSchema{
+				"test_action": {ConfigSchema: &configschema.Block{}},
+			},
+			DataSources: map[string]providers.Schema{
+				"test_data": {Body: &configschema.Block{}},
+			},
+			ListResourceTypes: map[string]providers.Schema{
+				"test_list": {Body: &configschema.Block{}},
+			},
+		},
+	}
+
+	_, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		ProviderRequirements: &configs.RequiredProviders{
+			RequiredProviders: map[string]*configs.RequiredProvider{
+				"test": {Type: terraformaddrs.NewDefaultProvider("test")},
+			},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"discover": {
+				Name:        "discover",
+				Actions:     []*configs.Action{{Type: "test_action", Name: "run"}},
+				DataSources: []*configs.Resource{{Mode: terraformaddrs.DataResourceMode, Type: "test_data", Name: "lookup"}},
+				ListResources: []*configs.Resource{{
+					Mode: terraformaddrs.ListResourceMode,
+					Type: "test_list",
+					Name: "query",
+					List: &configs.ListResource{},
+				}},
+			},
+		},
+	}, &PlannerOpts{
+		Providers: map[terraformaddrs.Provider]providers.Factory{
+			terraformaddrs.NewDefaultProvider("test"): fixedPlannerProviderFactory(provider),
+		},
+	})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !provider.ValidateActionConfigCalled {
+		t.Fatal("expected action config validation during plan")
+	}
+	if !provider.ValidateDataResourceConfigCalled {
+		t.Fatal("expected data source config validation during plan")
+	}
+	if !provider.ValidateListResourceConfigCalled {
+		t.Fatal("expected list resource config validation during plan")
+	}
+}
+
+func TestBuildPlanReturnsProviderDeclarationDiagnostics(t *testing.T) {
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{},
+	}
+
+	_, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		ProviderRequirements: &configs.RequiredProviders{
+			RequiredProviders: map[string]*configs.RequiredProvider{
+				"test": {Type: terraformaddrs.NewDefaultProvider("test")},
+			},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"discover": {
+				Name:    "discover",
+				Actions: []*configs.Action{{Type: "unknown_action", Name: "run"}},
+			},
+		},
+	}, &PlannerOpts{
+		Providers: map[terraformaddrs.Provider]providers.Factory{
+			terraformaddrs.NewDefaultProvider("test"): fixedPlannerProviderFactory(provider),
+		},
+	})
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
+	}
+}
+
+func mustBuildGraph(t *testing.T, builder *PlanBuilder) *terraform.Graph {
+	t.Helper()
+	graph, diags := builder.Build()
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	return graph
+}
+
+func fixedPlannerProviderFactory(provider providers.Interface) providers.Factory {
+	return func() (providers.Interface, error) {
+		return provider, nil
+	}
+}

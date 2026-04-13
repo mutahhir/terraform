@@ -36,7 +36,7 @@ func (b *PlanBuilder) Steps() []terraform.GraphTransformer {
 			Config:    rootVariableConfig(b.Config),
 			RawValues: b.InputValues,
 		},
-		&PlanStepTransformer{Config: b.Config},
+		&PlanStepTransformer{Config: b.Config, StepsRuntime: b.StepsRuntime},
 		&PlanOutputTransformer{Config: b.Config},
 		&StepOutputReferenceTransformer{},
 		&terraform.RootTransformer{},
@@ -104,7 +104,8 @@ func replaceVertex(g *terraform.Graph, original, replacement dag.Vertex) error {
 }
 
 type PlanStepTransformer struct {
-	Config *runbookconfigs.RunbookConfig
+	Config       *runbookconfigs.RunbookConfig
+	StepsRuntime map[string]*runtime.Step
 }
 
 func (t *PlanStepTransformer) Transform(g *terraform.Graph) error {
@@ -113,7 +114,7 @@ func (t *PlanStepTransformer) Transform(g *terraform.Graph) error {
 	}
 
 	for _, step := range sortSteps(t.Config.Steps) {
-		g.Add(&NodeExpandStep{StepName: step.Name, Config: step})
+		g.Add(&NodeExpandStep{StepName: step.Name, Config: step, Runtime: t.StepsRuntime[step.Name]})
 	}
 
 	return nil
