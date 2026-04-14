@@ -31,7 +31,7 @@ func TestParseRefStepOutput(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected StepOutput, got %T", ref.Subject)
 	}
-	if output.StepName != "deploy" || output.OutputName != "result" {
+	if output.Step.StepName != "deploy" || output.OutputName != "result" {
 		t.Fatalf("unexpected step output address: %s", output.String())
 	}
 }
@@ -45,8 +45,22 @@ func TestParseRefStepsOutput(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected StepOutput, got %T", ref.Subject)
 	}
-	if output.StepName != "deploy" || output.OutputName != "result" {
+	if output.Step.StepName != "deploy" || output.OutputName != "result" {
 		t.Fatalf("unexpected step output address: %s", output.String())
+	}
+}
+
+func TestParseRefWorkspaceAction(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `workspace.action.http.notify`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	action, ok := ref.Subject.(terraformaddrs.Action)
+	if !ok {
+		t.Fatalf("expected Action, got %T", ref.Subject)
+	}
+	if action.Type != "http" || action.Name != "notify" {
+		t.Fatalf("unexpected workspace action address: %s", action.String())
 	}
 }
 

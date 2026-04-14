@@ -30,6 +30,36 @@ func ParseRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
 	case "action":
 		typ, name, rng, remain, diags := parseDoubleAttrRef(traversal)
 		return &Reference{Subject: terraformaddrs.Action{Type: typ, Name: name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
+	case "workspace":
+		if len(traversal) < 4 {
+			return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid reference",
+				Detail:   "Expected additional attribute names after the workspace symbol.",
+				Subject:  traversal.SourceRange().Ptr(),
+			})
+		}
+		first, ok := traversal[1].(hcl.TraverseAttr)
+		if !ok {
+			return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid reference",
+				Detail:   "Expected an attribute name after the workspace symbol.",
+				Subject:  traversal[1].SourceRange().Ptr(),
+			})
+		}
+		switch first.Name {
+		case "action":
+			typ, name, rng, remain, diags := parseDoubleAttrRef(traversal[1:])
+			return &Reference{Subject: terraformaddrs.Action{Type: typ, Name: name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
+		default:
+			return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid runbook reference",
+				Detail:   fmt.Sprintf("The symbol %q is not valid in the workspace scope.", first.Name),
+				Subject:  traversal[1].SourceRange().Ptr(),
+			})
+		}
 	case "data":
 		typ, name, rng, remain, diags := parseDoubleAttrRef(traversal)
 		return &Reference{Subject: terraformaddrs.Resource{Mode: terraformaddrs.DataResourceMode, Type: typ, Name: name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
@@ -38,7 +68,7 @@ func ParseRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
 		return &Reference{Subject: terraformaddrs.Resource{Mode: terraformaddrs.ListResourceMode, Type: typ, Name: name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
 	case "step", "steps":
 		stepName, outputName, rng, remain, diags := parseDoubleAttrRef(traversal)
-		return &Reference{Subject: StepOutput{StepName: stepName, OutputName: outputName}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
+		return &Reference{Subject: StepOutput{Step: StepInstance{StepName: stepName, InstanceKey: terraformaddrs.NoKey}, OutputName: outputName}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
 	default:
 		return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,

@@ -35,9 +35,10 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 		runtimeStep = ctx.EnsureStep(n.StepName, n.Config, n.Runtime)
 	}
 	instance := &NodeStepInstance{
-		StepName: n.StepName,
-		Config:   n.Config,
-		Runtime:  runtimeStep,
+		StepName:    n.StepName,
+		InstanceKey: terraformaddrs.NoKey,
+		Config:      n.Config,
+		Runtime:     runtimeStep,
 	}
 	g.Add(instance)
 	refTargets := map[string]dag.Vertex{}
@@ -96,10 +97,10 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 	}
 	outputs := make([]*NodeStepOutput, 0, len(n.Config.Outputs))
 	for _, output := range n.Config.Outputs {
-		child := &NodeStepOutput{StepName: n.StepName, Output: output}
+		child := &NodeStepOutput{StepName: n.StepName, InstanceKey: terraformaddrs.NoKey, Output: output}
 		g.Add(child)
 		g.Connect(dag.BasicEdge(instance, child))
-		refTargets[runbookaddrs.StepOutput{StepName: n.StepName, OutputName: output.Name}.String()] = child
+		refTargets[runbookaddrs.StepOutput{Step: runbookaddrs.StepInstance{StepName: n.StepName, InstanceKey: terraformaddrs.NoKey}, OutputName: output.Name}.String()] = child
 		outputs = append(outputs, child)
 	}
 	for _, local := range locals {
@@ -138,8 +139,8 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 func connectStepReferences(g *terraform.Graph, currentStep string, from dag.Vertex, refs []runbookaddrs.Referenceable, targets map[string]dag.Vertex) {
 	for _, ref := range refs {
 		key := ref.String()
-		if stepOutput, ok := ref.(runbookaddrs.StepOutput); ok && stepOutput.StepName == "" {
-			key = runbookaddrs.StepOutput{StepName: currentStep, OutputName: stepOutput.OutputName}.String()
+		if stepOutput, ok := ref.(runbookaddrs.StepOutput); ok && stepOutput.Step.StepName == "" {
+			key = runbookaddrs.StepOutput{Step: runbookaddrs.StepInstance{StepName: currentStep}, OutputName: stepOutput.OutputName}.String()
 		}
 		dep, ok := targets[key]
 		if !ok {

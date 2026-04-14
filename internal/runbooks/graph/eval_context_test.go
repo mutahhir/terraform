@@ -141,3 +141,24 @@ func TestEvalContextExpressionVariablesExposeListResultsUnderData(t *testing.T) 
 		t.Fatalf("wrong expression value %#v", value)
 	}
 }
+
+func TestEvalContextExpressionVariablesExposeWorkspaceOutputs(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{
+		WorkspaceConfig: &configs.Config{Module: &configs.Module{
+			Outputs: map[string]*configs.Output{
+				"workspace_region": {
+					Name: "workspace_region",
+					Expr: mustParseExpression(t, `"us-east-1"`),
+				},
+			},
+		}},
+	}})
+
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `workspace.output.workspace_region`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.DynamicVal {
+		t.Fatalf("wrong expression value %#v", value)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
@@ -325,6 +326,50 @@ func TestBuildPlanPassesFullListBlockValueToProvider(t *testing.T) {
 	})
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+}
+
+func TestNodeStepExecutionCanInvokeWorkspaceAction(t *testing.T) {
+	providerType := terraformaddrs.NewDefaultProvider("test")
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			Actions: map[string]providers.ActionSchema{
+				"test_action": {ConfigSchema: &configschema.Block{}},
+			},
+		},
+		InvokeActionFn: func(providers.InvokeActionRequest) providers.InvokeActionResponse {
+			return providers.InvokeActionResponse{}
+		},
+	}
+
+	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{
+		ProviderRequirements: &configs.RequiredProviders{
+			RequiredProviders: map[string]*configs.RequiredProvider{
+				"test": {Type: providerType},
+			},
+		},
+		ProviderConfigs: map[string]*configs.Provider{
+			"test": {Name: "test"},
+		},
+		WorkspaceConfig: &configs.Config{Module: &configs.Module{
+			Actions: map[string]*configs.Action{
+				"action.test_action.workspace_ping": {Type: "test_action", Name: "workspace_ping", Provider: providerType},
+			},
+		}},
+	}})
+	ctx.SetProvider(providerType, provider)
+
+	diags := (&NodeStepExecution{
+		StepName:  "deploy",
+		Index:     0,
+		Execution: &runbookconfigs.Execution{InvokeAction: []hcl.Traversal{mustParseTraversal(t, `workspace.action.test_action.workspace_ping`)}},
+	}).Execute(ctx, walkOperationExecute)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !provider.InvokeActionCalled {
+		t.Fatal("expected workspace action to be invoked during execute walk")
 	}
 }
 

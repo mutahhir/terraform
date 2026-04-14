@@ -3,6 +3,7 @@ package runbookgraph
 import (
 	"fmt"
 
+	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runtime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -11,21 +12,29 @@ import (
 type NodeStepInstance struct {
 	// NodeStepInstance represents a concrete runtime step instance created from
 	// a declared step, even when there is only one instance.
-	StepName string
-	Config   *runbookconfigs.Step
-	Runtime  *runtime.Step
+	StepName    string
+	InstanceKey terraformaddrs.InstanceKey
+	Config      *runbookconfigs.Step
+	Runtime     *runtime.Step
 }
 
 func (n *NodeStepInstance) Hashcode() interface{} {
-	return [2]string{"step_instance", n.StepName}
+	key := ""
+	if n.InstanceKey != nil {
+		key = n.InstanceKey.String()
+	}
+	return [3]string{"step_instance", n.StepName, key}
 }
 
 func (n *NodeStepInstance) Name() string {
-	return fmt.Sprintf("step.%s", n.StepName)
+	if n.InstanceKey == nil {
+		return fmt.Sprintf("step.%s", n.StepName)
+	}
+	return fmt.Sprintf("step.%s%s", n.StepName, n.InstanceKey.String())
 }
 
 func (n *NodeStepInstance) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
-	step := ctx.EnsureStep(n.StepName, n.Config, n.Runtime)
+	step := ctx.ensureStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
 	switch op {
 	case walkOperationPlan:
 		if step.Status == runtime.StepStatusPending {

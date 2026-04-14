@@ -19,10 +19,10 @@ func (t *StepOutputReferenceTransformer) Transform(g *terraform.Graph) error {
 
 		for _, ref := range referencesForStep(expand.Config) {
 			stepOutput, ok := ref.(runbookaddrs.StepOutput)
-			if !ok || stepOutput.StepName == "" {
+			if !ok || stepOutput.Step.StepName == "" {
 				continue
 			}
-			dep, ok := stepNodes[stepOutput.StepName]
+			dep, ok := stepNodes[stepOutput.Step.StepName]
 			if !ok {
 				continue
 			}

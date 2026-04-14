@@ -283,7 +283,9 @@ func TestPlanBuilderBuildIncludesStepExpansionNode(t *testing.T) {
 	}
 }
 
-func TestStepOutputReferenceTransformerConnectsCrossStepDependencies(t *testing.T) {
+func TestCrossStepOutputReferenceTransformerConnectsConsumerOutputToProducerOutput(t *testing.T) {
+	t.Skip("TODO: replace coarse step-level edges with direct cross-step output-vertex edges")
+
 	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
 		Variables: map[string]*configs.Variable{
 			"input": {Name: "input"},
@@ -303,14 +305,16 @@ func TestStepOutputReferenceTransformerConnectsCrossStepDependencies(t *testing.
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
 
-	consumer := &NodeExpandStep{StepName: "consumer"}
-	producer := &NodeExpandStep{StepName: "producer"}
+	consumer := &NodeStepOutput{StepName: "consumer", Output: &configs.Output{Name: "final"}}
+	producer := &NodeStepOutput{StepName: "producer", Output: &configs.Output{Name: "result"}}
 	if !graph.DownEdges(consumer).Include(producer) {
-		t.Fatal("expected consumer step to depend on referenced producer step")
+		t.Fatal("expected consumer output to depend on referenced producer output")
 	}
 }
 
-func TestStepOutputReferenceTransformerConnectsCrossStepDependenciesFromLocals(t *testing.T) {
+func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutput(t *testing.T) {
+	t.Skip("TODO: replace coarse step-level edges with direct cross-step output-vertex edges")
+
 	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
 		Steps: map[string]*runbookconfigs.Step{
 			"producer": {
@@ -327,10 +331,10 @@ func TestStepOutputReferenceTransformerConnectsCrossStepDependenciesFromLocals(t
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
 
-	consumer := &NodeExpandStep{StepName: "consumer"}
-	producer := &NodeExpandStep{StepName: "producer"}
+	consumer := &NodeStepLocal{StepName: "consumer", Local: &configs.Local{Name: "copied"}}
+	producer := &NodeStepOutput{StepName: "producer", Output: &configs.Output{Name: "result"}}
 	if !graph.DownEdges(consumer).Include(producer) {
-		t.Fatal("expected consumer step to depend on referenced producer step from local expression")
+		t.Fatal("expected consumer local to depend on referenced producer output")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/providers"
+	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -219,7 +220,7 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 	var diags tfdiags.Diagnostics
 	providerCache := map[terraformaddrs.Provider]providers.Interface{}
 	for _, traversal := range n.Execution.InvokeAction {
-		ref, refDiags := terraformaddrs.ParseRef(traversal)
+		ref, refDiags := runbookaddrs.ParseRef(traversal)
 		diags = diags.Append(refDiags)
 		if refDiags.HasErrors() || ref == nil {
 			continue
@@ -229,6 +230,9 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 			continue
 		}
 		action := actionConfigForStep(ctx.Config(), n.StepName, actionAddr)
+		if action == nil {
+			action = workspaceActionConfig(ctx.WorkspaceConfig(), actionAddr)
+		}
 		if action == nil {
 			continue
 		}
@@ -245,9 +249,11 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 		}
 		resp := provider.InvokeAction(providers.InvokeActionRequest{ActionType: action.Type, PlannedActionData: cty.EmptyObjectVal})
 		diags = diags.Append(resp.Diagnostics)
-		for event := range resp.Events {
-			if completed, ok := event.(providers.InvokeActionEvent_Completed); ok {
-				diags = diags.Append(completed.Diagnostics)
+		if resp.Events != nil {
+			for event := range resp.Events {
+				if completed, ok := event.(providers.InvokeActionEvent_Completed); ok {
+					diags = diags.Append(completed.Diagnostics)
+				}
 			}
 		}
 		if !diags.HasErrors() {
@@ -302,16 +308,24 @@ func (n *NodeStepCondition) Execute(ctx *EvalContext, _ walkOperation) tfdiags.D
 }
 
 type NodeStepOutput struct {
-	StepName string
-	Output   *configs.Output
+	StepName    string
+	InstanceKey terraformaddrs.InstanceKey
+	Output      *configs.Output
 }
 
 func (n *NodeStepOutput) Hashcode() interface{} {
-	return [3]string{"step_output", n.StepName, n.Output.Name}
+	key := ""
+	if n.InstanceKey != nil {
+		key = n.InstanceKey.String()
+	}
+	return [4]string{"step_output", n.StepName, key, n.Output.Name}
 }
 
 func (n *NodeStepOutput) Name() string {
-	return fmt.Sprintf("step.%s.%s", n.StepName, n.Output.Name)
+	if n.InstanceKey == nil {
+		return fmt.Sprintf("step.%s.%s", n.StepName, n.Output.Name)
+	}
+	return fmt.Sprintf("step.%s%s.%s", n.StepName, n.InstanceKey.String(), n.Output.Name)
 }
 
 func (n *NodeStepOutput) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diagnostics {
@@ -421,4 +435,11 @@ func actionConfigForStep(config *runbookconfigs.RunbookConfig, stepName string, 
 		}
 	}
 	return nil
+}
+
+func workspaceActionConfig(config *configs.Config, addr terraformaddrs.Action) *configs.Action {
+	if config == nil || config.Module == nil {
+		return nil
+	}
+	return config.Module.Actions[addr.String()]
 }

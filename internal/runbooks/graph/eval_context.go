@@ -61,6 +61,14 @@ func NewEvalContext(opts EvalContextOpts) *EvalContext {
 	}
 }
 
+func stepStateKey(name string, instanceKey addrs.InstanceKey) string {
+	return runbookaddrs.StepInstance{StepName: name, InstanceKey: instanceKey}.String()
+}
+
+func defaultStepStateKey(name string) string {
+	return stepStateKey(name, addrs.NoKey)
+}
+
 func (ec *EvalContext) UI() UI {
 	return ec.ui
 }
@@ -151,10 +159,15 @@ func (ec *EvalContext) Provider(providerType addrs.Provider) (providers.Interfac
 }
 
 func (ec *EvalContext) EnsureStep(name string, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
+	return ec.ensureStepWithKey(name, addrs.NoKey, config, existing)
+}
+
+func (ec *EvalContext) ensureStepWithKey(name string, instanceKey addrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[name]
+	key := stepStateKey(name, instanceKey)
+	state, ok := ec.steps[key]
 	if !ok {
 		state = &stepEvalState{
 			locals:  make(map[string]cty.Value),
@@ -163,8 +176,8 @@ func (ec *EvalContext) EnsureStep(name string, config *runbookconfigs.Step, exis
 			actions: make(map[string]*actionEvalState),
 			outputs: make(map[string]cty.Value),
 		}
-		ec.steps[name] = state
-		ec.stepOrder = append(ec.stepOrder, name)
+		ec.steps[key] = state
+		ec.stepOrder = append(ec.stepOrder, key)
 	}
 	if state.runtime != nil {
 		return state.runtime
@@ -174,13 +187,17 @@ func (ec *EvalContext) EnsureStep(name string, config *runbookconfigs.Step, exis
 		state.runtime = existing
 	} else {
 		state.runtime = &runbookruntime.Step{
-			Config: config,
-			Name:   name,
-			Index:  0,
+			Config:      config,
+			Name:        name,
+			Index:       0,
+			InstanceKey: instanceKey,
 		}
 	}
 	if state.runtime.Config == nil {
 		state.runtime.Config = config
+	}
+	if state.runtime.InstanceKey == nil {
+		state.runtime.InstanceKey = instanceKey
 	}
 	if state.runtime.Outputs == cty.NilVal {
 		state.runtime.Outputs = cty.NilVal
@@ -192,10 +209,14 @@ func (ec *EvalContext) EnsureStep(name string, config *runbookconfigs.Step, exis
 }
 
 func (ec *EvalContext) Step(name string) (*runbookruntime.Step, bool) {
+	return ec.stepWithKey(name, addrs.NoKey)
+}
+
+func (ec *EvalContext) stepWithKey(name string, instanceKey addrs.InstanceKey) (*runbookruntime.Step, bool) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[name]
+	state, ok := ec.steps[stepStateKey(name, instanceKey)]
 	if !ok || state.runtime == nil {
 		return nil, false
 	}
@@ -207,8 +228,8 @@ func (ec *EvalContext) StepsInOrder() []*runbookruntime.Step {
 	defer ec.stepsLock.Unlock()
 
 	steps := make([]*runbookruntime.Step, 0, len(ec.stepOrder))
-	for _, name := range ec.stepOrder {
-		state := ec.steps[name]
+	for _, key := range ec.stepOrder {
+		state := ec.steps[key]
 		if state != nil && state.runtime != nil {
 			steps = append(steps, state.runtime)
 		}
@@ -220,7 +241,7 @@ func (ec *EvalContext) SetStepStatus(name string, status runbookruntime.StepStat
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[name]
+	state, ok := ec.steps[defaultStepStateKey(name)]
 	if !ok || state.runtime == nil {
 		return
 	}
@@ -234,7 +255,7 @@ func (ec *EvalContext) SetStepOutput(stepName, outputName string, value cty.Valu
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[stepName]
+	state, ok := ec.steps[defaultStepStateKey(stepName)]
 	if !ok {
 		state = &stepEvalState{
 			locals:  make(map[string]cty.Value),
@@ -243,8 +264,9 @@ func (ec *EvalContext) SetStepOutput(stepName, outputName string, value cty.Valu
 			actions: make(map[string]*actionEvalState),
 			outputs: make(map[string]cty.Value),
 		}
-		ec.steps[stepName] = state
-		ec.stepOrder = append(ec.stepOrder, stepName)
+		key := defaultStepStateKey(stepName)
+		ec.steps[key] = state
+		ec.stepOrder = append(ec.stepOrder, key)
 	}
 	state.outputs[outputName] = value
 	if state.runtime != nil {
@@ -256,7 +278,7 @@ func (ec *EvalContext) StepOutput(stepName, outputName string) (cty.Value, bool)
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[stepName]
+	state, ok := ec.steps[defaultStepStateKey(stepName)]
 	if !ok {
 		return cty.NilVal, false
 	}
@@ -321,7 +343,7 @@ func (ec *EvalContext) setStepValue(stepName string, apply func(state *stepEvalS
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[stepName]
+	state, ok := ec.steps[defaultStepStateKey(stepName)]
 	if !ok {
 		state = &stepEvalState{
 			locals:  make(map[string]cty.Value),
@@ -330,8 +352,9 @@ func (ec *EvalContext) setStepValue(stepName string, apply func(state *stepEvalS
 			actions: make(map[string]*actionEvalState),
 			outputs: make(map[string]cty.Value),
 		}
-		ec.steps[stepName] = state
-		ec.stepOrder = append(ec.stepOrder, stepName)
+		key := defaultStepStateKey(stepName)
+		ec.steps[key] = state
+		ec.stepOrder = append(ec.stepOrder, key)
 	}
 	apply(state)
 }
@@ -351,7 +374,7 @@ func (ec *EvalContext) StepLocal(stepName, localName string) (cty.Value, bool) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[stepName]
+	state, ok := ec.steps[defaultStepStateKey(stepName)]
 	if !ok {
 		return cty.NilVal, false
 	}
@@ -363,7 +386,7 @@ func (ec *EvalContext) StepData(stepName string, addr addrs.Resource) (cty.Value
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[stepName]
+	state, ok := ec.steps[defaultStepStateKey(stepName)]
 	if !ok {
 		return cty.NilVal, false
 	}
@@ -375,7 +398,7 @@ func (ec *EvalContext) StepList(stepName string, addr addrs.Resource) (cty.Value
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[stepName]
+	state, ok := ec.steps[defaultStepStateKey(stepName)]
 	if !ok {
 		return cty.NilVal, false
 	}
@@ -462,8 +485,29 @@ func (ec *EvalContext) expressionVariables(stepName string) map[string]cty.Value
 	stepVals := cty.ObjectVal(stepAttrs)
 	variables["step"] = stepVals
 	variables["steps"] = stepVals
+	variables["workspace"] = ec.workspaceVariables()
 
 	return variables
+}
+
+func (ec *EvalContext) workspaceVariables() cty.Value {
+	config := ec.WorkspaceConfig()
+	if config == nil || config.Module == nil {
+		return cty.EmptyObjectVal
+	}
+
+	outputs := map[string]cty.Value{}
+	for name, output := range config.Module.Outputs {
+		if output == nil {
+			continue
+		}
+		outputs[name] = cty.DynamicVal
+	}
+
+	attrs := map[string]cty.Value{
+		"output": cty.ObjectVal(outputs),
+	}
+	return cty.ObjectVal(attrs)
 }
 
 func copyValueMap(src map[string]cty.Value) map[string]cty.Value {
