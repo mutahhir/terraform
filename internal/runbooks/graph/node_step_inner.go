@@ -78,7 +78,10 @@ func (n *NodeStepAction) Execute(ctx *EvalContext, op walkOperation) tfdiags.Dia
 		schemaResp := provider.GetProviderSchema()
 		actionSchema := schemaResp.Actions[n.Action.Type]
 		if actionSchema.ConfigSchema != nil {
-			value, _, valueDiags := ctx.EvaluateBlock(n.Action.Config, actionSchema.ConfigSchema)
+			if localVal, ok := ctx.stepLocalWithKey(n.Step.StepName, n.Step.InstanceKey, "selected_id"); ok {
+				_ = localVal
+			}
+			value, _, valueDiags := ctx.EvaluateBlockForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Action.Config, actionSchema.ConfigSchema)
 			diags = diags.Append(valueDiags)
 			if diags.HasErrors() {
 				return diags
@@ -150,7 +153,7 @@ func (n *NodeStepData) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 		providerMetaVal = schemaResp.ProviderMeta.Body.EmptyValue()
 	}
 	if resourceSchema.Body != nil {
-		value, _, valueDiags := ctx.EvaluateBlock(n.Data.Config, resourceSchema.Body)
+		value, _, valueDiags := ctx.EvaluateBlockForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Data.Config, resourceSchema.Body)
 		diags = diags.Append(valueDiags)
 		if diags.HasErrors() {
 			return diags
@@ -212,7 +215,7 @@ func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	listSchema := schemaResp.SchemaForListResourceType(n.List.Type)
 	blockVal := cty.EmptyObjectVal
 	if listSchema.FullSchema != nil {
-		value, _, valueDiags := ctx.EvaluateBlock(n.List.Config, listSchema.FullSchema)
+		value, _, valueDiags := ctx.EvaluateBlockForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.List.Config, listSchema.FullSchema)
 		diags = diags.Append(valueDiags)
 		if diags.HasErrors() {
 			return diags

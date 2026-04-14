@@ -240,6 +240,54 @@ func TestBuildPlanUsesRequiredProviderSourceForStepActions(t *testing.T) {
 	}
 }
 
+func TestBuildPlanAllowsActionConfigToReferenceSameStepLocalAtPlanTime(t *testing.T) {
+	providerType := terraformaddrs.NewDefaultProvider("test")
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			Actions: map[string]providers.ActionSchema{
+				"test_action": {
+					ConfigSchema: &configschema.Block{
+						Attributes: map[string]*configschema.Attribute{
+							"target": {Type: cty.String, Optional: true},
+						},
+					},
+				},
+			},
+			DataSources: map[string]providers.Schema{
+				"test_data": {Body: &configschema.Block{}},
+			},
+		},
+		ReadDataSourceResponse: &providers.ReadDataSourceResponse{State: cty.ObjectVal(map[string]cty.Value{"id": cty.StringVal("srv-123")})},
+	}
+
+	_, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		ProviderRequirements: &configs.RequiredProviders{
+			RequiredProviders: map[string]*configs.RequiredProvider{
+				"test": {Type: providerType},
+			},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"discover": {
+				Name:        "discover",
+				DataSources: []*configs.Resource{{Mode: terraformaddrs.DataResourceMode, Type: "test_data", Name: "selected"}},
+				Locals:      []*configs.Local{{Name: "selected_id", Expr: mustParseExpression(t, `data.test_data.selected.id`)}},
+				Actions:     []*configs.Action{{Type: "test_action", Name: "notify", Config: mustParseBody(t, `target = local.selected_id`)}},
+			},
+		},
+	}, &PlannerOpts{
+		Providers: map[terraformaddrs.Provider]providers.Factory{
+			providerType: fixedPlannerProviderFactory(provider),
+		},
+	})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if got := provider.PlanActionRequest.ProposedActionData.GetAttr("target").AsString(); got != "srv-123" {
+		t.Fatalf("expected action config target srv-123, got %q", got)
+	}
+}
+
 func TestBuildPlanConfiguresProvidersFromRunbookProviderBlocks(t *testing.T) {
 	providerType := terraformaddrs.NewDefaultProvider("test")
 	provider := &testing_provider.MockProvider{

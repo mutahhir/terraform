@@ -250,6 +250,9 @@ output "summary" {
 		},
 	})
 	if planDiags.HasErrors() {
+		if !provider.ValidateActionConfigCalled {
+			t.Log("provider action validation was skipped as expected for runtime-dependent config")
+		}
 		t.Fatalf("unexpected plan diagnostics: %s", planDiags.Err())
 	}
 	if plan == nil {
@@ -533,6 +536,172 @@ func TestBuildPlanRejectsUnknownStepForEach(t *testing.T) {
 	}
 	if !strings.Contains(diags.Err().Error(), "Invalid for_each argument") {
 		t.Fatalf("expected invalid for_each diagnostic, got: %s", diags.Err())
+	}
+}
+
+func TestBuildPlanAllowsDataConsumerFromEarlierStepOutput(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
+	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "producer" {
+  output "result" {
+    value = "srv-123"
+  }
+}
+
+step "consumer" {
+  data "test_data" "target" {
+    value = step.producer.result
+  }
+
+  output "final" {
+    value = data.test_data.target.value
+  }
+}
+`)
+
+	parser := runbookconfigs.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
+	}
+
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			DataSources: map[string]providers.Schema{
+				"test_data": {
+					Body: &configschema.Block{
+						Attributes: map[string]*configschema.Attribute{
+							"value": {Type: cty.String, Optional: true, Computed: true},
+						},
+					},
+				},
+			},
+		},
+		ReadDataSourceResponse: &providers.ReadDataSourceResponse{
+			State: cty.ObjectVal(map[string]cty.Value{
+				"value": cty.StringVal("srv-123"),
+			}),
+		},
+	}
+
+	plan, planDiags := BuildPlan(config, &PlannerOpts{
+		Providers: map[addrs.Provider]providers.Factory{
+			addrs.NewDefaultProvider("test"): fixedProviderFactory(provider),
+		},
+	})
+	if planDiags.HasErrors() {
+		t.Fatalf("unexpected plan diagnostics: %s", planDiags.Err())
+	}
+	if len(plan.Steps) != 2 {
+		t.Fatalf("expected 2 planned steps, got %d", len(plan.Steps))
+	}
+	if got := plan.Steps[0].Outputs.GetAttr("result").AsString(); got != "srv-123" {
+		t.Fatalf("expected producer output srv-123, got %q", got)
+	}
+	if got := plan.Steps[1].Outputs.GetAttr("final").AsString(); got != "srv-123" {
+		t.Fatalf("expected final output srv-123, got %q", got)
+	}
+	if !provider.ReadDataSourceCalled {
+		t.Fatal("expected data source read during plan")
+	}
+	if got := provider.ReadDataSourceRequest.Config.GetAttr("value").AsString(); got != "srv-123" {
+		t.Fatalf("expected data source config to receive step output, got %q", got)
+	}
+}
+
+func TestBuildPlanPostconditionCanReadSameStepData(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
+	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+variable "expected_runtime" {
+  type    = string
+  default = "python3.12"
+}
+
+step "inspect" {
+  data "test_data" "target" {
+    value = "python3.12"
+  }
+
+  output "runtime" {
+    value = data.test_data.target.value
+  }
+
+  postcondition {
+    condition     = data.test_data.target.value == var.expected_runtime
+    error_message = "runtime mismatch"
+  }
+}
+`)
+
+	parser := runbookconfigs.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
+	}
+
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			DataSources: map[string]providers.Schema{
+				"test_data": {
+					Body: &configschema.Block{
+						Attributes: map[string]*configschema.Attribute{
+							"value": {Type: cty.String, Optional: true, Computed: true},
+						},
+					},
+				},
+			},
+		},
+		ReadDataSourceResponse: &providers.ReadDataSourceResponse{
+			State: cty.ObjectVal(map[string]cty.Value{
+				"value": cty.StringVal("python3.12"),
+			}),
+		},
+	}
+
+	plan, planDiags := BuildPlan(config, &PlannerOpts{
+		Providers: map[addrs.Provider]providers.Factory{
+			addrs.NewDefaultProvider("test"): fixedProviderFactory(provider),
+		},
+	})
+	if planDiags.HasErrors() {
+		t.Fatalf("unexpected plan diagnostics: %s", planDiags.Err())
+	}
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected 1 planned step, got %d", len(plan.Steps))
+	}
+	if got := plan.Steps[0].Outputs.GetAttr("runtime").AsString(); got != "python3.12" {
+		t.Fatalf("expected runtime output python3.12, got %q", got)
+	}
+	if plan.Steps[0].Status != runtime.StepStatusCompleted {
+		t.Fatalf("expected completed step after successful postcondition, got %q", plan.Steps[0].Status)
 	}
 }
 

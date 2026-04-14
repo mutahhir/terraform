@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform/internal/lang"
 	"github.com/hashicorp/terraform/internal/providers"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
+	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
@@ -155,6 +156,13 @@ type providerEvalData struct {
 	ctx *EvalContext
 }
 
+type providerEvalDataForInstance struct {
+	ctx            *EvalContext
+	stepName       string
+	instanceKey    addrs.InstanceKey
+	repetitionData *terraform.InstanceKeyEvalData
+}
+
 func (providerEvalData) StaticValidateReferences(refs []*addrs.Reference, self addrs.Referenceable, source addrs.Referenceable) tfdiags.Diagnostics {
 	return nil
 }
@@ -204,5 +212,89 @@ func (providerEvalData) GetCheckBlock(addrs.Check, tfdiags.SourceRange) (cty.Val
 	return cty.DynamicVal, nil
 }
 func (providerEvalData) GetRunBlock(addrs.Run, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+var _ lang.Data = providerEvalDataForInstance{}
+
+func (providerEvalDataForInstance) StaticValidateReferences(refs []*addrs.Reference, self addrs.Referenceable, source addrs.Referenceable) tfdiags.Diagnostics {
+	return nil
+}
+
+func (d providerEvalDataForInstance) GetCountAttr(addr addrs.CountAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	if d.repetitionData != nil && addr.Name == "index" && d.repetitionData.CountIndex != cty.NilVal {
+		return d.repetitionData.CountIndex, nil
+	}
+	return cty.NilVal, nil
+}
+
+func (d providerEvalDataForInstance) GetForEachAttr(addr addrs.ForEachAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	if d.repetitionData == nil {
+		return cty.NilVal, nil
+	}
+	switch addr.Name {
+	case "key":
+		if d.repetitionData.EachKey != cty.NilVal {
+			return d.repetitionData.EachKey, nil
+		}
+	case "value":
+		if d.repetitionData.EachValue != cty.NilVal {
+			return d.repetitionData.EachValue, nil
+		}
+	}
+	return cty.NilVal, nil
+}
+
+func (d providerEvalDataForInstance) GetResource(addr addrs.Resource, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	if d.ctx == nil {
+		return cty.DynamicVal, nil
+	}
+	switch addr.Mode {
+	case addrs.DataResourceMode:
+		if value, ok := d.ctx.stepDataWithKey(d.stepName, d.instanceKey, addr); ok {
+			return value, nil
+		}
+	case addrs.ListResourceMode:
+		if value, ok := d.ctx.stepListWithKey(d.stepName, d.instanceKey, addr); ok {
+			return value, nil
+		}
+	}
+	return cty.DynamicVal, nil
+}
+
+func (d providerEvalDataForInstance) GetLocalValue(addr addrs.LocalValue, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	if d.ctx != nil {
+		if value, ok := d.ctx.stepLocalWithKey(d.stepName, d.instanceKey, addr.Name); ok {
+			return value, nil
+		}
+	}
+	return cty.DynamicVal, nil
+}
+
+func (d providerEvalDataForInstance) GetModule(addrs.ModuleCall, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (providerEvalDataForInstance) GetPathAttr(addrs.PathAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (providerEvalDataForInstance) GetTerraformAttr(addrs.TerraformAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (d providerEvalDataForInstance) GetInputVariable(addr addrs.InputVariable, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return providerEvalData{ctx: d.ctx}.GetInputVariable(addr, rng)
+}
+
+func (d providerEvalDataForInstance) GetOutput(addr addrs.OutputValue, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (providerEvalDataForInstance) GetCheckBlock(addrs.Check, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	return cty.DynamicVal, nil
+}
+
+func (providerEvalDataForInstance) GetRunBlock(addrs.Run, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }

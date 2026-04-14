@@ -8,12 +8,15 @@ import (
 	"sync"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/ext/dynblock"
+	"github.com/hashicorp/hcl/v2/hcldec"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/terraform/internal/addrs"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/lang"
+	"github.com/hashicorp/terraform/internal/lang/blocktoattr"
 	"github.com/hashicorp/terraform/internal/providers"
 	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
@@ -63,6 +66,30 @@ func NewEvalContext(opts EvalContextOpts) *EvalContext {
 
 func stepStateKey(name string, instanceKey addrs.InstanceKey) string {
 	return runbookaddrs.StepInstance{StepName: name, InstanceKey: instanceKey}.String()
+}
+
+func parseStepStateKey(key string) runbookaddrs.StepInstance {
+	if key == "" {
+		return runbookaddrs.StepInstance{}
+	}
+	traversal, diags := hclsyntax.ParseTraversalAbs([]byte(key), "", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return runbookaddrs.StepInstance{StepName: key}
+	}
+	root, ok := traversal[0].(hcl.TraverseRoot)
+	if !ok {
+		return runbookaddrs.StepInstance{StepName: key}
+	}
+	instance := runbookaddrs.StepInstance{StepName: root.Name, InstanceKey: terraformaddrs.NoKey}
+	if len(traversal) > 1 {
+		if idx, ok := traversal[1].(hcl.TraverseIndex); ok {
+			parsed, err := terraformaddrs.ParseInstanceKey(idx.Key)
+			if err == nil {
+				instance.InstanceKey = parsed
+			}
+		}
+	}
+	return instance
 }
 
 func defaultStepStateKey(name string) string {
@@ -528,16 +555,30 @@ func (ec *EvalContext) expressionVariablesForInstance(stepName string, instanceK
 		variables["each"] = cty.ObjectVal(eachAttrs)
 	}
 
-	stepAttrs := map[string]cty.Value{}
-	for name, state := range ec.steps {
+	stepGroups := map[string][]*stepEvalState{}
+	for key, state := range ec.steps {
 		if state == nil {
 			continue
 		}
-		if len(state.outputs) == 0 {
+		instance := parseStepStateKey(key)
+		if instance.StepName == "" {
+			continue
+		}
+		stepGroups[instance.StepName] = append(stepGroups[instance.StepName], state)
+	}
+	stepAttrs := map[string]cty.Value{}
+	for name, states := range stepGroups {
+		outputs := map[string]cty.Value{}
+		for _, state := range states {
+			for outputName, value := range state.outputs {
+				outputs[outputName] = value
+			}
+		}
+		if len(outputs) == 0 {
 			stepAttrs[name] = cty.EmptyObjectVal
 			continue
 		}
-		stepAttrs[name] = cty.ObjectVal(copyValueMap(state.outputs))
+		stepAttrs[name] = cty.ObjectVal(copyValueMap(outputs))
 	}
 	stepVals := cty.ObjectVal(stepAttrs)
 	variables["step"] = stepVals
@@ -624,6 +665,10 @@ func nestedResourceValues(src map[string]cty.Value) cty.Value {
 }
 
 func (ec *EvalContext) EvaluateBlock(body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {
+	return ec.EvaluateBlockForInstance("", terraformaddrs.NoKey, nil, body, schema)
+}
+
+func (ec *EvalContext) EvaluateBlockForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {
 	if schema == nil {
 		return cty.EmptyObjectVal, body, nil
 	}
@@ -631,13 +676,17 @@ func (ec *EvalContext) EvaluateBlock(body hcl.Body, schema *configschema.Block) 
 		return schema.EmptyValue(), nil, nil
 	}
 
-	scope := &lang.Scope{Data: providerEvalData{ctx: ec}, ParseRef: terraformaddrs.ParseRef}
+	funcs := (&lang.Scope{BaseDir: ".", PureOnly: true, ForProvider: true}).Functions()
+	hclCtx := &hcl.EvalContext{
+		Variables: ec.expressionVariablesForInstance(stepName, instanceKey, repetitionData),
+		Functions: funcs,
+	}
 	var diags tfdiags.Diagnostics
-	body, expandDiags := scope.ExpandBlock(body, schema)
-	diags = diags.Append(expandDiags)
-	val, evalDiags := scope.EvalBlock(body, schema)
+	expandedBody := dynblock.Expand(body, hclCtx)
+	fixedBody := blocktoattr.FixUpBlockAttrs(expandedBody, schema)
+	val, evalDiags := hcldec.Decode(fixedBody, schema.DecoderSpec(), hclCtx)
 	diags = diags.Append(evalDiags)
-	return val, body, diags
+	return val, fixedBody, diags
 }
 
 func variableValueType(variable *configs.Variable) cty.Type {

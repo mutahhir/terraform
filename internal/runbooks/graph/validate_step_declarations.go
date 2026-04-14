@@ -54,6 +54,9 @@ func validateStepActionDeclarations(config *runbookconfigs.RunbookConfig, ctx *E
 		if configBody == nil {
 			configBody = hcl.EmptyBody()
 		}
+		if hasRunbookReferencesInBody(configBody) {
+			continue
+		}
 		configVal, _, bodyDiags := ctx.EvaluateBlock(configBody, actionSchema.ConfigSchema)
 		diags = diags.Append(bodyDiags.InConfigBody(configBody, action.Type))
 		if bodyDiags.HasErrors() {
@@ -92,6 +95,9 @@ func validateStepDataDeclarations(config *runbookconfigs.RunbookConfig, ctx *Eva
 		configBody := data.Config
 		if configBody == nil {
 			configBody = hcl.EmptyBody()
+		}
+		if hasRunbookReferencesInBody(configBody) {
+			continue
 		}
 		configVal, _, bodyDiags := ctx.EvaluateBlock(configBody, resourceSchema.Body)
 		diags = diags.Append(bodyDiags.InConfigBody(configBody, data.Addr().String()))
@@ -132,6 +138,9 @@ func validateStepListDeclarations(config *runbookconfigs.RunbookConfig, ctx *Eva
 		configBody := list.Config
 		if configBody == nil {
 			configBody = hcl.EmptyBody()
+		}
+		if hasRunbookReferencesInBody(configBody) {
+			continue
 		}
 		blockVal, _, listDiags = ctx.EvaluateBlock(configBody, listSchema.FullSchema)
 		diags = diags.Append(listDiags.InConfigBody(configBody, list.Addr().String()))
@@ -195,6 +204,10 @@ func newProviderSchemaCache(config *runbookconfigs.RunbookConfig, opts *Validate
 		cache.providers = opts.Providers
 	}
 	return cache
+}
+
+func hasRunbookReferencesInBody(body hcl.Body) bool {
+	return len(referencesInBody(body)) > 0
 }
 
 func (c *providerSchemaCache) provider(providerType terraformaddrs.Provider) (providers.Interface, providers.ProviderSchema, tfdiags.Diagnostics) {

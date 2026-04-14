@@ -27,6 +27,10 @@ type GraphNodeDynamicExpandable interface {
 }
 
 func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
+	return walkGraphVertices(graph, ctx, op, nil)
+}
+
+func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperation, allowed map[dag.Vertex]struct{}) tfdiags.Diagnostics {
 	if graph == nil {
 		return nil
 	}
@@ -41,6 +45,11 @@ func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdia
 
 	var diags tfdiags.Diagnostics
 	for _, vertex := range order {
+		if allowed != nil {
+			if _, ok := allowed[vertex]; !ok {
+				continue
+			}
+		}
 		if dag.VertexName(vertex) == "root" {
 			continue
 		}
@@ -62,7 +71,7 @@ func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdia
 				}
 				rewireExactStepOutputReferences(graph, expandedVertex)
 			}
-			diags = diags.Append(walkGraph(expanded, ctx, op))
+			diags = diags.Append(walkGraphVertices(graph, ctx, op, vertexSet(expanded.Vertices())))
 			continue
 		}
 		executable, ok := vertex.(GraphNodeExecutable)
@@ -92,6 +101,17 @@ func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdia
 	}
 
 	return diags
+}
+
+func vertexSet(vertices []dag.Vertex) map[dag.Vertex]struct{} {
+	if len(vertices) == 0 {
+		return nil
+	}
+	ret := make(map[dag.Vertex]struct{}, len(vertices))
+	for _, vertex := range vertices {
+		ret[vertex] = struct{}{}
+	}
+	return ret
 }
 
 func subsumeExpandedGraph(parent, expanded *terraform.Graph) {
