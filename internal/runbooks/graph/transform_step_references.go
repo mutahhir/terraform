@@ -38,6 +38,8 @@ func referencesForStep(step *runbookconfigs.Step) []runbookaddrs.Referenceable {
 	}
 
 	var refs []runbookaddrs.Referenceable
+	refs = append(refs, referencesInExpr(step.Count)...)
+	refs = append(refs, referencesInExpr(step.ForEach)...)
 	for _, local := range step.Locals {
 		refs = append(refs, referencesForStepLocal(local)...)
 	}

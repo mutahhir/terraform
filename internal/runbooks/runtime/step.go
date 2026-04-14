@@ -3,6 +3,7 @@ package runbookruntime
 import (
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
+	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -20,9 +21,10 @@ const (
 type Step struct {
 	Config *runbookconfigs.Step
 
-	Name        string
-	Index       int
-	InstanceKey terraformaddrs.InstanceKey
+	Name           string
+	Index          int
+	InstanceKey    terraformaddrs.InstanceKey
+	RepetitionData *terraform.InstanceKeyEvalData
 
 	Status     StepStatus
 	SkipReason string

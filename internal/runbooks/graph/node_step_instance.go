@@ -6,16 +6,18 @@ import (
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runtime "github.com/hashicorp/terraform/internal/runbooks/runtime"
+	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type NodeStepInstance struct {
 	// NodeStepInstance represents a concrete runtime step instance created from
 	// a declared step, even when there is only one instance.
-	StepName    string
-	InstanceKey terraformaddrs.InstanceKey
-	Config      *runbookconfigs.Step
-	Runtime     *runtime.Step
+	StepName       string
+	InstanceKey    terraformaddrs.InstanceKey
+	RepetitionData *terraform.InstanceKeyEvalData
+	Config         *runbookconfigs.Step
+	Runtime        *runtime.Step
 }
 
 func (n *NodeStepInstance) Hashcode() interface{} {

@@ -167,37 +167,44 @@ func (ec *EvalContext) ensureStepWithKey(name string, instanceKey addrs.Instance
 	defer ec.stepsLock.Unlock()
 
 	key := stepStateKey(name, instanceKey)
-	state, ok := ec.steps[key]
-	if !ok {
-		state = &stepEvalState{
-			locals:  make(map[string]cty.Value),
-			data:    make(map[string]cty.Value),
-			lists:   make(map[string]cty.Value),
-			actions: make(map[string]*actionEvalState),
-			outputs: make(map[string]cty.Value),
+	state := ec.ensureStepStateLocked(key)
+	if state.runtime == nil {
+		if existing != nil {
+			state.runtime = existing
+		} else {
+			state.runtime = &runbookruntime.Step{
+				Config:      config,
+				Name:        name,
+				Index:       0,
+				InstanceKey: instanceKey,
+			}
 		}
-		ec.steps[key] = state
-		ec.stepOrder = append(ec.stepOrder, key)
 	}
-	if state.runtime != nil {
-		return state.runtime
-	}
-
 	if existing != nil {
-		state.runtime = existing
-	} else {
-		state.runtime = &runbookruntime.Step{
-			Config:      config,
-			Name:        name,
-			Index:       0,
-			InstanceKey: instanceKey,
+		state.runtime.Name = existing.Name
+		state.runtime.Index = existing.Index
+		if existing.Config != nil {
+			state.runtime.Config = existing.Config
 		}
+		if existing.InstanceKey != nil {
+			state.runtime.InstanceKey = existing.InstanceKey
+		}
+		state.runtime.RepetitionData = existing.RepetitionData
 	}
 	if state.runtime.Config == nil {
 		state.runtime.Config = config
 	}
+	if state.runtime.Name == "" {
+		state.runtime.Name = name
+	}
 	if state.runtime.InstanceKey == nil {
 		state.runtime.InstanceKey = instanceKey
+	}
+	if state.runtime.RepetitionData == nil && existing != nil {
+		state.runtime.RepetitionData = existing.RepetitionData
+	}
+	if state.runtime.Outputs == cty.NilVal && len(state.outputs) > 0 {
+		state.runtime.Outputs = cty.ObjectVal(copyValueMap(state.outputs))
 	}
 	if state.runtime.Outputs == cty.NilVal {
 		state.runtime.Outputs = cty.NilVal
@@ -238,12 +245,17 @@ func (ec *EvalContext) StepsInOrder() []*runbookruntime.Step {
 }
 
 func (ec *EvalContext) SetStepStatus(name string, status runbookruntime.StepStatus, reason string) {
+	ec.setStepStatusWithKey(name, addrs.NoKey, status, reason)
+}
+
+func (ec *EvalContext) setStepStatusWithKey(name string, instanceKey addrs.InstanceKey, status runbookruntime.StepStatus, reason string) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[defaultStepStateKey(name)]
-	if !ok || state.runtime == nil {
-		return
+	key := stepStateKey(name, instanceKey)
+	state := ec.ensureStepStateLocked(key)
+	if state.runtime == nil {
+		state.runtime = &runbookruntime.Step{Name: name, InstanceKey: instanceKey}
 	}
 	state.runtime.Status = status
 	if reason != "" {
@@ -252,33 +264,31 @@ func (ec *EvalContext) SetStepStatus(name string, status runbookruntime.StepStat
 }
 
 func (ec *EvalContext) SetStepOutput(stepName, outputName string, value cty.Value) {
+	ec.setStepOutputWithKey(stepName, addrs.NoKey, outputName, value)
+}
+
+func (ec *EvalContext) setStepOutputWithKey(stepName string, instanceKey addrs.InstanceKey, outputName string, value cty.Value) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[defaultStepStateKey(stepName)]
-	if !ok {
-		state = &stepEvalState{
-			locals:  make(map[string]cty.Value),
-			data:    make(map[string]cty.Value),
-			lists:   make(map[string]cty.Value),
-			actions: make(map[string]*actionEvalState),
-			outputs: make(map[string]cty.Value),
-		}
-		key := defaultStepStateKey(stepName)
-		ec.steps[key] = state
-		ec.stepOrder = append(ec.stepOrder, key)
+	key := stepStateKey(stepName, instanceKey)
+	state := ec.ensureStepStateLocked(key)
+	if state.runtime == nil {
+		state.runtime = &runbookruntime.Step{Name: stepName, InstanceKey: instanceKey}
 	}
 	state.outputs[outputName] = value
-	if state.runtime != nil {
-		state.runtime.Outputs = setObjectAttr(state.runtime.Outputs, outputName, value)
-	}
+	state.runtime.Outputs = setObjectAttr(state.runtime.Outputs, outputName, value)
 }
 
 func (ec *EvalContext) StepOutput(stepName, outputName string) (cty.Value, bool) {
+	return ec.stepOutputWithKey(stepName, addrs.NoKey, outputName)
+}
+
+func (ec *EvalContext) stepOutputWithKey(stepName string, instanceKey addrs.InstanceKey, outputName string) (cty.Value, bool) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[defaultStepStateKey(stepName)]
+	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
 	if !ok {
 		return cty.NilVal, false
 	}
@@ -287,25 +297,25 @@ func (ec *EvalContext) StepOutput(stepName, outputName string) (cty.Value, bool)
 }
 
 func (ec *EvalContext) SetStepLocal(stepName, localName string, value cty.Value) {
-	ec.setStepValue(stepName, func(state *stepEvalState) {
+	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
 		state.locals[localName] = value
 	})
 }
 
 func (ec *EvalContext) SetStepData(stepName string, addr addrs.Resource, value cty.Value) {
-	ec.setStepValue(stepName, func(state *stepEvalState) {
+	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
 		state.data[addr.String()] = value
 	})
 }
 
 func (ec *EvalContext) SetStepList(stepName string, addr addrs.Resource, value cty.Value) {
-	ec.setStepValue(stepName, func(state *stepEvalState) {
+	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
 		state.lists[addr.String()] = value
 	})
 }
 
 func (ec *EvalContext) MarkActionPlanned(stepName string, addr addrs.Action) {
-	ec.setStepValue(stepName, func(state *stepEvalState) {
+	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
 		actionState, ok := state.actions[addr.String()]
 		if !ok {
 			actionState = &actionEvalState{}
@@ -316,7 +326,7 @@ func (ec *EvalContext) MarkActionPlanned(stepName string, addr addrs.Action) {
 }
 
 func (ec *EvalContext) MarkActionInvoked(stepName string, addr addrs.Action) {
-	ec.setStepValue(stepName, func(state *stepEvalState) {
+	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
 		actionState, ok := state.actions[addr.String()]
 		if !ok {
 			actionState = &actionEvalState{}
@@ -340,23 +350,33 @@ func (ec *EvalContext) HasDependencyState(name string, statuses ...runbookruntim
 }
 
 func (ec *EvalContext) setStepValue(stepName string, apply func(state *stepEvalState)) {
+	ec.setStepValueWithKey(stepName, addrs.NoKey, apply)
+}
+
+func (ec *EvalContext) setStepValueWithKey(stepName string, instanceKey addrs.InstanceKey, apply func(state *stepEvalState)) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[defaultStepStateKey(stepName)]
-	if !ok {
-		state = &stepEvalState{
-			locals:  make(map[string]cty.Value),
-			data:    make(map[string]cty.Value),
-			lists:   make(map[string]cty.Value),
-			actions: make(map[string]*actionEvalState),
-			outputs: make(map[string]cty.Value),
-		}
-		key := defaultStepStateKey(stepName)
-		ec.steps[key] = state
-		ec.stepOrder = append(ec.stepOrder, key)
-	}
+	key := stepStateKey(stepName, instanceKey)
+	state := ec.ensureStepStateLocked(key)
 	apply(state)
+}
+
+func (ec *EvalContext) ensureStepStateLocked(key string) *stepEvalState {
+	state, ok := ec.steps[key]
+	if ok {
+		return state
+	}
+	state = &stepEvalState{
+		locals:  make(map[string]cty.Value),
+		data:    make(map[string]cty.Value),
+		lists:   make(map[string]cty.Value),
+		actions: make(map[string]*actionEvalState),
+		outputs: make(map[string]cty.Value),
+	}
+	ec.steps[key] = state
+	ec.stepOrder = append(ec.stepOrder, key)
+	return state
 }
 
 func setObjectAttr(current cty.Value, name string, value cty.Value) cty.Value {
@@ -371,10 +391,14 @@ func setObjectAttr(current cty.Value, name string, value cty.Value) cty.Value {
 }
 
 func (ec *EvalContext) StepLocal(stepName, localName string) (cty.Value, bool) {
+	return ec.stepLocalWithKey(stepName, addrs.NoKey, localName)
+}
+
+func (ec *EvalContext) stepLocalWithKey(stepName string, instanceKey addrs.InstanceKey, localName string) (cty.Value, bool) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[defaultStepStateKey(stepName)]
+	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
 	if !ok {
 		return cty.NilVal, false
 	}
@@ -383,10 +407,14 @@ func (ec *EvalContext) StepLocal(stepName, localName string) (cty.Value, bool) {
 }
 
 func (ec *EvalContext) StepData(stepName string, addr addrs.Resource) (cty.Value, bool) {
+	return ec.stepDataWithKey(stepName, addrs.NoKey, addr)
+}
+
+func (ec *EvalContext) stepDataWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Resource) (cty.Value, bool) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[defaultStepStateKey(stepName)]
+	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
 	if !ok {
 		return cty.NilVal, false
 	}
@@ -395,10 +423,14 @@ func (ec *EvalContext) StepData(stepName string, addr addrs.Resource) (cty.Value
 }
 
 func (ec *EvalContext) StepList(stepName string, addr addrs.Resource) (cty.Value, bool) {
+	return ec.stepListWithKey(stepName, addrs.NoKey, addr)
+}
+
+func (ec *EvalContext) stepListWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Resource) (cty.Value, bool) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	state, ok := ec.steps[defaultStepStateKey(stepName)]
+	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
 	if !ok {
 		return cty.NilVal, false
 	}

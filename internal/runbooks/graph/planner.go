@@ -3,6 +3,7 @@ package runbookgraph
 import (
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/providers"
+	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runtime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/terraform"
@@ -20,6 +21,21 @@ type Plan struct {
 	Config *runbookconfigs.RunbookConfig
 	Graph  *terraform.Graph
 	Steps  []*runtime.Step
+}
+
+func (p *Plan) StepsRuntime() map[string]*runtime.Step {
+	if p == nil || len(p.Steps) == 0 {
+		return nil
+	}
+	ret := make(map[string]*runtime.Step, len(p.Steps))
+	for _, step := range p.Steps {
+		if step == nil {
+			continue
+		}
+		key := runbookaddrs.StepInstance{StepName: step.Name, InstanceKey: step.InstanceKey}.String()
+		ret[key] = step
+	}
+	return ret
 }
 
 func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, tfdiags.Diagnostics) {

@@ -68,16 +68,15 @@ func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdia
 
 	if op == walkOperationPlan {
 		for _, vertex := range order {
-			stepName, ok := stepNameForVertex(vertex)
-			if !ok {
+			if _, ok := stepNameForVertex(vertex); !ok {
 				continue
 			}
-			step, ok := ctx.Step(stepName)
+			step, ok := stepForVertex(ctx, vertex)
 			if !ok {
 				continue
 			}
 			if step.Status == runbookruntime.StepStatusPlanned {
-				ctx.SetStepStatus(stepName, runbookruntime.StepStatusCompleted, "")
+				setStepStatusForVertex(ctx, vertex, runbookruntime.StepStatusCompleted, "")
 			}
 		}
 	}
@@ -90,7 +89,7 @@ func shouldSkipVertex(graph *terraform.Graph, ctx *EvalContext, vertex dag.Verte
 	if !ok {
 		return false
 	}
-	if ctx.HasDependencyState(stepName, runbookruntime.StepStatusSkipped, runbookruntime.StepStatusFailed) {
+	if hasDependencyStateForVertex(ctx, vertex, runbookruntime.StepStatusSkipped, runbookruntime.StepStatusFailed) {
 		return true
 	}
 	for _, dep := range graph.DownEdges(vertex) {
@@ -98,7 +97,7 @@ func shouldSkipVertex(graph *terraform.Graph, ctx *EvalContext, vertex dag.Verte
 		if !ok || depStep == stepName {
 			continue
 		}
-		if ctx.HasDependencyState(depStep, runbookruntime.StepStatusSkipped, runbookruntime.StepStatusFailed) {
+		if hasDependencyStateForVertex(ctx, dep, runbookruntime.StepStatusSkipped, runbookruntime.StepStatusFailed) {
 			return true
 		}
 	}
@@ -113,11 +112,111 @@ func markVertexSkipped(ctx *EvalContext, vertex dag.Vertex, graph *terraform.Gra
 	for _, dep := range graph.DownEdges(vertex) {
 		depStep, ok := stepNameForVertex(dep)
 		if ok && depStep != stepName {
-			ctx.SetStepStatus(stepName, runbookruntime.StepStatusSkipped, fmt.Sprintf("dependency step %q did not complete", depStep))
+			setStepStatusForVertex(ctx, vertex, runbookruntime.StepStatusSkipped, fmt.Sprintf("dependency step %q did not complete", depStep))
 			return
 		}
 	}
-	ctx.SetStepStatus(stepName, runbookruntime.StepStatusSkipped, "step did not execute")
+	setStepStatusForVertex(ctx, vertex, runbookruntime.StepStatusSkipped, "step did not execute")
+}
+
+func stepForVertex(ctx *EvalContext, vertex dag.Vertex) (*runbookruntime.Step, bool) {
+	switch node := vertex.(type) {
+	case *NodeStepInstance:
+		return ctx.stepWithKey(node.StepName, node.InstanceKey)
+	case *NodeStepAction:
+		if node.Step == nil {
+			return nil, false
+		}
+		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
+	case *NodeStepData:
+		if node.Step == nil {
+			return nil, false
+		}
+		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
+	case *NodeStepList:
+		if node.Step == nil {
+			return nil, false
+		}
+		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
+	case *NodeStepLocal:
+		if node.Step == nil {
+			return nil, false
+		}
+		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
+	case *NodeStepExecution:
+		if node.Step == nil {
+			return nil, false
+		}
+		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
+	case *NodeStepCondition:
+		if node.Step == nil {
+			return nil, false
+		}
+		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
+	case *NodeStepOutput:
+		if node.Step == nil {
+			return nil, false
+		}
+		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
+	default:
+		stepName, ok := stepNameForVertex(vertex)
+		if !ok {
+			return nil, false
+		}
+		return ctx.Step(stepName)
+	}
+}
+
+func setStepStatusForVertex(ctx *EvalContext, vertex dag.Vertex, status runbookruntime.StepStatus, reason string) {
+	switch node := vertex.(type) {
+	case *NodeStepInstance:
+		ctx.setStepStatusWithKey(node.StepName, node.InstanceKey, status, reason)
+	case *NodeStepAction:
+		if node.Step != nil {
+			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
+		}
+	case *NodeStepData:
+		if node.Step != nil {
+			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
+		}
+	case *NodeStepList:
+		if node.Step != nil {
+			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
+		}
+	case *NodeStepLocal:
+		if node.Step != nil {
+			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
+		}
+	case *NodeStepExecution:
+		if node.Step != nil {
+			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
+		}
+	case *NodeStepCondition:
+		if node.Step != nil {
+			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
+		}
+	case *NodeStepOutput:
+		if node.Step != nil {
+			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
+		}
+	default:
+		if stepName, ok := stepNameForVertex(vertex); ok {
+			ctx.SetStepStatus(stepName, status, reason)
+		}
+	}
+}
+
+func hasDependencyStateForVertex(ctx *EvalContext, vertex dag.Vertex, statuses ...runbookruntime.StepStatus) bool {
+	step, ok := stepForVertex(ctx, vertex)
+	if !ok {
+		return false
+	}
+	for _, status := range statuses {
+		if step.Status == status {
+			return true
+		}
+	}
+	return false
 }
 
 func stepNameForVertex(vertex dag.Vertex) (string, bool) {
@@ -127,19 +226,19 @@ func stepNameForVertex(vertex dag.Vertex) (string, bool) {
 	case *NodeStepInstance:
 		return node.StepName, true
 	case *NodeStepAction:
-		return node.StepName, true
+		return node.Step.StepName, node.Step != nil
 	case *NodeStepData:
-		return node.StepName, true
+		return node.Step.StepName, node.Step != nil
 	case *NodeStepList:
-		return node.StepName, true
+		return node.Step.StepName, node.Step != nil
 	case *NodeStepLocal:
-		return node.StepName, true
+		return node.Step.StepName, node.Step != nil
 	case *NodeStepExecution:
-		return node.StepName, true
+		return node.Step.StepName, node.Step != nil
 	case *NodeStepCondition:
-		return node.StepName, true
+		return node.Step.StepName, node.Step != nil
 	case *NodeStepOutput:
-		return node.StepName, true
+		return node.Step.StepName, node.Step != nil
 	default:
 		return "", false
 	}

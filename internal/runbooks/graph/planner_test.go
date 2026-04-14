@@ -59,6 +59,34 @@ func TestBuildPlanCreatesOrderedStepInstances(t *testing.T) {
 	}
 }
 
+func TestBuildPlanRetainsPlannedRepetitionData(t *testing.T) {
+	plan, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"deploy": {
+				Name:    "deploy",
+				ForEach: mustParseExpression(t, `{ primary = { value = "a" }, secondary = { value = "b" } }`),
+			},
+		},
+	}, nil)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if len(plan.Steps) != 2 {
+		t.Fatalf("expected 2 planned step instances, got %d", len(plan.Steps))
+	}
+	for _, step := range plan.Steps {
+		if step.RepetitionData == nil {
+			t.Fatalf("expected repetition data for step %s", step.Name)
+		}
+		if step.RepetitionData.EachKey == cty.NilVal || step.RepetitionData.EachValue == cty.NilVal {
+			t.Fatalf("expected for_each repetition data for step %s", step.Name)
+		}
+	}
+	if got := len(plan.StepsRuntime()); got != 2 {
+		t.Fatalf("expected distinct runtime entries for repeated instances, got %d", got)
+	}
+}
+
 func TestBuildPlanPreservesRuntimeOutputsWhenProvided(t *testing.T) {
 	stepConfig := &runbookconfigs.Step{Name: "discover"}
 	plan, diags := BuildPlan(&runbookconfigs.RunbookConfig{
@@ -361,7 +389,7 @@ func TestNodeStepExecutionCanInvokeWorkspaceAction(t *testing.T) {
 	ctx.SetProvider(providerType, provider)
 
 	diags := (&NodeStepExecution{
-		StepName:  "deploy",
+		Step:      &NodeStepInstance{StepName: "deploy"},
 		Index:     0,
 		Execution: &runbookconfigs.Execution{InvokeAction: []hcl.Traversal{mustParseTraversal(t, `workspace.action.test_action.workspace_ping`)}},
 	}).Execute(ctx, walkOperationExecute)

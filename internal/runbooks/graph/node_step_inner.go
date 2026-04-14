@@ -14,24 +14,60 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+func requireStepInstance(step *NodeStepInstance) tfdiags.Diagnostics {
+	if step != nil {
+		return nil
+	}
+	return tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  "Missing step instance",
+		Detail:   "Runbook step inner nodes must always have an owning step instance.",
+	})
+}
+
+func stepRuntimeIndex(step *NodeStepInstance) int {
+	if step == nil || step.Runtime == nil {
+		return 0
+	}
+	return step.Runtime.Index
+}
+
 type NodeStepAction struct {
-	StepName string
-	Action   *configs.Action
+	Step   *NodeStepInstance
+	Action *configs.Action
 }
 
 func (n *NodeStepAction) Hashcode() interface{} {
-	return [4]string{"step_action", n.StepName, n.Action.Type, n.Action.Name}
+	key := ""
+	if n.Step != nil && n.Step.InstanceKey != nil {
+		key = n.Step.InstanceKey.String()
+	}
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+	}
+	return [5]string{"step_action", stepName, key, n.Action.Type, n.Action.Name}
 }
 
 func (n *NodeStepAction) Name() string {
-	return fmt.Sprintf("step.%s.action.%s.%s", n.StepName, n.Action.Type, n.Action.Name)
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+	}
+	if n.Step == nil || n.Step.InstanceKey == nil {
+		return fmt.Sprintf("step.%s.action.%s.%s", stepName, n.Action.Type, n.Action.Name)
+	}
+	return fmt.Sprintf("step.%s%s.action.%s.%s", stepName, n.Step.InstanceKey.String(), n.Action.Type, n.Action.Name)
 }
 
 func (n *NodeStepAction) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
+	if diags := requireStepInstance(n.Step); diags.HasErrors() {
+		return diags
+	}
 	if op != walkOperationPlan {
 		return nil
 	}
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "action", Subject: n.Action.Addr().String(), Status: runbookruntime.StepStatusPlanned})
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "action", Subject: n.Action.Addr().String(), Status: runbookruntime.StepStatusPlanned})
 	providerType := providerTypeForAction(ctx.Config(), n.Action)
 	provider, diags := runbookProvider(ctx, providerType)
 	if diags.HasErrors() {
@@ -53,29 +89,54 @@ func (n *NodeStepAction) Execute(ctx *EvalContext, op walkOperation) tfdiags.Dia
 	resp := provider.PlanAction(providers.PlanActionRequest{ActionType: n.Action.Type, ProposedActionData: configVal})
 	diags = diags.Append(resp.Diagnostics)
 	if !diags.HasErrors() {
-		ctx.MarkActionPlanned(n.StepName, n.Action.Addr())
+		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+			actionState, ok := state.actions[n.Action.Addr().String()]
+			if !ok {
+				actionState = &actionEvalState{}
+				state.actions[n.Action.Addr().String()] = actionState
+			}
+			actionState.planned = true
+		})
 	}
 	return diags
 }
 
 type NodeStepData struct {
-	StepName string
-	Data     *configs.Resource
+	Step *NodeStepInstance
+	Data *configs.Resource
 }
 
 func (n *NodeStepData) Hashcode() interface{} {
-	return [4]string{"step_data", n.StepName, n.Data.Type, n.Data.Name}
+	key := ""
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+		if n.Step.InstanceKey != nil {
+			key = n.Step.InstanceKey.String()
+		}
+	}
+	return [5]string{"step_data", stepName, key, n.Data.Type, n.Data.Name}
 }
 
 func (n *NodeStepData) Name() string {
-	return fmt.Sprintf("step.%s.data.%s.%s", n.StepName, n.Data.Type, n.Data.Name)
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+	}
+	if n.Step == nil || n.Step.InstanceKey == nil {
+		return fmt.Sprintf("step.%s.data.%s.%s", stepName, n.Data.Type, n.Data.Name)
+	}
+	return fmt.Sprintf("step.%s%s.data.%s.%s", stepName, n.Step.InstanceKey.String(), n.Data.Type, n.Data.Name)
 }
 
 func (n *NodeStepData) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
+	if diags := requireStepInstance(n.Step); diags.HasErrors() {
+		return diags
+	}
 	if op != walkOperationPlan {
 		return nil
 	}
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "data", Subject: n.Data.Addr().String(), Status: runbookruntime.StepStatusPlanned})
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "data", Subject: n.Data.Addr().String(), Status: runbookruntime.StepStatusPlanned})
 	providerType := providerTypeForResource(ctx.Config(), n.Data)
 	provider, diags := runbookProvider(ctx, providerType)
 	if diags.HasErrors() {
@@ -99,29 +160,49 @@ func (n *NodeStepData) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	resp := provider.ReadDataSource(providers.ReadDataSourceRequest{TypeName: n.Data.Type, Config: configVal, ProviderMeta: providerMetaVal})
 	diags = diags.Append(resp.Diagnostics)
 	if !diags.HasErrors() {
-		ctx.SetStepData(n.StepName, n.Data.Addr(), resp.State)
+		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+			state.data[n.Data.Addr().String()] = resp.State
+		})
 	}
 	return diags
 }
 
 type NodeStepList struct {
-	StepName string
-	List     *configs.Resource
+	Step *NodeStepInstance
+	List *configs.Resource
 }
 
 func (n *NodeStepList) Hashcode() interface{} {
-	return [4]string{"step_list", n.StepName, n.List.Type, n.List.Name}
+	key := ""
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+		if n.Step.InstanceKey != nil {
+			key = n.Step.InstanceKey.String()
+		}
+	}
+	return [5]string{"step_list", stepName, key, n.List.Type, n.List.Name}
 }
 
 func (n *NodeStepList) Name() string {
-	return fmt.Sprintf("step.%s.list.%s.%s", n.StepName, n.List.Type, n.List.Name)
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+	}
+	if n.Step == nil || n.Step.InstanceKey == nil {
+		return fmt.Sprintf("step.%s.list.%s.%s", stepName, n.List.Type, n.List.Name)
+	}
+	return fmt.Sprintf("step.%s%s.list.%s.%s", stepName, n.Step.InstanceKey.String(), n.List.Type, n.List.Name)
 }
 
 func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
+	if diags := requireStepInstance(n.Step); diags.HasErrors() {
+		return diags
+	}
 	if op != walkOperationPlan {
 		return nil
 	}
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "list", Subject: n.List.Addr().String(), Status: runbookruntime.StepStatusPlanned})
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "list", Subject: n.List.Addr().String(), Status: runbookruntime.StepStatusPlanned})
 	providerType := providerTypeForResource(ctx.Config(), n.List)
 	provider, diags := runbookProvider(ctx, providerType)
 	if diags.HasErrors() {
@@ -140,7 +221,7 @@ func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	}
 	includeResource := false
 	if n.List.List != nil && n.List.List.IncludeResource != nil {
-		value, valueDiags := ctx.EvaluateExpr(n.StepName, n.List.List.IncludeResource)
+		value, valueDiags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.List.List.IncludeResource)
 		diags = diags.Append(valueDiags)
 		if diags.HasErrors() {
 			return diags
@@ -151,7 +232,7 @@ func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	}
 	var limit int64
 	if n.List.List != nil && n.List.List.Limit != nil {
-		value, valueDiags := ctx.EvaluateExpr(n.StepName, n.List.List.Limit)
+		value, valueDiags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.List.List.Limit)
 		diags = diags.Append(valueDiags)
 		if diags.HasErrors() {
 			return diags
@@ -170,53 +251,93 @@ func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	resp := provider.ListResource(providers.ListResourceRequest{TypeName: n.List.Type, Config: unmarkedBlockVal, IncludeResourceObject: includeResource, Limit: limit})
 	diags = diags.Append(resp.Diagnostics)
 	if !diags.HasErrors() {
-		ctx.SetStepList(n.StepName, n.List.Addr(), resp.Result)
+		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+			state.lists[n.List.Addr().String()] = resp.Result
+		})
 	}
 	return diags
 }
 
 type NodeStepLocal struct {
-	StepName string
-	Local    *configs.Local
+	Step  *NodeStepInstance
+	Local *configs.Local
 }
 
 func (n *NodeStepLocal) Hashcode() interface{} {
-	return [3]string{"step_local", n.StepName, n.Local.Name}
+	key := ""
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+		if n.Step.InstanceKey != nil {
+			key = n.Step.InstanceKey.String()
+		}
+	}
+	return [4]string{"step_local", stepName, key, n.Local.Name}
 }
 
 func (n *NodeStepLocal) Name() string {
-	return fmt.Sprintf("step.%s.local.%s", n.StepName, n.Local.Name)
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+	}
+	if n.Step == nil || n.Step.InstanceKey == nil {
+		return fmt.Sprintf("step.%s.local.%s", stepName, n.Local.Name)
+	}
+	return fmt.Sprintf("step.%s%s.local.%s", stepName, n.Step.InstanceKey.String(), n.Local.Name)
 }
 
 func (n *NodeStepLocal) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diagnostics {
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "local", Subject: n.Local.Name, Status: runbookruntime.StepStatusPlanned})
-	value, diags := ctx.EvaluateExpr(n.StepName, n.Local.Expr)
+	if diags := requireStepInstance(n.Step); diags.HasErrors() {
+		return diags
+	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "local", Subject: n.Local.Name, Status: runbookruntime.StepStatusPlanned})
+	value, diags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Local.Expr)
 	if diags.HasErrors() {
 		return diags
 	}
-	ctx.SetStepLocal(n.StepName, n.Local.Name, value)
+	ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+		state.locals[n.Local.Name] = value
+	})
 	return nil
 }
 
 type NodeStepExecution struct {
-	StepName  string
+	Step      *NodeStepInstance
 	Index     int
 	Execution *runbookconfigs.Execution
 }
 
 func (n *NodeStepExecution) Hashcode() interface{} {
-	return [3]interface{}{"step_execution", n.StepName, n.Index}
+	key := ""
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+		if n.Step.InstanceKey != nil {
+			key = n.Step.InstanceKey.String()
+		}
+	}
+	return [4]interface{}{"step_execution", stepName, key, n.Index}
 }
 
 func (n *NodeStepExecution) Name() string {
-	return fmt.Sprintf("step.%s.execute.%d", n.StepName, n.Index)
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+	}
+	if n.Step == nil || n.Step.InstanceKey == nil {
+		return fmt.Sprintf("step.%s.execute.%d", stepName, n.Index)
+	}
+	return fmt.Sprintf("step.%s%s.execute.%d", stepName, n.Step.InstanceKey.String(), n.Index)
 }
 
 func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
+	if diags := requireStepInstance(n.Step); diags.HasErrors() {
+		return diags
+	}
 	if op != walkOperationExecute {
 		return nil
 	}
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "execute", Subject: fmt.Sprintf("execute.%d", n.Index), Status: runbookruntime.StepStatusRunning})
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "execute", Subject: fmt.Sprintf("execute.%d", n.Index), Status: runbookruntime.StepStatusRunning})
 	var diags tfdiags.Diagnostics
 	providerCache := map[terraformaddrs.Provider]providers.Interface{}
 	for _, traversal := range n.Execution.InvokeAction {
@@ -229,7 +350,7 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 		if !ok {
 			continue
 		}
-		action := actionConfigForStep(ctx.Config(), n.StepName, actionAddr)
+		action := actionConfigForStep(ctx.Config(), n.Step.StepName, actionAddr)
 		if action == nil {
 			action = workspaceActionConfig(ctx.WorkspaceConfig(), actionAddr)
 		}
@@ -257,46 +378,71 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 			}
 		}
 		if !diags.HasErrors() {
-			ctx.MarkActionInvoked(n.StepName, actionAddr)
+			ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+				actionState, ok := state.actions[actionAddr.String()]
+				if !ok {
+					actionState = &actionEvalState{}
+					state.actions[actionAddr.String()] = actionState
+				}
+				actionState.invoked = true
+			})
 		}
 	}
 	return diags
 }
 
 type NodeStepCondition struct {
-	StepName  string
+	Step      *NodeStepInstance
 	Condition *runbookconfigs.Condition
 }
 
 func (n *NodeStepCondition) Hashcode() interface{} {
-	return [3]interface{}{"step_condition", n.StepName, n.Condition.DeclRange.String()}
+	key := ""
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+		if n.Step.InstanceKey != nil {
+			key = n.Step.InstanceKey.String()
+		}
+	}
+	return [4]interface{}{"step_condition", stepName, key, n.Condition.DeclRange.String()}
 }
 
 func (n *NodeStepCondition) Name() string {
-	return fmt.Sprintf("step.%s.%s.%s", n.StepName, n.Condition.Kind, n.Condition.DeclRange.String())
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+	}
+	if n.Step == nil || n.Step.InstanceKey == nil {
+		return fmt.Sprintf("step.%s.%s.%s", stepName, n.Condition.Kind, n.Condition.DeclRange.String())
+	}
+	return fmt.Sprintf("step.%s%s.%s.%s", stepName, n.Step.InstanceKey.String(), n.Condition.Kind, n.Condition.DeclRange.String())
 }
 
 func (n *NodeStepCondition) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diagnostics {
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: string(n.Condition.Kind), Subject: n.Condition.DeclRange.String(), Status: runbookruntime.StepStatusPlanned})
-	value, diags := ctx.EvaluateExpr(n.StepName, n.Condition.Condition)
+	if diags := requireStepInstance(n.Step); diags.HasErrors() {
+		return diags
+	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: string(n.Condition.Kind), Subject: n.Condition.DeclRange.String(), Status: runbookruntime.StepStatusPlanned})
+	value, diags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Condition.Condition)
 	if diags.HasErrors() {
-		ctx.SetStepStatus(n.StepName, runbookruntime.StepStatusFailed, "condition evaluation failed")
+		ctx.setStepStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusFailed, "condition evaluation failed")
 		return diags
 	}
 	if !value.IsKnown() || value.IsNull() || value.False() {
 		message := fmt.Sprintf("%s failed", n.Condition.Kind)
 		if n.Condition.ErrorMessage != nil {
-			msgVal, msgDiags := ctx.EvaluateExpr(n.StepName, n.Condition.ErrorMessage)
+			msgVal, msgDiags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Condition.ErrorMessage)
 			diags = diags.Append(msgDiags)
 			if !msgDiags.HasErrors() && msgVal.IsKnown() && !msgVal.IsNull() {
 				message = msgVal.AsString()
 			}
 		}
 		if n.Condition.OnFail == runbookconfigs.ConditionOnFailSkip {
-			ctx.SetStepStatus(n.StepName, runbookruntime.StepStatusSkipped, message)
+			ctx.setStepStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusSkipped, message)
 			return diags
 		}
-		ctx.SetStepStatus(n.StepName, runbookruntime.StepStatusFailed, message)
+		ctx.setStepStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusFailed, message)
 		return diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  fmt.Sprintf("%s failed", n.Condition.Kind),
@@ -308,35 +454,45 @@ func (n *NodeStepCondition) Execute(ctx *EvalContext, _ walkOperation) tfdiags.D
 }
 
 type NodeStepOutput struct {
-	StepName    string
-	InstanceKey terraformaddrs.InstanceKey
-	Output      *configs.Output
+	Step   *NodeStepInstance
+	Output *configs.Output
 }
 
 func (n *NodeStepOutput) Hashcode() interface{} {
 	key := ""
-	if n.InstanceKey != nil {
-		key = n.InstanceKey.String()
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+		if n.Step.InstanceKey != nil {
+			key = n.Step.InstanceKey.String()
+		}
 	}
-	return [4]string{"step_output", n.StepName, key, n.Output.Name}
+	return [4]string{"step_output", stepName, key, n.Output.Name}
 }
 
 func (n *NodeStepOutput) Name() string {
-	if n.InstanceKey == nil {
-		return fmt.Sprintf("step.%s.%s", n.StepName, n.Output.Name)
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
 	}
-	return fmt.Sprintf("step.%s%s.%s", n.StepName, n.InstanceKey.String(), n.Output.Name)
+	if n.Step == nil || n.Step.InstanceKey == nil {
+		return fmt.Sprintf("step.%s.%s", stepName, n.Output.Name)
+	}
+	return fmt.Sprintf("step.%s%s.%s", stepName, n.Step.InstanceKey.String(), n.Output.Name)
 }
 
 func (n *NodeStepOutput) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diagnostics {
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.StepName, StepIndex: 0, Type: "output", Subject: n.Output.Name, Status: runbookruntime.StepStatusPlanned})
-	value, diags := ctx.EvaluateExpr(n.StepName, n.Output.Expr)
+	if diags := requireStepInstance(n.Step); diags.HasErrors() {
+		return diags
+	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "output", Subject: n.Output.Name, Status: runbookruntime.StepStatusPlanned})
+	value, diags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Output.Expr)
 	if diags.HasErrors() {
 		return diags
 	}
-	ctx.SetStepOutput(n.StepName, n.Output.Name, value)
-	if step, ok := ctx.Step(n.StepName); ok && step.Status == runbookruntime.StepStatusPlanned {
-		ctx.SetStepStatus(n.StepName, runbookruntime.StepStatusCompleted, "")
+	ctx.setStepOutputWithKey(n.Step.StepName, n.Step.InstanceKey, n.Output.Name, value)
+	if step, ok := ctx.stepWithKey(n.Step.StepName, n.Step.InstanceKey); ok && step.Status == runbookruntime.StepStatusPlanned {
+		ctx.setStepStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusCompleted, "")
 	}
 	return nil
 }

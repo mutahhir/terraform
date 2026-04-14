@@ -127,22 +127,22 @@ func TestNodeExpandStepDynamicExpandIncludesInnerContentNodes(t *testing.T) {
 	}
 
 	children := graph.DownEdges(instance)
-	if !children.Include(&NodeStepAction{StepName: "deploy", Action: &configs.Action{Type: "shell", Name: "run"}}) {
+	if !children.Include(&NodeStepAction{Step: instance, Action: &configs.Action{Type: "shell", Name: "run"}}) {
 		t.Fatal("expected step action node")
 	}
-	if !children.Include(&NodeStepData{StepName: "deploy", Data: &configs.Resource{Type: "server", Name: "selected"}}) {
+	if !children.Include(&NodeStepData{Step: instance, Data: &configs.Resource{Type: "server", Name: "selected"}}) {
 		t.Fatal("expected step data node")
 	}
-	if !children.Include(&NodeStepList{StepName: "deploy", List: &configs.Resource{Type: "server", Name: "all"}}) {
+	if !children.Include(&NodeStepList{Step: instance, List: &configs.Resource{Type: "server", Name: "all"}}) {
 		t.Fatal("expected step list node")
 	}
-	if !children.Include(&NodeStepLocal{StepName: "deploy", Local: &configs.Local{Name: "region"}}) {
+	if !children.Include(&NodeStepLocal{Step: instance, Local: &configs.Local{Name: "region"}}) {
 		t.Fatal("expected step local node")
 	}
-	if !children.Include(&NodeStepExecution{StepName: "deploy", Index: 0}) {
+	if !children.Include(&NodeStepExecution{Step: instance, Index: 0}) {
 		t.Fatal("expected step execution node")
 	}
-	if !children.Include(&NodeStepOutput{StepName: "deploy", Output: &configs.Output{Name: "result"}}) {
+	if !children.Include(&NodeStepOutput{Step: instance, Output: &configs.Output{Name: "result"}}) {
 		t.Fatal("expected step output node")
 	}
 
@@ -150,7 +150,7 @@ func TestNodeExpandStepDynamicExpandIncludesInnerContentNodes(t *testing.T) {
 	postFound := false
 	for _, vertex := range graph.Vertices() {
 		condition, ok := vertex.(*NodeStepCondition)
-		if !ok || condition.StepName != "deploy" {
+		if !ok || condition.Step == nil || condition.Step.StepName != "deploy" {
 			continue
 		}
 		if condition.Condition.Kind == runbookconfigs.PreconditionCondition {
@@ -183,11 +183,12 @@ func TestNodeExpandStepDynamicExpandConnectsInnerReferences(t *testing.T) {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
 
-	localNode := &NodeStepLocal{StepName: "deploy", Local: &configs.Local{Name: "region"}}
-	dataNode := &NodeStepData{StepName: "deploy", Data: &configs.Resource{Type: "server", Name: "selected"}}
-	actionNode := &NodeStepAction{StepName: "deploy", Action: &configs.Action{Type: "shell", Name: "run"}}
-	executionNode := &NodeStepExecution{StepName: "deploy", Index: 0}
-	outputNode := &NodeStepOutput{StepName: "deploy", Output: &configs.Output{Name: "result"}}
+	instance := &NodeStepInstance{StepName: "deploy"}
+	localNode := &NodeStepLocal{Step: instance, Local: &configs.Local{Name: "region"}}
+	dataNode := &NodeStepData{Step: instance, Data: &configs.Resource{Type: "server", Name: "selected"}}
+	actionNode := &NodeStepAction{Step: instance, Action: &configs.Action{Type: "shell", Name: "run"}}
+	executionNode := &NodeStepExecution{Step: instance, Index: 0}
+	outputNode := &NodeStepOutput{Step: instance, Output: &configs.Output{Name: "result"}}
 
 	if !graph.DownEdges(localNode).Include(dataNode) {
 		t.Fatalf("expected local to depend on referenced data, got: %#v", graph.DownEdges(localNode).List())
@@ -221,8 +222,8 @@ func TestNodeExpandStepDynamicExpandMakesPostconditionsDependOnExecute(t *testin
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
 
-	executionNode := &NodeStepExecution{StepName: "deploy", Index: 0}
-	postconditionNode := &NodeStepCondition{StepName: "deploy", Condition: postcondition}
+	executionNode := &NodeStepExecution{Step: &NodeStepInstance{StepName: "deploy"}, Index: 0}
+	postconditionNode := &NodeStepCondition{Step: &NodeStepInstance{StepName: "deploy"}, Condition: postcondition}
 	if !graph.DownEdges(postconditionNode).Include(executionNode) {
 		t.Fatal("expected postcondition to depend on execute")
 	}
@@ -305,8 +306,8 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerOutputToProducerOutp
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
 
-	consumer := &NodeStepOutput{StepName: "consumer", Output: &configs.Output{Name: "final"}}
-	producer := &NodeStepOutput{StepName: "producer", Output: &configs.Output{Name: "result"}}
+	consumer := &NodeStepOutput{Step: &NodeStepInstance{StepName: "consumer"}, Output: &configs.Output{Name: "final"}}
+	producer := &NodeStepOutput{Step: &NodeStepInstance{StepName: "producer"}, Output: &configs.Output{Name: "result"}}
 	if !graph.DownEdges(consumer).Include(producer) {
 		t.Fatal("expected consumer output to depend on referenced producer output")
 	}
@@ -331,8 +332,8 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutpu
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
 
-	consumer := &NodeStepLocal{StepName: "consumer", Local: &configs.Local{Name: "copied"}}
-	producer := &NodeStepOutput{StepName: "producer", Output: &configs.Output{Name: "result"}}
+	consumer := &NodeStepLocal{Step: &NodeStepInstance{StepName: "consumer"}, Local: &configs.Local{Name: "copied"}}
+	producer := &NodeStepOutput{Step: &NodeStepInstance{StepName: "producer"}, Output: &configs.Output{Name: "result"}}
 	if !graph.DownEdges(consumer).Include(producer) {
 		t.Fatal("expected consumer local to depend on referenced producer output")
 	}

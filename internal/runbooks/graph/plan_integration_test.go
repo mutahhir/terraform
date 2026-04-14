@@ -414,6 +414,128 @@ step "discover" {
 	}
 }
 
+func TestBuildPlanAllowsForEachFromEarlierListOutput(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
+	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "discover" {
+  list "test_list" "servers" {
+    provider = test
+  }
+
+  output "items" {
+    value = list.test_list.servers.items
+  }
+}
+
+step "deploy" {
+  for_each = {
+    for item in step.discover.items : item => {
+      id = item
+    }
+  }
+
+  output "summary" {
+    value = each.value.id
+  }
+}
+`)
+
+	parser := runbookconfigs.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
+	}
+
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			ListResourceTypes: map[string]providers.Schema{
+				"test_list": {
+					Body: &configschema.Block{},
+				},
+			},
+		},
+		ListResourceResponse: providers.ListResourceResponse{
+			Result: cty.ObjectVal(map[string]cty.Value{
+				"items": cty.TupleVal([]cty.Value{cty.StringVal("srv-123"), cty.StringVal("srv-456")}),
+			}),
+		},
+	}
+
+	plan, planDiags := BuildPlan(config, &PlannerOpts{
+		Providers: map[addrs.Provider]providers.Factory{
+			addrs.NewDefaultProvider("test"): fixedProviderFactory(provider),
+		},
+	})
+	if planDiags.HasErrors() {
+		t.Fatalf("unexpected plan diagnostics: %s", planDiags.Err())
+	}
+	if len(plan.Steps) != 3 {
+		t.Fatalf("expected 3 planned steps, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].Name != "discover" {
+		t.Fatalf("expected discover first, got %q", plan.Steps[0].Name)
+	}
+	if got := plan.Steps[0].Outputs.GetAttr("items").LengthInt(); got != 2 {
+		t.Fatalf("expected discover items output length 2, got %d", got)
+	}
+	for _, step := range plan.Steps[1:] {
+		if step.Name != "deploy" {
+			t.Fatalf("expected repeated deploy instances, got %q", step.Name)
+		}
+		if step.InstanceKey == nil {
+			t.Fatal("expected deploy instance key")
+		}
+		if step.RepetitionData == nil || step.RepetitionData.EachValue == cty.NilVal {
+			t.Fatal("expected deploy repetition data")
+		}
+		if step.Status != runtime.StepStatusCompleted {
+			t.Fatalf("expected deploy instance to complete planning, got %q", step.Status)
+		}
+	}
+	if !provider.ListResourceCalled {
+		t.Fatal("expected list resource to be listed during plan walk")
+	}
+}
+
+func TestBuildPlanRejectsUnknownStepForEach(t *testing.T) {
+	config := &runbookconfigs.RunbookConfig{
+		Variables: map[string]*configs.Variable{
+			"items": {Name: "items", Type: cty.DynamicPseudoType},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"deploy": {
+				Name:    "deploy",
+				ForEach: mustParseExpression(t, `var.items`),
+			},
+		},
+	}
+
+	plan, diags := BuildPlan(config, &PlannerOpts{})
+	if plan != nil {
+		t.Fatal("expected plan to be nil when step for_each is unknown")
+	}
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics for unknown step for_each")
+	}
+	if !strings.Contains(diags.Err().Error(), "Invalid for_each argument") {
+		t.Fatalf("expected invalid for_each diagnostic, got: %s", diags.Err())
+	}
+}
+
 func writeIntegrationTestFile(t *testing.T, fs afero.Fs, path, src string) {
 	t.Helper()
 	if err := afero.WriteFile(fs, path, []byte(src), 0o644); err != nil {
