@@ -407,12 +407,16 @@ func (ec *EvalContext) StepList(stepName string, addr addrs.Resource) (cty.Value
 }
 
 func (ec *EvalContext) EvaluateExpr(stepName string, expr hcl.Expression) (cty.Value, tfdiags.Diagnostics) {
+	return ec.EvaluateExprForInstance(stepName, terraformaddrs.NoKey, nil, expr)
+}
+
+func (ec *EvalContext) EvaluateExprForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, expr hcl.Expression) (cty.Value, tfdiags.Diagnostics) {
 	if expr == nil {
 		return cty.NilVal, nil
 	}
 	scope := &lang.Scope{BaseDir: ".", PureOnly: true}
 	hclCtx := &hcl.EvalContext{
-		Variables: ec.expressionVariables(stepName),
+		Variables: ec.expressionVariablesForInstance(stepName, instanceKey, repetitionData),
 		Functions: scope.Functions(),
 	}
 	value, hclDiags := expr.Value(hclCtx)
@@ -420,6 +424,10 @@ func (ec *EvalContext) EvaluateExpr(stepName string, expr hcl.Expression) (cty.V
 }
 
 func (ec *EvalContext) expressionVariables(stepName string) map[string]cty.Value {
+	return ec.expressionVariablesForInstance(stepName, terraformaddrs.NoKey, nil)
+}
+
+func (ec *EvalContext) expressionVariablesForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData) map[string]cty.Value {
 	variables := map[string]cty.Value{}
 
 	varAttrs := map[string]cty.Value{}
@@ -451,7 +459,7 @@ func (ec *EvalContext) expressionVariables(stepName string) map[string]cty.Value
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
-	if state, ok := ec.steps[stepName]; ok {
+	if state, ok := ec.steps[stepStateKey(stepName, instanceKey)]; ok {
 		variables["local"] = cty.ObjectVal(copyValueMapOrEmpty(state.locals))
 		dataVal := nestedResourceValues(state.data)
 		if dataVal != cty.NilVal {
@@ -469,6 +477,23 @@ func (ec *EvalContext) expressionVariables(stepName string) map[string]cty.Value
 		variables["local"] = cty.EmptyObjectVal
 		variables["data"] = cty.EmptyObjectVal
 		variables["list"] = cty.EmptyObjectVal
+	}
+
+	if repetitionData != nil {
+		countAttrs := map[string]cty.Value{}
+		if repetitionData.CountIndex != cty.NilVal {
+			countAttrs["index"] = repetitionData.CountIndex
+		}
+		variables["count"] = cty.ObjectVal(countAttrs)
+
+		eachAttrs := map[string]cty.Value{}
+		if repetitionData.EachKey != cty.NilVal {
+			eachAttrs["key"] = repetitionData.EachKey
+		}
+		if repetitionData.EachValue != cty.NilVal {
+			eachAttrs["value"] = repetitionData.EachValue
+		}
+		variables["each"] = cty.ObjectVal(eachAttrs)
 	}
 
 	stepAttrs := map[string]cty.Value{}

@@ -162,3 +162,36 @@ func TestEvalContextExpressionVariablesExposeWorkspaceOutputs(t *testing.T) {
 		t.Fatalf("wrong expression value %#v", value)
 	}
 }
+
+func TestEvalContextEvaluateExprForInstanceExposesRepetitionData(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+	repetitionData := terraform.InstanceKeyEvalData{
+		EachKey:   cty.StringVal("primary"),
+		EachValue: cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("lambda-a")}),
+	}
+
+	value, diags := ctx.EvaluateExprForInstance("", terraformaddrs.StringKey("primary"), &repetitionData, mustParseExpression(t, `each.key`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("primary") {
+		t.Fatalf("wrong each.key value %#v", value)
+	}
+
+	value, diags = ctx.EvaluateExprForInstance("", terraformaddrs.StringKey("primary"), &repetitionData, mustParseExpression(t, `each.value.name`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("lambda-a") {
+		t.Fatalf("wrong each.value value %#v", value)
+	}
+
+	countData := terraform.InstanceKeyEvalData{CountIndex: cty.NumberIntVal(2)}
+	value, diags = ctx.EvaluateExprForInstance("", terraformaddrs.IntKey(2), &countData, mustParseExpression(t, `count.index`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !value.RawEquals(cty.NumberIntVal(2)) {
+		t.Fatalf("wrong count.index value %#v", value)
+	}
+}
