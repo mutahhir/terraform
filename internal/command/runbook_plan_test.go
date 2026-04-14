@@ -48,11 +48,17 @@ step "discover" {
 		t.Fatalf("unexpected exit code %d: %s", code, output.Stderr())
 	}
 	stdout := output.Stdout()
-	if !strings.Contains(stdout, "step.discover[0]: completed") {
-		t.Fatalf("expected planned step in output, got: %s", stdout)
+	if !strings.Contains(stdout, "Terraform will perform the following runbook steps:") {
+		t.Fatalf("expected terraform-style plan header, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, "data: data.test_data.selected") {
-		t.Fatalf("expected planned step detail in output, got: %s", stdout)
+	if !strings.Contains(stdout, `# step.discover will be planned`) {
+		t.Fatalf("expected planned step summary in output, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, `<= data "data.test_data.selected"`) {
+		t.Fatalf("expected data read detail in output, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, `Plan: 1 to run, 0 to skip.`) {
+		t.Fatalf("expected runbook plan summary in output, got: %s", stdout)
 	}
 }
 

@@ -3,12 +3,13 @@ package views
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	runbookgraph "github.com/hashicorp/terraform/internal/runbooks/graph"
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/tfdiags"
-	"github.com/zclconf/go-cty/cty"
 )
 
 type RunbookPlan interface {
@@ -25,11 +26,12 @@ type runbookPlan struct {
 }
 
 type runbookPlanStep struct {
-	Name       string                     `json:"name"`
-	Index      int                        `json:"index"`
-	Status     runbookruntime.StepStatus  `json:"status"`
-	SkipReason string                     `json:"skip_reason,omitempty"`
-	Outputs    map[string]json.RawMessage `json:"outputs,omitempty"`
+	Name        string                     `json:"name"`
+	Index       int                        `json:"index"`
+	InstanceKey string                     `json:"instance_key,omitempty"`
+	Status      runbookruntime.StepStatus  `json:"status"`
+	SkipReason  string                     `json:"skip_reason,omitempty"`
+	Outputs     map[string]json.RawMessage `json:"outputs,omitempty"`
 }
 
 type runbookPlanInfo struct {
@@ -66,16 +68,41 @@ func (v *RunbookPlanHuman) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 }
 func (v *RunbookPlanHuman) Plan(plan *runbookgraph.Plan) {
 	viewPlan := buildRunbookPlan(plan, v.info)
-	for _, step := range viewPlan.Steps {
-		line := fmt.Sprintf("step.%s[%d]: %s", step.Name, step.Index, step.Status)
-		if step.SkipReason != "" {
-			line += fmt.Sprintf(" (%s)", step.SkipReason)
-		}
-		v.view.streams.Println(line)
+	v.view.streams.Println("Terraform used the selected providers to generate the following runbook")
+	v.view.streams.Println("plan. Runbook operations are indicated with the following symbols:")
+	v.view.streams.Println("  <= read")
+	v.view.streams.Println("  <> list")
+	v.view.streams.Println("  > execute")
+	v.view.streams.Println("")
+	if len(viewPlan.Steps) == 0 {
+		v.view.streams.Println("No changes. The runbook has no planned steps.")
+		return
 	}
+	v.view.streams.Println("Terraform will perform the following runbook steps:")
+	v.view.streams.Println("")
+
+	infoByStep := make(map[string][]runbookPlanInfo)
 	for _, info := range viewPlan.Info {
-		v.view.streams.Println(fmt.Sprintf("  - %s: %s", info.Type, info.Subject))
+		key := fmt.Sprintf("%s[%d]", info.StepName, info.StepIndex)
+		infoByStep[key] = append(infoByStep[key], info)
 	}
+
+	reads, lists, executes := 0, 0, 0
+	for _, step := range viewPlan.Steps {
+		stepInfo := dedupePlanInfo(infoByStep[fmt.Sprintf("%s[%d]", step.Name, step.Index)])
+		v.view.streams.Println(renderRunbookStepPlan(step, stepInfo))
+		for _, info := range stepInfo {
+			switch info.Type {
+			case "data":
+				reads++
+			case "list":
+				lists++
+			case "execute":
+				executes++
+			}
+		}
+	}
+	v.view.streams.Println(fmt.Sprintf("Plan: %d to run, %d to skip. Operations: %d to read, %d to list, %d to execute.", countRunnableSteps(viewPlan.Steps), countSkippedSteps(viewPlan.Steps), reads, lists, executes))
 }
 
 type RunbookPlanJSON struct {
@@ -114,14 +141,134 @@ func toRunbookPlanStep(step *runbookruntime.Step) runbookPlanStep {
 		Status:     step.Status,
 		SkipReason: step.SkipReason,
 	}
+	if step.InstanceKey != nil {
+		ret.InstanceKey = step.InstanceKey.String()
+	}
 	if step.Outputs != cty.NilVal && step.Outputs.IsKnown() && !step.Outputs.IsNull() && step.Outputs.Type().IsObjectType() {
 		ret.Outputs = make(map[string]json.RawMessage)
 		for name, value := range step.Outputs.AsValueMap() {
-			encoded, err := json.Marshal(value.GoString())
+			encoded, err := json.Marshal(tfdiags.CompactValueStr(value))
 			if err == nil {
 				ret.Outputs[name] = encoded
 			}
 		}
 	}
 	return ret
+}
+
+func renderRunbookStepPlan(step runbookPlanStep, info []runbookPlanInfo) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("  # %s will be %s", renderStepAddress(step), renderStepOutcome(step)))
+	if step.SkipReason != "" {
+		b.WriteString(fmt.Sprintf(" (%s)", step.SkipReason))
+	}
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("  step %q {\n", step.Name))
+	for _, item := range sortedPlanInfo(info) {
+		if !shouldRenderPlanInfo(item) {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("      %s %s\n", runbookPlanSymbol(item.Type), renderPlanInfo(item)))
+	}
+	b.WriteString("    }\n")
+	return b.String()
+}
+
+func renderStepAddress(step runbookPlanStep) string {
+	if step.InstanceKey == "" {
+		return fmt.Sprintf("step.%s", step.Name)
+	}
+	return fmt.Sprintf("step.%s%s", step.Name, step.InstanceKey)
+}
+
+func renderStepOutcome(step runbookPlanStep) string {
+	switch step.Status {
+	case runbookruntime.StepStatusSkipped:
+		return "skipped"
+	default:
+		return "planned"
+	}
+}
+
+func runbookPlanSymbol(typ string) string {
+	switch typ {
+	case "data":
+		return "<="
+	case "list":
+		return "<>"
+	case "execute":
+		return ">"
+	default:
+		return "~"
+	}
+}
+
+func renderPlanInfo(info runbookPlanInfo) string {
+	switch info.Type {
+	case "data":
+		return fmt.Sprintf("data %q", info.Subject)
+	case "list":
+		return fmt.Sprintf("list %q", info.Subject)
+	case "execute":
+		return "execute"
+	default:
+		return fmt.Sprintf("%s %q", info.Type, info.Subject)
+	}
+}
+
+func shouldRenderPlanInfo(info runbookPlanInfo) bool {
+	switch info.Type {
+	case "data", "list", "execute":
+		return true
+	default:
+		return false
+	}
+}
+
+func sortedPlanInfo(info []runbookPlanInfo) []runbookPlanInfo {
+	ret := append([]runbookPlanInfo(nil), info...)
+	sort.SliceStable(ret, func(i, j int) bool {
+		if ret[i].Type == ret[j].Type {
+			return ret[i].Subject < ret[j].Subject
+		}
+		return ret[i].Type < ret[j].Type
+	})
+	return ret
+}
+
+func dedupePlanInfo(info []runbookPlanInfo) []runbookPlanInfo {
+	if len(info) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(info))
+	ret := make([]runbookPlanInfo, 0, len(info))
+	for _, item := range info {
+		key := fmt.Sprintf("%s|%d|%s|%s|%s", item.StepName, item.StepIndex, item.Type, item.Subject, item.Status)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		ret = append(ret, item)
+	}
+	return ret
+}
+
+func countRunnableSteps(steps []runbookPlanStep) int {
+	count := 0
+	for _, step := range steps {
+		if step.Status != runbookruntime.StepStatusSkipped {
+			count++
+		}
+	}
+	return count
+}
+
+func countSkippedSteps(steps []runbookPlanStep) int {
+	count := 0
+	for _, step := range steps {
+		if step.Status == runbookruntime.StepStatusSkipped {
+			count++
+		}
+	}
+	return count
 }
