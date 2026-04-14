@@ -117,6 +117,46 @@ func TestEvalContextExpressionVariablesExposePluralStepsAlias(t *testing.T) {
 	}
 }
 
+func TestEvalContextExpressionVariablesExposeRepeatedStepsAsObjects(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("primary"), "invoke_target", cty.StringVal("lambda-a"))
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("primary"), "invocation_output", cty.StringVal("ok-a"))
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invoke_target", cty.StringVal("lambda-b"))
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invocation_output", cty.StringVal("ok-b"))
+
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `steps.smoke_invoke_lambda.primary.invocation_output`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("ok-a") {
+		t.Fatalf("wrong repeated step value %#v", value)
+	}
+
+	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `length(values(steps.smoke_invoke_lambda))`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !value.RawEquals(cty.NumberIntVal(2)) {
+		t.Fatalf("wrong repeated step count %#v", value)
+	}
+}
+
+func TestEvalContextExpressionVariablesExposeWholeRepeatedStepTraversal(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("primary"), "invoke_target", cty.StringVal("lambda-a"))
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("primary"), "invocation_output", cty.StringVal("ok-a"))
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invoke_target", cty.StringVal("lambda-b"))
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invocation_output", cty.StringVal("ok-b"))
+
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `one([for step in values(steps.smoke_invoke_lambda) : step.invocation_output if step.invoke_target == "lambda-a"])`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("ok-a") {
+		t.Fatalf("wrong repeated step traversal value %#v", value)
+	}
+}
+
 func TestEvalContextExpressionVariablesExposeListResultsUnderData(t *testing.T) {
 	ctx := NewEvalContext(EvalContextOpts{})
 	ctx.SetStepList("discover", terraformaddrs.Resource{

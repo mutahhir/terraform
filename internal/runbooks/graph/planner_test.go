@@ -288,6 +288,49 @@ func TestBuildPlanAllowsActionConfigToReferenceSameStepLocalAtPlanTime(t *testin
 	}
 }
 
+func TestBuildPlanAllowsActionConfigToReferenceEachValueAtPlanTime(t *testing.T) {
+	providerType := terraformaddrs.NewDefaultProvider("test")
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			Actions: map[string]providers.ActionSchema{
+				"test_action": {
+					ConfigSchema: &configschema.Block{
+						Attributes: map[string]*configschema.Attribute{
+							"target": {Type: cty.String, Optional: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		ProviderRequirements: &configs.RequiredProviders{
+			RequiredProviders: map[string]*configs.RequiredProvider{
+				"test": {Type: providerType},
+			},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"invoke": {
+				Name:    "invoke",
+				ForEach: mustParseExpression(t, `{ primary = { name = "lambda-a" } }`),
+				Actions: []*configs.Action{{Type: "test_action", Name: "notify", Config: mustParseBody(t, `target = each.value.name`)}},
+			},
+		},
+	}, &PlannerOpts{
+		Providers: map[terraformaddrs.Provider]providers.Factory{
+			providerType: fixedPlannerProviderFactory(provider),
+		},
+	})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if got := provider.PlanActionRequest.ProposedActionData.GetAttr("target").AsString(); got != "lambda-a" {
+		t.Fatalf("expected action config target lambda-a, got %q", got)
+	}
+}
+
 func TestBuildPlanConfiguresProvidersFromRunbookProviderBlocks(t *testing.T) {
 	providerType := terraformaddrs.NewDefaultProvider("test")
 	provider := &testing_provider.MockProvider{

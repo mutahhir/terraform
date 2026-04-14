@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/dag"
 	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
@@ -256,6 +257,24 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 
 func connectStepReferences(g *terraform.Graph, currentStep string, from dag.Vertex, refs []runbookaddrs.Referenceable, targets map[string]dag.Vertex) {
 	for _, ref := range refs {
+		if stepRef, ok := ref.(runbookaddrs.Step); ok {
+			stepName := stepRef.Step.StepName
+			if stepName == "" {
+				stepName = currentStep
+			}
+			for key, dep := range targets {
+				outputRef, diags := runbookaddrs.ParseRef(mustTraversalForRefKey(key))
+				if diags.HasErrors() || outputRef == nil {
+					continue
+				}
+				stepOutput, ok := outputRef.Subject.(runbookaddrs.StepOutput)
+				if !ok || stepOutput.Step.StepName != stepName {
+					continue
+				}
+				g.Connect(dag.BasicEdge(from, dep))
+			}
+			continue
+		}
 		key := ref.String()
 		if stepOutput, ok := ref.(runbookaddrs.StepOutput); ok && stepOutput.Step.StepName == "" {
 			key = runbookaddrs.StepOutput{Step: runbookaddrs.StepInstance{StepName: currentStep}, OutputName: stepOutput.OutputName}.String()
@@ -266,6 +285,14 @@ func connectStepReferences(g *terraform.Graph, currentStep string, from dag.Vert
 		}
 		g.Connect(dag.BasicEdge(from, dep))
 	}
+}
+
+func mustTraversalForRefKey(key string) hcl.Traversal {
+	traversal, diags := hclsyntax.ParseTraversalAbs([]byte(key), "", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return nil
+	}
+	return traversal
 }
 
 var (

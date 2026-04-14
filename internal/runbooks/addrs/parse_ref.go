@@ -67,8 +67,18 @@ func ParseRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
 		typ, name, rng, remain, diags := parseDoubleAttrRef(traversal)
 		return &Reference{Subject: terraformaddrs.Resource{Mode: terraformaddrs.ListResourceMode, Type: typ, Name: name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
 	case "step", "steps":
-		stepName, outputName, rng, remain, diags := parseDoubleAttrRef(traversal)
-		return &Reference{Subject: StepOutput{Step: StepInstance{StepName: stepName, InstanceKey: terraformaddrs.NoKey}, OutputName: outputName}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
+		stepName, rng, remain, diags := parseSingleAttrRef(traversal)
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		if len(remain) == 0 {
+			return &Reference{Subject: Step{Step: StepInstance{StepName: stepName, InstanceKey: terraformaddrs.NoKey}}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
+		}
+		firstAttr, ok := remain[0].(hcl.TraverseAttr)
+		if ok {
+			return &Reference{Subject: StepOutput{Step: StepInstance{StepName: stepName, InstanceKey: terraformaddrs.NoKey}, OutputName: firstAttr.Name}, SourceRange: tfdiags.SourceRangeFromHCL(hcl.RangeBetween(traversal[0].SourceRange(), remain[0].SourceRange())), Remaining: remain[1:]}, diags
+		}
+		return &Reference{Subject: Step{Step: StepInstance{StepName: stepName, InstanceKey: terraformaddrs.NoKey}}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
 	default:
 		return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,

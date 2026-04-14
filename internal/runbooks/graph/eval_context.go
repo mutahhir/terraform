@@ -555,7 +555,11 @@ func (ec *EvalContext) expressionVariablesForInstance(stepName string, instanceK
 		variables["each"] = cty.ObjectVal(eachAttrs)
 	}
 
-	stepGroups := map[string][]*stepEvalState{}
+	type stepGroupEntry struct {
+		instance runbookaddrs.StepInstance
+		state    *stepEvalState
+	}
+	stepGroups := map[string][]stepGroupEntry{}
 	for key, state := range ec.steps {
 		if state == nil {
 			continue
@@ -564,21 +568,44 @@ func (ec *EvalContext) expressionVariablesForInstance(stepName string, instanceK
 		if instance.StepName == "" {
 			continue
 		}
-		stepGroups[instance.StepName] = append(stepGroups[instance.StepName], state)
+		stepGroups[instance.StepName] = append(stepGroups[instance.StepName], stepGroupEntry{instance: instance, state: state})
 	}
 	stepAttrs := map[string]cty.Value{}
-	for name, states := range stepGroups {
-		outputs := map[string]cty.Value{}
-		for _, state := range states {
-			for outputName, value := range state.outputs {
+	for name, entries := range stepGroups {
+		if len(entries) == 1 && entries[0].instance.InstanceKey == terraformaddrs.NoKey {
+			outputs := map[string]cty.Value{}
+			for outputName, value := range entries[0].state.outputs {
 				outputs[outputName] = value
 			}
+			if len(outputs) == 0 {
+				stepAttrs[name] = cty.EmptyObjectVal
+				continue
+			}
+			stepAttrs[name] = cty.ObjectVal(copyValueMap(outputs))
+			continue
 		}
-		if len(outputs) == 0 {
+
+		instances := map[string]cty.Value{}
+		for _, entry := range entries {
+			key := instanceObjectKey(entry.instance.InstanceKey)
+			if key == "" {
+				key = "default"
+			}
+			outputs := map[string]cty.Value{}
+			for outputName, value := range entry.state.outputs {
+				outputs[outputName] = value
+			}
+			if len(outputs) == 0 {
+				instances[key] = cty.EmptyObjectVal
+				continue
+			}
+			instances[key] = cty.ObjectVal(copyValueMap(outputs))
+		}
+		if len(instances) == 0 {
 			stepAttrs[name] = cty.EmptyObjectVal
 			continue
 		}
-		stepAttrs[name] = cty.ObjectVal(copyValueMap(outputs))
+		stepAttrs[name] = cty.ObjectVal(copyValueMap(instances))
 	}
 	stepVals := cty.ObjectVal(stepAttrs)
 	variables["step"] = stepVals
@@ -586,6 +613,19 @@ func (ec *EvalContext) expressionVariablesForInstance(stepName string, instanceK
 	variables["workspace"] = ec.workspaceVariables()
 
 	return variables
+}
+
+func instanceObjectKey(key terraformaddrs.InstanceKey) string {
+	switch k := key.(type) {
+	case nil:
+		return ""
+	case terraformaddrs.StringKey:
+		return string(k)
+	case terraformaddrs.IntKey:
+		return k.Value().AsBigFloat().Text('f', 0)
+	default:
+		return key.String()
+	}
 }
 
 func (ec *EvalContext) workspaceVariables() cty.Value {

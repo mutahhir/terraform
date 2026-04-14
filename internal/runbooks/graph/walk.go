@@ -131,15 +131,28 @@ func rewireExactStepOutputReferences(graph *terraform.Graph, vertex dag.Vertex) 
 	}
 	currentStep, _ := stepNameForVertex(vertex)
 	for _, ref := range refs {
-		stepOutput, ok := ref.(runbookaddrs.StepOutput)
-		if !ok || stepOutput.Step.StepName == "" || stepOutput.Step.StepName == currentStep {
+		stepName := ""
+		var targets []*NodeStepOutput
+		switch r := ref.(type) {
+		case runbookaddrs.StepOutput:
+			stepName = r.Step.StepName
+			if stepName == "" || stepName == currentStep {
+				continue
+			}
+			targets = matchingStepOutputVertices(graph, r)
+		case runbookaddrs.Step:
+			stepName = r.Step.StepName
+			if stepName == "" || stepName == currentStep {
+				continue
+			}
+			targets = allStepOutputVertices(graph, r.Step)
+		default:
 			continue
 		}
-		targets := matchingStepOutputVertices(graph, stepOutput)
 		if len(targets) == 0 {
 			continue
 		}
-		graph.RemoveEdge(dag.BasicEdge(vertex, &NodeExpandStep{StepName: stepOutput.Step.StepName}))
+		graph.RemoveEdge(dag.BasicEdge(vertex, &NodeExpandStep{StepName: stepName}))
 		for _, target := range targets {
 			graph.Connect(dag.BasicEdge(vertex, target))
 		}
@@ -189,6 +202,27 @@ func matchingStepOutputVertices(graph *terraform.Graph, ref runbookaddrs.StepOut
 			if node.Step.InstanceKey != ref.Step.InstanceKey {
 				continue
 			}
+		}
+		ret = append(ret, node)
+	}
+	return ret
+}
+
+func allStepOutputVertices(graph *terraform.Graph, step runbookaddrs.StepInstance) []*NodeStepOutput {
+	if graph == nil || step.StepName == "" {
+		return nil
+	}
+	var ret []*NodeStepOutput
+	for _, vertex := range graph.Vertices() {
+		node, ok := vertex.(*NodeStepOutput)
+		if !ok || node.Step == nil || node.Output == nil {
+			continue
+		}
+		if node.Step.StepName != step.StepName {
+			continue
+		}
+		if step.InstanceKey != nil && step.InstanceKey != terraformaddrs.NoKey && node.Step.InstanceKey != step.InstanceKey {
+			continue
 		}
 		ret = append(ret, node)
 	}

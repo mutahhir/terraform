@@ -207,7 +207,40 @@ func newProviderSchemaCache(config *runbookconfigs.RunbookConfig, opts *Validate
 }
 
 func hasRunbookReferencesInBody(body hcl.Body) bool {
-	return len(referencesInBody(body)) > 0
+	if body == nil {
+		return false
+	}
+	attrs, _ := body.JustAttributes()
+	for _, attr := range attrs {
+		for _, traversal := range attr.Expr.Variables() {
+			if hasDeferredBodyReferenceTraversal(traversal) {
+				return true
+			}
+		}
+	}
+	content, _, _ := body.PartialContent(&hcl.BodySchema{})
+	for _, block := range content.Blocks {
+		if hasRunbookReferencesInBody(block.Body) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDeferredBodyReferenceTraversal(traversal hcl.Traversal) bool {
+	if len(traversal) == 0 {
+		return false
+	}
+	root, ok := traversal[0].(hcl.TraverseRoot)
+	if !ok {
+		return false
+	}
+	switch root.Name {
+	case "each", "count", "local", "data", "list", "step", "steps", "action", "workspace":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *providerSchemaCache) provider(providerType terraformaddrs.Provider) (providers.Interface, providers.ProviderSchema, tfdiags.Diagnostics) {

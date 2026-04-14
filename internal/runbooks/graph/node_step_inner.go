@@ -422,9 +422,12 @@ func (n *NodeStepCondition) Name() string {
 	return fmt.Sprintf("step.%s%s.%s.%s", stepName, n.Step.InstanceKey.String(), n.Condition.Kind, n.Condition.DeclRange.String())
 }
 
-func (n *NodeStepCondition) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepCondition) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
+	}
+	if op == walkOperationPlan && n.Condition.Kind == runbookconfigs.PostconditionCondition {
+		return nil
 	}
 	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: string(n.Condition.Kind), Subject: n.Condition.DeclRange.String(), Status: runbookruntime.StepStatusPlanned})
 	value, diags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Condition.Condition)

@@ -623,7 +623,7 @@ step "consumer" {
 	}
 }
 
-func TestBuildPlanPostconditionCanReadSameStepData(t *testing.T) {
+func TestBuildPlanIgnoresPostconditions(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
 	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
@@ -701,7 +701,7 @@ step "inspect" {
 		t.Fatalf("expected runtime output python3.12, got %q", got)
 	}
 	if plan.Steps[0].Status != runtime.StepStatusCompleted {
-		t.Fatalf("expected completed step after successful postcondition, got %q", plan.Steps[0].Status)
+		t.Fatalf("expected completed step during plan, got %q", plan.Steps[0].Status)
 	}
 }
 

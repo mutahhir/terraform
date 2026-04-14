@@ -50,6 +50,20 @@ func TestParseRefStepsOutput(t *testing.T) {
 	}
 }
 
+func TestParseRefWholeStep(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `steps.deploy`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	step, ok := ref.Subject.(Step)
+	if !ok {
+		t.Fatalf("expected Step, got %T", ref.Subject)
+	}
+	if step.Step.StepName != "deploy" {
+		t.Fatalf("unexpected step name: %s", step.String())
+	}
+}
+
 func TestParseRefWorkspaceAction(t *testing.T) {
 	ref, diags := ParseRef(mustParseTraversal(t, `workspace.action.http.notify`))
 	if diags.HasErrors() {

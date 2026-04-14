@@ -372,6 +372,29 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutpu
 	}
 }
 
+func TestStepReferenceTransformerConnectsWholeStepReferences(t *testing.T) {
+	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"smoke_invoke_lambda": {
+				Name:    "smoke_invoke_lambda",
+				Outputs: []*configs.Output{{Name: "invocation_output", Expr: mustParseExpression(t, `"ok"`)}},
+			},
+			"summarize": {
+				Name:    "summarize",
+				Outputs: []*configs.Output{{Name: "summary", Expr: mustParseExpression(t, `length(values(steps.smoke_invoke_lambda))`)}},
+			},
+		},
+	})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	summarize := &NodeExpandStep{StepName: "summarize"}
+	producer := &NodeExpandStep{StepName: "smoke_invoke_lambda"}
+	if !graph.DownEdges(summarize).Include(producer) {
+		t.Fatal("expected summarize step to depend on whole referenced step")
+	}
+}
+
 func TestRootVariableConfigBuildsTerraformConfig(t *testing.T) {
 	variable := &configs.Variable{Name: "input"}
 	config := rootVariableConfig(&runbookconfigs.RunbookConfig{
