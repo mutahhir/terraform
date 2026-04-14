@@ -3,7 +3,9 @@ package runbookgraph
 import (
 	"fmt"
 
+	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/dag"
+	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -42,6 +44,7 @@ func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdia
 		if dag.VertexName(vertex) == "root" {
 			continue
 		}
+		rewireExactStepOutputReferences(graph, vertex)
 		if expandable, ok := vertex.(GraphNodeDynamicExpandable); ok {
 			if shouldSkipVertex(graph, ctx, vertex) {
 				markVertexSkipped(ctx, vertex, graph)
@@ -51,6 +54,13 @@ func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdia
 			diags = diags.Append(expandDiags)
 			if expandDiags.HasErrors() {
 				continue
+			}
+			subsumeExpandedGraph(graph, expanded)
+			for _, expandedVertex := range expanded.Vertices() {
+				if dag.VertexName(expandedVertex) == "root" {
+					continue
+				}
+				rewireExactStepOutputReferences(graph, expandedVertex)
 			}
 			diags = diags.Append(walkGraph(expanded, ctx, op))
 			continue
@@ -82,6 +92,87 @@ func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdia
 	}
 
 	return diags
+}
+
+func subsumeExpandedGraph(parent, expanded *terraform.Graph) {
+	if parent == nil || expanded == nil {
+		return
+	}
+	parent.Subsume(&expanded.AcyclicGraph.Graph)
+}
+
+func rewireExactStepOutputReferences(graph *terraform.Graph, vertex dag.Vertex) {
+	if graph == nil || vertex == nil {
+		return
+	}
+	refs := referencesForVertex(vertex)
+	if len(refs) == 0 {
+		return
+	}
+	currentStep, _ := stepNameForVertex(vertex)
+	for _, ref := range refs {
+		stepOutput, ok := ref.(runbookaddrs.StepOutput)
+		if !ok || stepOutput.Step.StepName == "" || stepOutput.Step.StepName == currentStep {
+			continue
+		}
+		targets := matchingStepOutputVertices(graph, stepOutput)
+		if len(targets) == 0 {
+			continue
+		}
+		graph.RemoveEdge(dag.BasicEdge(vertex, &NodeExpandStep{StepName: stepOutput.Step.StepName}))
+		for _, target := range targets {
+			graph.Connect(dag.BasicEdge(vertex, target))
+		}
+	}
+}
+
+func referencesForVertex(vertex dag.Vertex) []runbookaddrs.Referenceable {
+	switch node := vertex.(type) {
+	case *NodeExpandStep:
+		if node == nil || node.Config == nil {
+			return nil
+		}
+		return referencesForStep(node.Config)
+	case *NodeStepAction:
+		return referencesForStepAction(node.Action)
+	case *NodeStepData:
+		return referencesForStepResource(node.Data)
+	case *NodeStepList:
+		return referencesForStepResource(node.List)
+	case *NodeStepLocal:
+		return referencesForStepLocal(node.Local)
+	case *NodeStepExecution:
+		return referencesForStepExecution(node.Execution)
+	case *NodeStepCondition:
+		return referencesForStepCondition(node.Condition)
+	case *NodeStepOutput:
+		return referencesForStepOutput(node.Output)
+	default:
+		return nil
+	}
+}
+
+func matchingStepOutputVertices(graph *terraform.Graph, ref runbookaddrs.StepOutput) []*NodeStepOutput {
+	if graph == nil || ref.Step.StepName == "" {
+		return nil
+	}
+	var ret []*NodeStepOutput
+	for _, vertex := range graph.Vertices() {
+		node, ok := vertex.(*NodeStepOutput)
+		if !ok || node.Step == nil || node.Output == nil {
+			continue
+		}
+		if node.Step.StepName != ref.Step.StepName || node.Output.Name != ref.OutputName {
+			continue
+		}
+		if ref.Step.InstanceKey != nil && ref.Step.InstanceKey != terraformaddrs.NoKey {
+			if node.Step.InstanceKey != ref.Step.InstanceKey {
+				continue
+			}
+		}
+		ret = append(ret, node)
+	}
+	return ret
 }
 
 func shouldSkipVertex(graph *terraform.Graph, ctx *EvalContext, vertex dag.Vertex) bool {

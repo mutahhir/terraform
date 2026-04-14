@@ -13,6 +13,7 @@ import (
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runtime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/terraform"
+	"github.com/zclconf/go-cty/cty"
 )
 
 func TestNewPlanBuildsVariableStepAndOutputNodes(t *testing.T) {
@@ -285,8 +286,6 @@ func TestPlanBuilderBuildIncludesStepExpansionNode(t *testing.T) {
 }
 
 func TestCrossStepOutputReferenceTransformerConnectsConsumerOutputToProducerOutput(t *testing.T) {
-	t.Skip("TODO: replace coarse step-level edges with direct cross-step output-vertex edges")
-
 	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
 		Variables: map[string]*configs.Variable{
 			"input": {Name: "input"},
@@ -305,6 +304,26 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerOutputToProducerOutp
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
+	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{
+		Variables: map[string]*configs.Variable{
+			"input": {Name: "input", Default: cty.StringVal("ok")},
+		},
+		Steps: map[string]*runbookconfigs.Step{
+			"producer": {
+				Name:    "producer",
+				Outputs: []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `var.input`)}},
+			},
+			"consumer": {
+				Name:    "consumer",
+				Outputs: []*configs.Output{{Name: "final", Expr: mustParseExpression(t, `step.producer.result`)}},
+			},
+		},
+	}})
+	ctx.SetVariable("input", &terraform.InputValue{Value: cty.StringVal("ok")})
+	walkDiags := walkGraph(graph, ctx, walkOperationPlan)
+	if walkDiags.HasErrors() {
+		t.Fatalf("unexpected walk diagnostics: %s", walkDiags.Err())
+	}
 
 	consumer := &NodeStepOutput{Step: &NodeStepInstance{StepName: "consumer"}, Output: &configs.Output{Name: "final"}}
 	producer := &NodeStepOutput{Step: &NodeStepInstance{StepName: "producer"}, Output: &configs.Output{Name: "result"}}
@@ -314,8 +333,6 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerOutputToProducerOutp
 }
 
 func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutput(t *testing.T) {
-	t.Skip("TODO: replace coarse step-level edges with direct cross-step output-vertex edges")
-
 	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
 		Steps: map[string]*runbookconfigs.Step{
 			"producer": {
@@ -330,6 +347,22 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutpu
 	})
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"producer": {
+				Name:    "producer",
+				Outputs: []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `"ok"`)}},
+			},
+			"consumer": {
+				Name:   "consumer",
+				Locals: []*configs.Local{{Name: "copied", Expr: mustParseExpression(t, `steps.producer.result`)}},
+			},
+		},
+	}})
+	walkDiags := walkGraph(graph, ctx, walkOperationPlan)
+	if walkDiags.HasErrors() {
+		t.Fatalf("unexpected walk diagnostics: %s", walkDiags.Err())
 	}
 
 	consumer := &NodeStepLocal{Step: &NodeStepInstance{StepName: "consumer"}, Local: &configs.Local{Name: "copied"}}
