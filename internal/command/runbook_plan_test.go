@@ -31,6 +31,18 @@ provider "test" {}
 step "discover" {
   data "test_data" "selected" {}
 
+  action "test_action" "notify" {
+    config {
+      target = data.test_data.selected.id
+    }
+  }
+
+  execute {
+    invoke_action {
+      action = action.test_action.notify
+    }
+  }
+
   output "result" {
     value = data.test_data.selected.id
   }
@@ -56,6 +68,12 @@ step "discover" {
 	}
 	if !strings.Contains(stdout, `<= data "data.test_data.selected"`) {
 		t.Fatalf("expected data read detail in output, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, `> execute "action.test_action.notify" with {`) {
+		t.Fatalf("expected execute action detail in output, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, `"target" = "srv-123"`) {
+		t.Fatalf("expected execute payload field in output, got: %s", stdout)
 	}
 	if !strings.Contains(stdout, `Plan: 1 to run, 0 to skip.`) {
 		t.Fatalf("expected runbook plan summary in output, got: %s", stdout)
@@ -198,6 +216,9 @@ func runbookPlanFixtureProvider() *testing_provider.MockProvider {
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
 			Provider: providers.Schema{Body: &configschema.Block{}},
+			Actions: map[string]providers.ActionSchema{
+				"test_action": {ConfigSchema: &configschema.Block{Attributes: map[string]*configschema.Attribute{"target": {Type: cty.String, Optional: true}}}},
+			},
 			DataSources: map[string]providers.Schema{
 				"test_data": {Body: &configschema.Block{}},
 			},

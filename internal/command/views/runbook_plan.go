@@ -7,9 +7,11 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform/internal/command/arguments"
+	"github.com/hashicorp/terraform/internal/repl"
 	runbookgraph "github.com/hashicorp/terraform/internal/runbooks/graph"
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/tfdiags"
+	"github.com/zclconf/go-cty/cty"
 )
 
 type RunbookPlan interface {
@@ -40,6 +42,8 @@ type runbookPlanInfo struct {
 	Type      string                    `json:"type"`
 	Subject   string                    `json:"subject"`
 	Status    runbookruntime.StepStatus `json:"status"`
+	Value     json.RawMessage           `json:"value,omitempty"`
+	valueVal  cty.Value                 `json:"-"`
 }
 
 func NewRunbookPlan(vt arguments.ViewType, view *View) RunbookPlan {
@@ -64,7 +68,20 @@ func (v *RunbookPlanHuman) Diagnostics(diags tfdiags.Diagnostics) { v.view.Diagn
 func (v *RunbookPlanHuman) HelpPrompt()                           { v.view.HelpPrompt("runbook plan") }
 func (v *RunbookPlanHuman) PlannedStep(step *runbookruntime.Step) {}
 func (v *RunbookPlanHuman) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
-	v.info = append(v.info, runbookPlanInfo(info))
+	entry := runbookPlanInfo{
+		StepName:  info.StepName,
+		StepIndex: info.StepIndex,
+		Type:      info.Type,
+		Subject:   info.Subject,
+		Status:    info.Status,
+		valueVal:  info.Value,
+	}
+	if info.Value != cty.NilVal {
+		if encoded, err := json.Marshal(tfdiags.CompactValueStr(info.Value)); err == nil {
+			entry.Value = encoded
+		}
+	}
+	v.info = append(v.info, entry)
 }
 func (v *RunbookPlanHuman) Plan(plan *runbookgraph.Plan) {
 	viewPlan := buildRunbookPlan(plan, v.info)
@@ -116,7 +133,20 @@ func (v *RunbookPlanJSON) Diagnostics(diags tfdiags.Diagnostics) { v.view.Diagno
 func (v *RunbookPlanJSON) HelpPrompt()                           {}
 func (v *RunbookPlanJSON) PlannedStep(step *runbookruntime.Step) {}
 func (v *RunbookPlanJSON) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
-	v.info = append(v.info, runbookPlanInfo(info))
+	entry := runbookPlanInfo{
+		StepName:  info.StepName,
+		StepIndex: info.StepIndex,
+		Type:      info.Type,
+		Subject:   info.Subject,
+		Status:    info.Status,
+		valueVal:  info.Value,
+	}
+	if info.Value != cty.NilVal {
+		if encoded, err := json.Marshal(tfdiags.CompactValueStr(info.Value)); err == nil {
+			entry.Value = encoded
+		}
+	}
+	v.info = append(v.info, entry)
 }
 func (v *RunbookPlanJSON) Plan(plan *runbookgraph.Plan) {
 	v.view.log.Info("Runbook plan", "type", "runbook_plan", "plan", buildRunbookPlan(plan, v.info))
@@ -158,19 +188,21 @@ func toRunbookPlanStep(step *runbookruntime.Step) runbookPlanStep {
 
 func renderRunbookStepPlan(step runbookPlanStep, info []runbookPlanInfo) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("  # %s will be %s", renderStepAddress(step), renderStepOutcome(step)))
+	stepIndent := 2
+	itemIndent := stepIndent + 4
+	b.WriteString(fmt.Sprintf("%s# %s will be %s", indent(stepIndent), renderStepAddress(step), renderStepOutcome(step)))
 	if step.SkipReason != "" {
 		b.WriteString(fmt.Sprintf(" (%s)", step.SkipReason))
 	}
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  step %q {\n", step.Name))
+	b.WriteString(fmt.Sprintf("%sstep %q {\n", indent(stepIndent), step.Name))
 	for _, item := range sortedPlanInfo(info) {
 		if !shouldRenderPlanInfo(item) {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("      %s %s\n", runbookPlanSymbol(item.Type), renderPlanInfo(item)))
+		b.WriteString(renderPlanInfoLine(item, itemIndent))
 	}
-	b.WriteString("    }\n")
+	b.WriteString(fmt.Sprintf("%s}\n", indent(stepIndent)))
 	return b.String()
 }
 
@@ -203,16 +235,84 @@ func runbookPlanSymbol(typ string) string {
 	}
 }
 
-func renderPlanInfo(info runbookPlanInfo) string {
+func renderPlanInfo(info runbookPlanInfo, indentSize int) string {
 	switch info.Type {
 	case "data":
 		return fmt.Sprintf("data %q", info.Subject)
 	case "list":
 		return fmt.Sprintf("list %q", info.Subject)
 	case "execute":
-		return "execute"
+		if info.valueVal != cty.NilVal && info.valueVal.IsKnown() && !info.valueVal.IsNull() {
+			return fmt.Sprintf("execute %q with %s", info.Subject, repl.FormatValue(pruneUnsetValue(info.valueVal), 0))
+		}
+		return fmt.Sprintf("execute %q", info.Subject)
 	default:
 		return fmt.Sprintf("%s %q", info.Type, info.Subject)
+	}
+}
+
+func renderPlanInfoLine(info runbookPlanInfo, indentSize int) string {
+	rendered := renderPlanInfo(info, indentSize)
+	lines := strings.Split(rendered, "\n")
+	if len(lines) == 1 {
+		return fmt.Sprintf("%s%s %s\n", indent(indentSize), runbookPlanSymbol(info.Type), rendered)
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("%s%s %s\n", indent(indentSize), runbookPlanSymbol(info.Type), lines[0]))
+	for _, line := range lines[1:] {
+		b.WriteString(fmt.Sprintf("%s%s\n", indent(indentSize+2), line))
+	}
+	return b.String()
+}
+
+func indent(spaces int) string {
+	if spaces <= 0 {
+		return ""
+	}
+	return strings.Repeat(" ", spaces)
+}
+
+func pruneUnsetValue(v cty.Value) cty.Value {
+	if v == cty.NilVal || !v.IsKnown() || v.IsNull() {
+		return v
+	}
+	ty := v.Type()
+	switch {
+	case ty.IsObjectType():
+		attrs := make(map[string]cty.Value)
+		for name, value := range v.AsValueMap() {
+			if value.IsKnown() && value.IsNull() {
+				continue
+			}
+			attrs[name] = pruneUnsetValue(value)
+		}
+		return cty.ObjectVal(attrs)
+	case ty.IsMapType():
+		attrs := make(map[string]cty.Value)
+		for name, value := range v.AsValueMap() {
+			if value.IsKnown() && value.IsNull() {
+				continue
+			}
+			attrs[name] = pruneUnsetValue(value)
+		}
+		return cty.MapVal(attrs)
+	case ty.IsTupleType(), ty.IsListType(), ty.IsSetType():
+		vals := make([]cty.Value, 0, v.LengthInt())
+		for it := v.ElementIterator(); it.Next(); {
+			_, elem := it.Element()
+			vals = append(vals, pruneUnsetValue(elem))
+		}
+		switch {
+		case ty.IsTupleType():
+			return cty.TupleVal(vals)
+		case ty.IsListType():
+			return cty.ListVal(vals)
+		default:
+			return cty.SetVal(vals)
+		}
+	default:
+		return v
 	}
 }
 

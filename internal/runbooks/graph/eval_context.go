@@ -28,19 +28,20 @@ import (
 
 // EvalContext tracks the values that are available while evaluating a runbook.
 type EvalContext struct {
-	config *runbookconfigs.RunbookConfig
-	ui     UI
-	hooks  []Hook
+	config   *runbookconfigs.RunbookConfig
+	ui       UI
+	hooks    []Hook
+	emitLock sync.Mutex
 
 	variables     terraform.InputValues
-	variablesLock sync.Mutex
+	variablesLock sync.RWMutex
 
 	providers     map[addrs.Provider]providers.Interface
-	providersLock sync.Mutex
+	providersLock sync.RWMutex
 
 	steps     map[string]*stepEvalState
 	stepOrder []string
-	stepsLock sync.Mutex
+	stepsLock sync.RWMutex
 }
 
 type EvalContextOpts struct {
@@ -54,13 +55,14 @@ func NewEvalContext(opts EvalContextOpts) *EvalContext {
 		config:        opts.Config,
 		ui:            opts.UI,
 		hooks:         append([]Hook(nil), opts.Hooks...),
+		emitLock:      sync.Mutex{},
 		variables:     make(terraform.InputValues),
-		variablesLock: sync.Mutex{},
+		variablesLock: sync.RWMutex{},
 		providers:     make(map[addrs.Provider]providers.Interface),
-		providersLock: sync.Mutex{},
+		providersLock: sync.RWMutex{},
 		steps:         make(map[string]*stepEvalState),
 		stepOrder:     make([]string, 0),
-		stepsLock:     sync.Mutex{},
+		stepsLock:     sync.RWMutex{},
 	}
 }
 
@@ -108,15 +110,20 @@ func (ec *EvalContext) EmitPlannedStep(step *runbookruntime.Step) {
 	if step == nil {
 		return
 	}
+	ec.emitLock.Lock()
+	defer ec.emitLock.Unlock()
+	snapshot := cloneRuntimeStepValue(step)
 	if ec.ui != nil {
-		ec.ui.PlannedStep(step)
+		ec.ui.PlannedStep(snapshot)
 	}
 	for _, hook := range ec.hooks {
-		hook.PlannedStep(step)
+		hook.PlannedStep(snapshot)
 	}
 }
 
 func (ec *EvalContext) EmitStepPlanInfo(info StepPlanInfo) {
+	ec.emitLock.Lock()
+	defer ec.emitLock.Unlock()
 	if ec.ui != nil {
 		ec.ui.PlannedStepInfo(info)
 	}
@@ -136,8 +143,9 @@ type stepEvalState struct {
 }
 
 type actionEvalState struct {
-	planned bool
-	invoked bool
+	planned       bool
+	invoked       bool
+	plannedConfig cty.Value
 }
 
 func (ec *EvalContext) Config() *runbookconfigs.RunbookConfig {
@@ -159,8 +167,8 @@ func (ec *EvalContext) SetVariable(name string, value *terraform.InputValue) {
 }
 
 func (ec *EvalContext) GetVariable(name string) (*terraform.InputValue, bool) {
-	ec.variablesLock.Lock()
-	defer ec.variablesLock.Unlock()
+	ec.variablesLock.RLock()
+	defer ec.variablesLock.RUnlock()
 
 	value, ok := ec.variables[name]
 	return value, ok
@@ -178,8 +186,8 @@ func (ec *EvalContext) SetProvider(providerType addrs.Provider, provider provide
 }
 
 func (ec *EvalContext) Provider(providerType addrs.Provider) (providers.Interface, bool) {
-	ec.providersLock.Lock()
-	defer ec.providersLock.Unlock()
+	ec.providersLock.RLock()
+	defer ec.providersLock.RUnlock()
 
 	provider, ok := ec.providers[providerType]
 	return provider, ok
@@ -192,7 +200,30 @@ func (ec *EvalContext) EnsureStep(name string, config *runbookconfigs.Step, exis
 func (ec *EvalContext) ensureStepWithKey(name string, instanceKey addrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
+	return ec.ensureStepRuntimeLocked(name, instanceKey, config, existing)
+}
 
+func (ec *EvalContext) ensurePlannedStepWithKey(name string, instanceKey addrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
+	ec.stepsLock.Lock()
+	defer ec.stepsLock.Unlock()
+	step := ec.ensureStepRuntimeLocked(name, instanceKey, config, existing)
+	if step.Status == runbookruntime.StepStatusPending {
+		step.Status = runbookruntime.StepStatusPlanned
+	}
+	return step
+}
+
+func (ec *EvalContext) ensureRunningStepWithKey(name string, instanceKey addrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
+	ec.stepsLock.Lock()
+	defer ec.stepsLock.Unlock()
+	step := ec.ensureStepRuntimeLocked(name, instanceKey, config, existing)
+	if step.Status == runbookruntime.StepStatusPending || step.Status == runbookruntime.StepStatusPlanned {
+		step.Status = runbookruntime.StepStatusRunning
+	}
+	return step
+}
+
+func (ec *EvalContext) ensureStepRuntimeLocked(name string, instanceKey addrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
 	key := stepStateKey(name, instanceKey)
 	state := ec.ensureStepStateLocked(key)
 	if state.runtime == nil {
@@ -247,25 +278,25 @@ func (ec *EvalContext) Step(name string) (*runbookruntime.Step, bool) {
 }
 
 func (ec *EvalContext) stepWithKey(name string, instanceKey addrs.InstanceKey) (*runbookruntime.Step, bool) {
-	ec.stepsLock.Lock()
-	defer ec.stepsLock.Unlock()
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
 
 	state, ok := ec.steps[stepStateKey(name, instanceKey)]
 	if !ok || state.runtime == nil {
 		return nil, false
 	}
-	return state.runtime, true
+	return cloneRuntimeStepValue(state.runtime), true
 }
 
 func (ec *EvalContext) StepsInOrder() []*runbookruntime.Step {
-	ec.stepsLock.Lock()
-	defer ec.stepsLock.Unlock()
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
 
 	steps := make([]*runbookruntime.Step, 0, len(ec.stepOrder))
 	for _, key := range ec.stepOrder {
 		state := ec.steps[key]
 		if state != nil && state.runtime != nil {
-			steps = append(steps, state.runtime)
+			steps = append(steps, cloneRuntimeStepValue(state.runtime))
 		}
 	}
 	return steps
@@ -312,8 +343,8 @@ func (ec *EvalContext) StepOutput(stepName, outputName string) (cty.Value, bool)
 }
 
 func (ec *EvalContext) stepOutputWithKey(stepName string, instanceKey addrs.InstanceKey, outputName string) (cty.Value, bool) {
-	ec.stepsLock.Lock()
-	defer ec.stepsLock.Unlock()
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
 
 	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
 	if !ok {
@@ -352,6 +383,32 @@ func (ec *EvalContext) MarkActionPlanned(stepName string, addr addrs.Action) {
 	})
 }
 
+func (ec *EvalContext) setActionPlannedWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Action, config cty.Value) {
+	ec.setStepValueWithKey(stepName, instanceKey, func(state *stepEvalState) {
+		actionState, ok := state.actions[addr.String()]
+		if !ok {
+			actionState = &actionEvalState{}
+			state.actions[addr.String()] = actionState
+		}
+		actionState.planned = true
+		actionState.plannedConfig = config
+	})
+}
+
+func (ec *EvalContext) actionPlannedConfigWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Action) (cty.Value, bool) {
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
+	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
+	if !ok {
+		return cty.NilVal, false
+	}
+	actionState, ok := state.actions[addr.String()]
+	if !ok || actionState == nil || actionState.plannedConfig == cty.NilVal {
+		return cty.NilVal, false
+	}
+	return actionState.plannedConfig, true
+}
+
 func (ec *EvalContext) MarkActionInvoked(stepName string, addr addrs.Action) {
 	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
 		actionState, ok := state.actions[addr.String()]
@@ -370,6 +427,21 @@ func (ec *EvalContext) HasDependencyState(name string, statuses ...runbookruntim
 	}
 	for _, status := range statuses {
 		if step.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func (ec *EvalContext) stepHasStatusWithKey(name string, instanceKey addrs.InstanceKey, statuses ...runbookruntime.StepStatus) bool {
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
+	state, ok := ec.steps[stepStateKey(name, instanceKey)]
+	if !ok || state.runtime == nil {
+		return false
+	}
+	for _, status := range statuses {
+		if state.runtime.Status == status {
 			return true
 		}
 	}
@@ -422,8 +494,8 @@ func (ec *EvalContext) StepLocal(stepName, localName string) (cty.Value, bool) {
 }
 
 func (ec *EvalContext) stepLocalWithKey(stepName string, instanceKey addrs.InstanceKey, localName string) (cty.Value, bool) {
-	ec.stepsLock.Lock()
-	defer ec.stepsLock.Unlock()
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
 
 	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
 	if !ok {
@@ -438,8 +510,8 @@ func (ec *EvalContext) StepData(stepName string, addr addrs.Resource) (cty.Value
 }
 
 func (ec *EvalContext) stepDataWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Resource) (cty.Value, bool) {
-	ec.stepsLock.Lock()
-	defer ec.stepsLock.Unlock()
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
 
 	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
 	if !ok {
@@ -454,8 +526,8 @@ func (ec *EvalContext) StepList(stepName string, addr addrs.Resource) (cty.Value
 }
 
 func (ec *EvalContext) stepListWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Resource) (cty.Value, bool) {
-	ec.stepsLock.Lock()
-	defer ec.stepsLock.Unlock()
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
 
 	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
 	if !ok {
@@ -490,13 +562,13 @@ func (ec *EvalContext) expressionVariablesForInstance(stepName string, instanceK
 	variables := map[string]cty.Value{}
 
 	varAttrs := map[string]cty.Value{}
-	ec.variablesLock.Lock()
+	ec.variablesLock.RLock()
 	for name, value := range ec.variables {
 		if value != nil && value.Value != cty.NilVal {
 			varAttrs[name] = value.Value
 		}
 	}
-	ec.variablesLock.Unlock()
+	ec.variablesLock.RUnlock()
 	if ec.config != nil {
 		for name, variable := range ec.config.Variables {
 			if _, exists := varAttrs[name]; exists {
@@ -515,8 +587,8 @@ func (ec *EvalContext) expressionVariablesForInstance(stepName string, instanceK
 	}
 	variables["var"] = cty.ObjectVal(varAttrs)
 
-	ec.stepsLock.Lock()
-	defer ec.stepsLock.Unlock()
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
 
 	if state, ok := ec.steps[stepStateKey(stepName, instanceKey)]; ok {
 		variables["local"] = cty.ObjectVal(copyValueMapOrEmpty(state.locals))
@@ -737,4 +809,16 @@ func variableValueType(variable *configs.Variable) cty.Type {
 		return variable.ConstraintType
 	}
 	return variable.Type
+}
+
+func cloneRuntimeStepValue(step *runbookruntime.Step) *runbookruntime.Step {
+	if step == nil {
+		return nil
+	}
+	copy := *step
+	if step.RepetitionData != nil {
+		repetitionCopy := *step.RepetitionData
+		copy.RepetitionData = &repetitionCopy
+	}
+	return &copy
 }

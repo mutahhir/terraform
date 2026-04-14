@@ -36,17 +36,15 @@ func (n *NodeStepInstance) Name() string {
 }
 
 func (n *NodeStepInstance) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
-	step := ctx.ensureStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
+	var step *runtime.Step
 	switch op {
 	case walkOperationPlan:
-		if step.Status == runtime.StepStatusPending {
-			step.Status = runtime.StepStatusPlanned
-		}
+		step = ctx.ensurePlannedStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
 		ctx.EmitPlannedStep(step)
 	case walkOperationExecute:
-		if step.Status == runtime.StepStatusPending || step.Status == runtime.StepStatusPlanned {
-			step.Status = runtime.StepStatusRunning
-		}
+		step = ctx.ensureRunningStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
+	default:
+		step = ctx.ensureStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
 	}
 	return nil
 }

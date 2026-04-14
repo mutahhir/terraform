@@ -2,6 +2,7 @@ package runbookgraph
 
 import (
 	"fmt"
+	"sync"
 
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/dag"
@@ -34,35 +35,28 @@ func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperatio
 	if graph == nil {
 		return nil
 	}
-
-	// TODO: Switch this to the concurrent dag walker once EvalContext and node
-	// execution are safe for real parallelism. The current walk mutates shared
-	// runbook state during execution and relies on deterministic sequential order.
-	order := graph.TopologicalOrder()
-	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
-		order[i], order[j] = order[j], order[i]
-	}
-
-	var diags tfdiags.Diagnostics
-	for _, vertex := range order {
+	var visited sync.Map
+	callback := func(vertex dag.Vertex) tfdiags.Diagnostics {
 		if allowed != nil {
 			if _, ok := allowed[vertex]; !ok {
-				continue
+				return nil
 			}
 		}
 		if dag.VertexName(vertex) == "root" {
-			continue
+			return nil
+		}
+		if _, loaded := visited.LoadOrStore(vertex, struct{}{}); loaded {
+			return nil
 		}
 		rewireExactStepOutputReferences(graph, vertex)
 		if expandable, ok := vertex.(GraphNodeDynamicExpandable); ok {
 			if shouldSkipVertex(graph, ctx, vertex) {
 				markVertexSkipped(ctx, vertex, graph)
-				continue
+				return nil
 			}
 			expanded, expandDiags := expandable.DynamicExpand(ctx)
-			diags = diags.Append(expandDiags)
 			if expandDiags.HasErrors() {
-				continue
+				return expandDiags
 			}
 			subsumeExpandedGraph(graph, expanded)
 			for _, expandedVertex := range expanded.Vertices() {
@@ -71,22 +65,31 @@ func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperatio
 				}
 				rewireExactStepOutputReferences(graph, expandedVertex)
 			}
-			diags = diags.Append(walkGraphVertices(graph, ctx, op, vertexSet(expanded.Vertices())))
-			continue
+			return walkGraphVertices(graph, ctx, op, vertexSet(expanded.Vertices()))
 		}
 		executable, ok := vertex.(GraphNodeExecutable)
 		if !ok {
-			continue
+			return nil
 		}
 		if shouldSkipVertex(graph, ctx, vertex) {
 			markVertexSkipped(ctx, vertex, graph)
-			continue
+			return nil
 		}
-		diags = diags.Append(executable.Execute(ctx, op))
+		return executable.Execute(ctx, op)
 	}
 
+	diags := graph.AcyclicGraph.Walk(callback)
+
 	if op == walkOperationPlan {
-		for _, vertex := range order {
+		for _, vertex := range graph.TopologicalOrder() {
+			if allowed != nil {
+				if _, ok := allowed[vertex]; !ok {
+					continue
+				}
+			}
+			if dag.VertexName(vertex) == "root" {
+				continue
+			}
 			if _, ok := stepNameForVertex(vertex); !ok {
 				continue
 			}

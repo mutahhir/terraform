@@ -1,6 +1,9 @@
 package runbookgraph
 
-import runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
+import (
+	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
+	"github.com/zclconf/go-cty/cty"
+)
 
 type UI interface {
 	PlannedStep(*runbookruntime.Step)
@@ -18,4 +21,5 @@ type StepPlanInfo struct {
 	Type      string
 	Subject   string
 	Status    runbookruntime.StepStatus
+	Value     cty.Value
 }

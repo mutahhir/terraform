@@ -92,14 +92,7 @@ func (n *NodeStepAction) Execute(ctx *EvalContext, op walkOperation) tfdiags.Dia
 	resp := provider.PlanAction(providers.PlanActionRequest{ActionType: n.Action.Type, ProposedActionData: configVal})
 	diags = diags.Append(resp.Diagnostics)
 	if !diags.HasErrors() {
-		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
-			actionState, ok := state.actions[n.Action.Addr().String()]
-			if !ok {
-				actionState = &actionEvalState{}
-				state.actions[n.Action.Addr().String()] = actionState
-			}
-			actionState.planned = true
-		})
+		ctx.setActionPlannedWithKey(n.Step.StepName, n.Step.InstanceKey, n.Action.Addr(), configVal)
 	}
 	return diags
 }
@@ -337,10 +330,22 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
+	for _, traversal := range n.Execution.InvokeAction {
+		subject := fmt.Sprintf("execute.%d", n.Index)
+		value := cty.NilVal
+		if ref, refDiags := runbookaddrs.ParseRef(traversal); !refDiags.HasErrors() && ref != nil {
+			subject = ref.Subject.String()
+			if actionAddr, ok := ref.Subject.(terraformaddrs.Action); ok {
+				if plannedConfig, ok := ctx.actionPlannedConfigWithKey(n.Step.StepName, n.Step.InstanceKey, actionAddr); ok {
+					value = plannedConfig
+				}
+			}
+		}
+		ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "execute", Subject: subject, Status: runbookruntime.StepStatusPlanned, Value: value})
+	}
 	if op != walkOperationExecute {
 		return nil
 	}
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "execute", Subject: fmt.Sprintf("execute.%d", n.Index), Status: runbookruntime.StepStatusRunning})
 	var diags tfdiags.Diagnostics
 	providerCache := map[terraformaddrs.Provider]providers.Interface{}
 	for _, traversal := range n.Execution.InvokeAction {
@@ -497,7 +502,7 @@ func (n *NodeStepOutput) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diag
 		return diags
 	}
 	ctx.setStepOutputWithKey(n.Step.StepName, n.Step.InstanceKey, n.Output.Name, value)
-	if step, ok := ctx.stepWithKey(n.Step.StepName, n.Step.InstanceKey); ok && step.Status == runbookruntime.StepStatusPlanned {
+	if ctx.stepHasStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusPlanned) {
 		ctx.setStepStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusCompleted, "")
 	}
 	return nil
