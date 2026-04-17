@@ -69,12 +69,77 @@ func TestParseRefWorkspaceAction(t *testing.T) {
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
-	action, ok := ref.Subject.(terraformaddrs.Action)
+	action, ok := ref.Subject.(WorkspaceAction)
 	if !ok {
-		t.Fatalf("expected Action, got %T", ref.Subject)
+		t.Fatalf("expected WorkspaceAction, got %T", ref.Subject)
 	}
-	if action.Type != "http" || action.Name != "notify" {
+	if action.Action.Type != "http" || action.Action.Name != "notify" {
 		t.Fatalf("unexpected workspace action address: %s", action.String())
+	}
+}
+
+func TestParseRefWorkspaceManagedResource(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `workspace.aws_lambda_function.main.arn`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	resource, ok := ref.Subject.(WorkspaceResource)
+	if !ok {
+		t.Fatalf("expected WorkspaceResource, got %T", ref.Subject)
+	}
+	if resource.Resource.Mode != terraformaddrs.ManagedResourceMode || resource.Resource.Type != "aws_lambda_function" || resource.Resource.Name != "main" {
+		t.Fatalf("unexpected workspace resource address: %s", resource.String())
+	}
+	if len(ref.Remaining) != 1 {
+		t.Fatalf("expected remaining traversal for attribute access, got %#v", ref.Remaining)
+	}
+}
+
+func TestParseRefWorkspaceDataResource(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `workspace.data.aws_caller_identity.current.account_id`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	resource, ok := ref.Subject.(WorkspaceResource)
+	if !ok {
+		t.Fatalf("expected WorkspaceResource, got %T", ref.Subject)
+	}
+	if resource.Resource.Mode != terraformaddrs.DataResourceMode || resource.Resource.Type != "aws_caller_identity" || resource.Resource.Name != "current" {
+		t.Fatalf("unexpected workspace data address: %s", resource.String())
+	}
+}
+
+func TestParseRefWorkspaceModuleAction(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `workspace.module.child.action.http.notify`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	action, ok := ref.Subject.(WorkspaceAction)
+	if !ok {
+		t.Fatalf("expected WorkspaceAction, got %T", ref.Subject)
+	}
+	if len(action.Module.Calls) != 1 || action.Module.Calls[0].Name != "child" {
+		t.Fatalf("unexpected workspace module path: %s", action.String())
+	}
+	if action.Action.Type != "http" || action.Action.Name != "notify" {
+		t.Fatalf("unexpected module workspace action address: %s", action.String())
+	}
+}
+
+func TestParseRefWorkspaceModuleManagedResource(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `workspace.module.child.aws_lambda_function.main.arn`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	resource, ok := ref.Subject.(WorkspaceResource)
+	if !ok {
+		t.Fatalf("expected WorkspaceResource, got %T", ref.Subject)
+	}
+	if len(resource.Module.Calls) != 1 || resource.Module.Calls[0].Name != "child" {
+		t.Fatalf("unexpected workspace module path: %s", resource.String())
+	}
+	if resource.Resource.Type != "aws_lambda_function" || resource.Resource.Name != "main" {
+		t.Fatalf("unexpected module workspace resource address: %s", resource.String())
 	}
 }
 

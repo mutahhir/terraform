@@ -21,6 +21,7 @@ import (
 	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
+	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
@@ -28,10 +29,11 @@ import (
 
 // EvalContext tracks the values that are available while evaluating a runbook.
 type EvalContext struct {
-	config   *runbookconfigs.RunbookConfig
-	ui       UI
-	hooks    []Hook
-	emitLock sync.Mutex
+	config         *runbookconfigs.RunbookConfig
+	workspaceState *states.State
+	ui             UI
+	hooks          []Hook
+	emitLock       sync.Mutex
 
 	variables     terraform.InputValues
 	variablesLock sync.RWMutex
@@ -45,24 +47,26 @@ type EvalContext struct {
 }
 
 type EvalContextOpts struct {
-	Config *runbookconfigs.RunbookConfig
-	UI     UI
-	Hooks  []Hook
+	Config         *runbookconfigs.RunbookConfig
+	WorkspaceState *states.State
+	UI             UI
+	Hooks          []Hook
 }
 
 func NewEvalContext(opts EvalContextOpts) *EvalContext {
 	return &EvalContext{
-		config:        opts.Config,
-		ui:            opts.UI,
-		hooks:         append([]Hook(nil), opts.Hooks...),
-		emitLock:      sync.Mutex{},
-		variables:     make(terraform.InputValues),
-		variablesLock: sync.RWMutex{},
-		providers:     make(map[addrs.Provider]providers.Interface),
-		providersLock: sync.RWMutex{},
-		steps:         make(map[string]*stepEvalState),
-		stepOrder:     make([]string, 0),
-		stepsLock:     sync.RWMutex{},
+		config:         opts.Config,
+		workspaceState: opts.WorkspaceState,
+		ui:             opts.UI,
+		hooks:          append([]Hook(nil), opts.Hooks...),
+		emitLock:       sync.Mutex{},
+		variables:      make(terraform.InputValues),
+		variablesLock:  sync.RWMutex{},
+		providers:      make(map[addrs.Provider]providers.Interface),
+		providersLock:  sync.RWMutex{},
+		steps:          make(map[string]*stepEvalState),
+		stepOrder:      make([]string, 0),
+		stepsLock:      sync.RWMutex{},
 	}
 }
 
@@ -157,6 +161,10 @@ func (ec *EvalContext) WorkspaceConfig() *configs.Config {
 		return nil
 	}
 	return ec.config.WorkspaceConfig
+}
+
+func (ec *EvalContext) WorkspaceState() *states.State {
+	return ec.workspaceState
 }
 
 func (ec *EvalContext) SetVariable(name string, value *terraform.InputValue) {
@@ -705,19 +713,55 @@ func (ec *EvalContext) workspaceVariables() cty.Value {
 	if config == nil || config.Module == nil {
 		return cty.EmptyObjectVal
 	}
+	return ec.workspaceModuleValue(config, config.Module)
+}
+
+func (ec *EvalContext) workspaceModuleValue(config *configs.Config, module *configs.Module) cty.Value {
+	attrs := map[string]cty.Value{}
 
 	outputs := map[string]cty.Value{}
-	for name, output := range config.Module.Outputs {
+	for name, output := range module.Outputs {
 		if output == nil {
 			continue
 		}
 		outputs[name] = cty.DynamicVal
 	}
+	attrs["output"] = cty.ObjectVal(outputs)
 
-	attrs := map[string]cty.Value{
-		"output": cty.ObjectVal(outputs),
+	actions := map[string]map[string]cty.Value{}
+	for key, action := range module.Actions {
+		if action == nil {
+			continue
+		}
+		if actions[action.Type] == nil {
+			actions[action.Type] = map[string]cty.Value{}
+		}
+		actions[action.Type][action.Name] = cty.StringVal(key)
 	}
+	attrs["action"] = nestedObjectValue(actions)
+	attrs["data"] = cty.EmptyObjectVal
+
+	children := map[string]cty.Value{}
+	for name, child := range config.Children {
+		if child == nil || child.Module == nil {
+			continue
+		}
+		children[name] = ec.workspaceModuleValue(child, child.Module)
+	}
+	attrs["module"] = cty.ObjectVal(copyValueMap(children))
+
 	return cty.ObjectVal(attrs)
+}
+
+func nestedObjectValue(src map[string]map[string]cty.Value) cty.Value {
+	if len(src) == 0 {
+		return cty.EmptyObjectVal
+	}
+	outer := make(map[string]cty.Value, len(src))
+	for key, values := range src {
+		outer[key] = cty.ObjectVal(copyValueMap(values))
+	}
+	return cty.ObjectVal(outer)
 }
 
 func copyValueMap(src map[string]cty.Value) map[string]cty.Value {

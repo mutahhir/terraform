@@ -354,13 +354,17 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 		if refDiags.HasErrors() || ref == nil {
 			continue
 		}
-		actionAddr, ok := ref.Subject.(terraformaddrs.Action)
-		if !ok {
+		var actionAddr terraformaddrs.Action
+		var action *configs.Action
+		switch subject := ref.Subject.(type) {
+		case terraformaddrs.Action:
+			actionAddr = subject
+			action = actionConfigForStep(ctx.Config(), n.Step.StepName, actionAddr)
+		case runbookaddrs.WorkspaceAction:
+			actionAddr = subject.Action
+			action = workspaceActionConfig(ctx.WorkspaceConfig(), subject)
+		default:
 			continue
-		}
-		action := actionConfigForStep(ctx.Config(), n.Step.StepName, actionAddr)
-		if action == nil {
-			action = workspaceActionConfig(ctx.WorkspaceConfig(), actionAddr)
 		}
 		if action == nil {
 			continue
@@ -604,9 +608,20 @@ func actionConfigForStep(config *runbookconfigs.RunbookConfig, stepName string, 
 	return nil
 }
 
-func workspaceActionConfig(config *configs.Config, addr terraformaddrs.Action) *configs.Action {
+func workspaceActionConfig(config *configs.Config, addr runbookaddrs.WorkspaceAction) *configs.Action {
 	if config == nil || config.Module == nil {
 		return nil
 	}
-	return config.Module.Actions[addr.String()]
+	target := config
+	for _, call := range addr.Module.Calls {
+		child, ok := target.Children[call.Name]
+		if !ok || child == nil {
+			return nil
+		}
+		target = child
+	}
+	if target.Module == nil {
+		return nil
+	}
+	return target.Module.Actions[addr.Action.String()]
 }

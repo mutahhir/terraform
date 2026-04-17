@@ -6,15 +6,17 @@ import (
 	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runtime "github.com/hashicorp/terraform/internal/runbooks/runtime"
+	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type PlannerOpts struct {
-	InputValues terraform.InputValues
-	Providers   map[terraformaddrs.Provider]providers.Factory
-	UI          UI
-	Hooks       []Hook
+	InputValues    terraform.InputValues
+	Providers      map[terraformaddrs.Provider]providers.Factory
+	WorkspaceState *states.State
+	UI             UI
+	Hooks          []Hook
 }
 
 type Plan struct {
@@ -45,7 +47,7 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 	}
 
 	validateOpts := &ValidateOpts{}
-	evalCtx := NewEvalContext(EvalContextOpts{Config: config, UI: optsUI(opts), Hooks: optsHooks(opts)})
+	evalCtx := NewEvalContext(EvalContextOpts{Config: config, WorkspaceState: optsWorkspaceState(opts), UI: optsUI(opts), Hooks: optsHooks(opts)})
 	if opts != nil {
 		for name, value := range opts.InputValues {
 			evalCtx.SetVariable(name, value)
@@ -98,4 +100,11 @@ func optsHooks(opts *PlannerOpts) []Hook {
 		return nil
 	}
 	return opts.Hooks
+}
+
+func optsWorkspaceState(opts *PlannerOpts) *states.State {
+	if opts == nil {
+		return nil
+	}
+	return opts.WorkspaceState
 }
