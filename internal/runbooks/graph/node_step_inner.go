@@ -402,7 +402,11 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 			}
 			providerCache[providerType] = provider
 		}
-		resp := provider.InvokeAction(providers.InvokeActionRequest{ActionType: action.Type, PlannedActionData: cty.EmptyObjectVal})
+		plannedConfig := cty.EmptyObjectVal
+		if existing, ok := ctx.actionPlannedConfigWithKey(n.Step.StepName, n.Step.InstanceKey, actionAddr); ok {
+			plannedConfig = existing
+		}
+		resp := provider.InvokeAction(providers.InvokeActionRequest{ActionType: action.Type, PlannedActionData: plannedConfig})
 		diags = diags.Append(resp.Diagnostics)
 		if resp.Events != nil {
 			for event := range resp.Events {
@@ -457,13 +461,13 @@ func (n *NodeStepCondition) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
-	if op == walkOperationPlan && n.Condition.Kind == runbookconfigs.PostconditionCondition {
-		return nil
-	}
 	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: string(n.Condition.Kind), Subject: n.Condition.DeclRange.String(), Status: runbookruntime.StepStatusPlanned})
 	value, diags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Condition.Condition)
 	if diags.HasErrors() {
 		ctx.setStepStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusFailed, "condition evaluation failed")
+		return diags
+	}
+	if op == walkOperationPlan && n.Condition.Kind == runbookconfigs.PostconditionCondition {
 		return diags
 	}
 	if !value.IsKnown() || value.IsNull() || value.False() {

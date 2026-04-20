@@ -1,23 +1,19 @@
 package command
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/hashicorp/terraform/internal/backend/backendrun"
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/command/views"
-	"github.com/hashicorp/terraform/internal/configs"
-	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runbookgraph "github.com/hashicorp/terraform/internal/runbooks/graph"
-	"github.com/hashicorp/terraform/internal/states"
-	"github.com/hashicorp/terraform/internal/terraform"
-	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type RunbookPlanCommand struct {
-	Meta
+	runbookCommandBase
+}
+
+func NewRunbookPlanCommand(meta Meta) *RunbookPlanCommand {
+	return &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: meta}}
 }
 
 func (c *RunbookPlanCommand) Run(rawArgs []string) int {
@@ -34,76 +30,24 @@ func (c *RunbookPlanCommand) Run(rawArgs []string) int {
 		return 1
 	}
 
-	var err error
-	if c.pluginPath, err = c.loadPluginPath(); err != nil {
-		view.Diagnostics(diags.Append(err))
-		return 1
-	}
-
-	pwd, err := os.Getwd()
-	if err != nil {
-		view.Diagnostics(tfdiags.Diagnostics{}.Append(err))
-		return 1
-	}
-
-	runbookDir, workspaceDir, pathDiags := c.discoverRunbookPaths(pwd)
-	diags = diags.Append(pathDiags)
-	if diags.HasErrors() {
-		view.Diagnostics(diags)
-		return 1
-	}
-	c.View.SetConfigSources(func() map[string][]byte {
-		return runbookConfigSources(runbookDir)
-	})
-
-	parser := runbookconfigs.NewRunbookParser(nil)
-	config, parseDiags := parser.LoadRunbookConfigDir(runbookDir, workspaceDir)
-	diags = diags.Append(parseDiags)
+	loaded, loadDiags := c.loadRunbook(rawArgs, args.Vars)
+	diags = diags.Append(loadDiags)
 	if diags.HasErrors() {
 		view.Diagnostics(diags)
 		return 1
 	}
 
-	providerFactories, err := c.ProviderFactories()
-	if err != nil {
-		view.Diagnostics(diags.Append(err))
-		return 1
-	}
-
-	inputValues, valueDiags := c.collectRunbookVariableValues(config, args)
+	inputValues, valueDiags := c.collectRunbookVariableValues(loaded.Config, args.Vars)
 	diags = diags.Append(valueDiags)
 	if diags.HasErrors() {
 		view.Diagnostics(diags)
 		return 1
 	}
 
-	b, backendDiags := c.backend(workspaceDir, arguments.ViewHuman)
-	diags = diags.Append(backendDiags)
-	if diags.HasErrors() {
-		view.Diagnostics(diags)
-		return 1
-	}
-	c.ignoreRemoteVersionConflict(b)
-
-	workspaceName, err := c.Workspace()
-	if err != nil {
-		view.Diagnostics(diags.Append(err))
-		return 1
-	}
-	stateFile, err := getStateFromBackend(b, workspaceName)
-	if err != nil {
-		view.Diagnostics(diags.Append(err))
-		return 1
-	}
-	var workspaceState *states.State
-	if stateFile != nil {
-		workspaceState = stateFile.State
-	}
-
-	plan, planDiags := runbookgraph.BuildPlan(config, &runbookgraph.PlannerOpts{
+	plan, planDiags := runbookgraph.BuildPlan(loaded.Config, &runbookgraph.PlannerOpts{
 		InputValues:    inputValues,
-		Providers:      providerFactories,
-		WorkspaceState: workspaceState,
+		Providers:      loaded.ProviderFactories,
+		WorkspaceState: loaded.WorkspaceState,
 		UI:             view.UI(),
 		Hooks:          view.Hooks(),
 	})
@@ -115,26 +59,6 @@ func (c *RunbookPlanCommand) Run(rawArgs []string) int {
 
 	view.Plan(plan)
 	return 0
-}
-
-func runbookConfigSources(runbookDir string) map[string][]byte {
-	ret := map[string][]byte{}
-	entries, err := os.ReadDir(runbookDir)
-	if err != nil {
-		return ret
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".tfrun.hcl") {
-			continue
-		}
-		path := filepath.Join(runbookDir, entry.Name())
-		src, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		ret[path] = src
-	}
-	return ret
 }
 
 func (c *RunbookPlanCommand) Help() string {
@@ -154,55 +78,4 @@ Options:
 
 func (c *RunbookPlanCommand) Synopsis() string {
 	return "Show the planned runbook steps"
-}
-
-func (c *RunbookPlanCommand) discoverRunbookPaths(pwd string) (string, string, tfdiags.Diagnostics) {
-	var diags tfdiags.Diagnostics
-	entries, err := os.ReadDir(pwd)
-	if err != nil {
-		return "", "", diags.Append(err)
-	}
-	hasRunbook := false
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if strings.HasSuffix(entry.Name(), ".tfrun.hcl") {
-			hasRunbook = true
-			break
-		}
-	}
-	if !hasRunbook {
-		return "", "", diags.Append(tfdiags.Sourceless(tfdiags.Error, "No runbook configuration files", "Runbook plan requires at least one .tfrun.hcl file in the current working directory."))
-	}
-
-	return pwd, discoverRunbookWorkspaceDir(pwd), diags
-}
-
-func discoverRunbookWorkspaceDir(runbookDir string) string {
-	parser := configs.NewParser(nil)
-	for dir := runbookDir; ; dir = filepath.Dir(dir) {
-		if parser.IsConfigDir(dir) {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-	}
-
-	return runbookDir
-}
-
-func (c *RunbookPlanCommand) collectRunbookVariableValues(config *runbookconfigs.RunbookConfig, args *arguments.RunbookPlan) (terraform.InputValues, tfdiags.Diagnostics) {
-	var diags tfdiags.Diagnostics
-	if config == nil {
-		return nil, nil
-	}
-
-	values, valueDiags := args.Vars.CollectValues(func(filename string, src []byte) {})
-	diags = diags.Append(valueDiags)
-	declared, declaredDiags := backendrun.ParseVariableValues(values, config.Variables)
-	diags = diags.Append(declaredDiags)
-	return declared, diags
 }

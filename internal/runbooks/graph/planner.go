@@ -19,10 +19,13 @@ type PlannerOpts struct {
 	Hooks          []Hook
 }
 
+type ExecuteOpts = PlannerOpts
+
 type Plan struct {
-	Config *runbookconfigs.RunbookConfig
-	Graph  *terraform.Graph
-	Steps  []*runtime.Step
+	Config  *runbookconfigs.RunbookConfig
+	Graph   *terraform.Graph
+	Steps   []*runtime.Step
+	evalCtx *EvalContext
 }
 
 func (p *Plan) StepsRuntime() map[string]*runtime.Step {
@@ -85,7 +88,27 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 		return nil, diags
 	}
 
-	return &Plan{Config: config, Graph: graph, Steps: evalCtx.StepsInOrder()}, diags
+	return &Plan{Config: config, Graph: graph, Steps: evalCtx.StepsInOrder(), evalCtx: evalCtx}, diags
+}
+
+func ExecutePlan(plan *Plan, opts *ExecuteOpts) tfdiags.Diagnostics {
+	if plan == nil {
+		return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(tfdiags.Error, "Missing runbook plan", "Runbook execution requires a plan."))
+	}
+	evalCtx := plan.evalCtx
+	if evalCtx == nil {
+		return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(tfdiags.Error, "Missing runbook plan context", "Runbook execution requires plan evaluation state."))
+	}
+	if opts != nil {
+		evalCtx.ui = optsUI(opts)
+		evalCtx.hooks = optsHooks(opts)
+	}
+	diags := walkGraph(plan.Graph, evalCtx, walkOperationExecute)
+	if diags.HasErrors() {
+		return diags
+	}
+	plan.Steps = evalCtx.StepsInOrder()
+	return diags
 }
 
 func optsUI(opts *PlannerOpts) UI {

@@ -293,7 +293,11 @@ func initCommands(
 		},
 
 		"runbook plan": func() (cli.Command, error) {
-			return &command.RunbookPlanCommand{Meta: meta}, nil
+			return command.NewRunbookPlanCommand(meta), nil
+		},
+
+		"runbook execute": func() (cli.Command, error) {
+			return command.NewRunbookExecuteCommand(meta), nil
 		},
 
 		// "rpcapi" is handled a bit differently because the whole point of

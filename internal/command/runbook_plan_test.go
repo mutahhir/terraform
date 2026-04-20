@@ -52,7 +52,7 @@ step "discover" {
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
-	c := &RunbookPlanCommand{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}}
 
 	code := c.Run([]string{"-no-color"})
 	output := done(t)
@@ -108,7 +108,7 @@ step "discover" {
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
-	c := &RunbookPlanCommand{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}}
 
 	code := c.Run([]string{"-json"})
 	output := done(t)
@@ -176,7 +176,7 @@ step "discover" {
 	t.Chdir(td)
 
 	view, done := testView(t)
-	c := &RunbookPlanCommand{Meta: Meta{View: view}}
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view}}}
 
 	code := c.Run([]string{"-no-color"})
 	output := done(t)
@@ -258,7 +258,7 @@ step "discover" {
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
-	c := &RunbookPlanCommand{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}}
 
 	code := c.Run([]string{"-no-color"})
 	output := done(t)
@@ -339,7 +339,7 @@ step "discover" {
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
-	c := &RunbookPlanCommand{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}}
 
 	code := c.Run([]string{"-json"})
 	output := done(t)
@@ -445,7 +445,7 @@ step "discover" {
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
-	c := &RunbookPlanCommand{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}}
 
 	code := c.Run([]string{"-no-color"})
 	output := done(t)

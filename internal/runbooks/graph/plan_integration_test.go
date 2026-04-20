@@ -705,6 +705,148 @@ step "inspect" {
 	}
 }
 
+func TestBuildPlanValidatesPostconditionsForExpressionErrors(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
+	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "inspect" {
+  data "test_data" "target" {
+    value = "python3.12"
+  }
+
+  output "runtime" {
+    value = data.test_data.target.value
+  }
+
+  postcondition {
+    condition     = data.test_data.target.missing == "python3.12"
+    error_message = "runtime mismatch"
+  }
+}
+`)
+
+	parser := runbookconfigs.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
+	}
+
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			DataSources: map[string]providers.Schema{
+				"test_data": {
+					Body: &configschema.Block{
+						Attributes: map[string]*configschema.Attribute{
+							"value": {Type: cty.String, Optional: true, Computed: true},
+						},
+					},
+				},
+			},
+		},
+		ReadDataSourceResponse: &providers.ReadDataSourceResponse{
+			State: cty.ObjectVal(map[string]cty.Value{
+				"value": cty.StringVal("python3.12"),
+			}),
+		},
+	}
+
+	_, planDiags := BuildPlan(config, &PlannerOpts{
+		Providers: map[addrs.Provider]providers.Factory{
+			addrs.NewDefaultProvider("test"): fixedProviderFactory(provider),
+		},
+	})
+	if !planDiags.HasErrors() {
+		t.Fatal("expected plan diagnostics for invalid postcondition expression")
+	}
+}
+
+func TestBuildPlanDoesNotEnforceFalsePostconditions(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
+	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "inspect" {
+  data "test_data" "target" {
+    value = "python3.12"
+  }
+
+  output "runtime" {
+    value = data.test_data.target.value
+  }
+
+  postcondition {
+    condition     = data.test_data.target.value == "python3.11"
+    error_message = "runtime mismatch"
+  }
+}
+`)
+
+	parser := runbookconfigs.NewRunbookParser(fs)
+	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
+	}
+
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			DataSources: map[string]providers.Schema{
+				"test_data": {
+					Body: &configschema.Block{
+						Attributes: map[string]*configschema.Attribute{
+							"value": {Type: cty.String, Optional: true, Computed: true},
+						},
+					},
+				},
+			},
+		},
+		ReadDataSourceResponse: &providers.ReadDataSourceResponse{
+			State: cty.ObjectVal(map[string]cty.Value{
+				"value": cty.StringVal("python3.12"),
+			}),
+		},
+	}
+
+	plan, planDiags := BuildPlan(config, &PlannerOpts{
+		Providers: map[addrs.Provider]providers.Factory{
+			addrs.NewDefaultProvider("test"): fixedProviderFactory(provider),
+		},
+	})
+	if planDiags.HasErrors() {
+		t.Fatalf("unexpected plan diagnostics: %s", planDiags.Err())
+	}
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected 1 planned step, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].Status != runtime.StepStatusCompleted {
+		t.Fatalf("expected completed step during plan, got %q", plan.Steps[0].Status)
+	}
+}
+
 func writeIntegrationTestFile(t *testing.T, fs afero.Fs, path, src string) {
 	t.Helper()
 	if err := afero.WriteFile(fs, path, []byte(src), 0o644); err != nil {
