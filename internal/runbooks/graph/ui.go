@@ -22,4 +22,5 @@ type StepPlanInfo struct {
 	Subject   string
 	Status    runbookruntime.StepStatus
 	Value     cty.Value
+	Details   cty.Value
 }

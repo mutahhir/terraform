@@ -543,6 +543,66 @@ func TestNodeStepExecutionCanInvokeWorkspaceModuleAction(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnknownWorkspaceResourceAttribute(t *testing.T) {
+	providerType := terraformaddrs.NewDefaultProvider("aws")
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			ResourceTypes: map[string]providers.Schema{
+				"aws_lambda_function": {
+					Body: &configschema.Block{Attributes: map[string]*configschema.Attribute{
+						"arn": {Type: cty.String, Computed: true},
+					}},
+				},
+			},
+		},
+	}
+
+	config := &runbookconfigs.RunbookConfig{
+		WorkspaceConfig: &configs.Config{Module: &configs.Module{
+			ManagedResources: map[string]*configs.Resource{"aws_lambda_function.main": {Mode: terraformaddrs.ManagedResourceMode, Type: "aws_lambda_function", Name: "main", Provider: providerType}},
+		}},
+		Steps: map[string]*runbookconfigs.Step{
+			"summary": {Name: "summary", Outputs: []*configs.Output{{Name: "bad", Expr: mustParseExpression(t, `workspace.aws_lambda_function.main.missing`)}}},
+		},
+	}
+
+	diags := validateStepDeclarations(config, NewEvalContext(EvalContextOpts{Config: config}), &ValidateOpts{Providers: map[terraformaddrs.Provider]providers.Factory{providerType: fixedPlannerProviderFactory(provider)}})
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics for unknown workspace attribute")
+	}
+}
+
+func TestValidateRejectsSensitiveWorkspaceResourceAttribute(t *testing.T) {
+	providerType := terraformaddrs.NewDefaultProvider("aws")
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			ResourceTypes: map[string]providers.Schema{
+				"aws_lambda_function": {
+					Body: &configschema.Block{Attributes: map[string]*configschema.Attribute{
+						"secret": {Type: cty.String, Computed: true, Sensitive: true},
+					}},
+				},
+			},
+		},
+	}
+
+	config := &runbookconfigs.RunbookConfig{
+		WorkspaceConfig: &configs.Config{Module: &configs.Module{
+			ManagedResources: map[string]*configs.Resource{"aws_lambda_function.main": {Mode: terraformaddrs.ManagedResourceMode, Type: "aws_lambda_function", Name: "main", Provider: providerType}},
+		}},
+		Steps: map[string]*runbookconfigs.Step{
+			"summary": {Name: "summary", Outputs: []*configs.Output{{Name: "bad", Expr: mustParseExpression(t, `workspace.aws_lambda_function.main.secret`)}}},
+		},
+	}
+
+	diags := validateStepDeclarations(config, NewEvalContext(EvalContextOpts{Config: config}), &ValidateOpts{Providers: map[terraformaddrs.Provider]providers.Factory{providerType: fixedPlannerProviderFactory(provider)}})
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics for sensitive workspace attribute")
+	}
+}
+
 func assertFailed(msg string) error {
 	return errors.New(msg)
 }

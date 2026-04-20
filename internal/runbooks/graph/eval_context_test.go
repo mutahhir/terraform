@@ -4,11 +4,13 @@
 package runbookgraph
 
 import (
+	"strings"
 	"testing"
 
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
+	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -200,6 +202,74 @@ func TestEvalContextExpressionVariablesExposeWorkspaceOutputs(t *testing.T) {
 	}
 	if value != cty.DynamicVal {
 		t.Fatalf("wrong expression value %#v", value)
+	}
+}
+
+func TestEvalContextExpressionVariablesExposeWorkspaceManagedResource(t *testing.T) {
+	workspaceState := states.NewState()
+	workspaceState.RootModule().SetResourceProvider(terraformaddrs.Resource{Mode: terraformaddrs.ManagedResourceMode, Type: "aws_lambda_function", Name: "main"}, terraformaddrs.AbsProviderConfig{Module: terraformaddrs.RootModule, Provider: terraformaddrs.NewDefaultProvider("aws")})
+	workspaceState.RootModule().SetResourceInstanceCurrent(terraformaddrs.ResourceInstance{Resource: terraformaddrs.Resource{Mode: terraformaddrs.ManagedResourceMode, Type: "aws_lambda_function", Name: "main"}, Key: terraformaddrs.NoKey}, &states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"arn":"arn:aws:lambda:us-east-1:123:function:main","function_name":"main"}`), Status: states.ObjectReady}, terraformaddrs.AbsProviderConfig{Module: terraformaddrs.RootModule, Provider: terraformaddrs.NewDefaultProvider("aws")})
+
+	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{WorkspaceConfig: &configs.Config{Module: &configs.Module{}}}, WorkspaceState: workspaceState})
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `workspace.aws_lambda_function.main.arn`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("arn:aws:lambda:us-east-1:123:function:main") {
+		t.Fatalf("wrong workspace resource value %#v", value)
+	}
+}
+
+func TestEvalContextExpressionVariablesExposeWorkspaceChildModuleResource(t *testing.T) {
+	workspaceState := states.NewState()
+	childAddr := terraformaddrs.RootModuleInstance.Child("child", terraformaddrs.NoKey)
+	workspaceState.EnsureModule(childAddr).SetResourceProvider(terraformaddrs.Resource{Mode: terraformaddrs.ManagedResourceMode, Type: "aws_lambda_function", Name: "main"}, terraformaddrs.AbsProviderConfig{Module: childAddr.Module(), Provider: terraformaddrs.NewDefaultProvider("aws")})
+	workspaceState.Module(childAddr).SetResourceInstanceCurrent(terraformaddrs.ResourceInstance{Resource: terraformaddrs.Resource{Mode: terraformaddrs.ManagedResourceMode, Type: "aws_lambda_function", Name: "main"}, Key: terraformaddrs.NoKey}, &states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"arn":"arn:aws:lambda:us-east-1:123:function:child-main"}`), Status: states.ObjectReady}, terraformaddrs.AbsProviderConfig{Module: childAddr.Module(), Provider: terraformaddrs.NewDefaultProvider("aws")})
+
+	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{WorkspaceConfig: &configs.Config{Module: &configs.Module{}, Children: map[string]*configs.Config{"child": {Module: &configs.Module{}}}}}, WorkspaceState: workspaceState})
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `workspace.module.child.aws_lambda_function.main.arn`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("arn:aws:lambda:us-east-1:123:function:child-main") {
+		t.Fatalf("wrong child workspace resource value %#v", value)
+	}
+}
+
+func TestEvalContextExpressionVariablesExposeWorkspaceDataResource(t *testing.T) {
+	workspaceState := states.NewState()
+	workspaceState.RootModule().SetResourceProvider(terraformaddrs.Resource{Mode: terraformaddrs.DataResourceMode, Type: "aws_caller_identity", Name: "current"}, terraformaddrs.AbsProviderConfig{Module: terraformaddrs.RootModule, Provider: terraformaddrs.NewDefaultProvider("aws")})
+	workspaceState.RootModule().SetResourceInstanceCurrent(terraformaddrs.ResourceInstance{Resource: terraformaddrs.Resource{Mode: terraformaddrs.DataResourceMode, Type: "aws_caller_identity", Name: "current"}, Key: terraformaddrs.NoKey}, &states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"account_id":"123456789012"}`), Status: states.ObjectReady}, terraformaddrs.AbsProviderConfig{Module: terraformaddrs.RootModule, Provider: terraformaddrs.NewDefaultProvider("aws")})
+
+	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{WorkspaceConfig: &configs.Config{Module: &configs.Module{}}}, WorkspaceState: workspaceState})
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `workspace.data.aws_caller_identity.current.account_id`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.StringVal("123456789012") {
+		t.Fatalf("wrong workspace data value %#v", value)
+	}
+}
+
+func TestEvalContextExpressionVariablesRejectWorkspaceDataResourceMissingFromState(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{WorkspaceConfig: &configs.Config{Module: &configs.Module{
+		DataResources: map[string]*configs.Resource{
+			"data.aws_caller_identity.current": {
+				Mode: terraformaddrs.DataResourceMode,
+				Type: "aws_caller_identity",
+				Name: "current",
+			},
+		},
+	}}}})
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `workspace.data.aws_caller_identity.current.account_id`))
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics for missing workspace data state")
+	}
+	if value != cty.DynamicVal {
+		t.Fatalf("wrong workspace data error placeholder value %#v", value)
+	}
+	if got := diags.Err().Error(); got == "" || !strings.Contains(got, "Missing workspace state object") {
+		t.Fatalf("missing expected diagnostic, got: %s", got)
 	}
 }
 

@@ -132,7 +132,6 @@ func (n *NodeStepData) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	if op != walkOperationPlan {
 		return nil
 	}
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "data", Subject: n.Data.Addr().String(), Status: runbookruntime.StepStatusPlanned})
 	providerType := providerTypeForResource(ctx.Config(), n.Data)
 	provider, diags := runbookProvider(ctx, providerType)
 	if diags.HasErrors() {
@@ -153,6 +152,17 @@ func (n *NodeStepData) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 		}
 		configVal = value
 	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{
+		StepName:  n.Step.StepName,
+		StepIndex: stepRuntimeIndex(n.Step),
+		Type:      "data",
+		Subject:   n.Data.Addr().String(),
+		Status:    runbookruntime.StepStatusPlanned,
+		Details: cty.ObjectVal(map[string]cty.Value{
+			"provider": cty.StringVal(providerType.ForDisplay()),
+			"config":   configVal,
+		}),
+	})
 	resp := provider.ReadDataSource(providers.ReadDataSourceRequest{TypeName: n.Data.Type, Config: configVal, ProviderMeta: providerMetaVal})
 	diags = diags.Append(resp.Diagnostics)
 	if !diags.HasErrors() {
@@ -198,7 +208,6 @@ func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 	if op != walkOperationPlan {
 		return nil
 	}
-	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "list", Subject: n.List.Addr().String(), Status: runbookruntime.StepStatusPlanned})
 	providerType := providerTypeForResource(ctx.Config(), n.List)
 	provider, diags := runbookProvider(ctx, providerType)
 	if diags.HasErrors() {
@@ -238,6 +247,19 @@ func (n *NodeStepList) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 			limit, _ = bf.Int64()
 		}
 	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{
+		StepName:  n.Step.StepName,
+		StepIndex: stepRuntimeIndex(n.Step),
+		Type:      "list",
+		Subject:   n.List.Addr().String(),
+		Status:    runbookruntime.StepStatusPlanned,
+		Details: cty.ObjectVal(map[string]cty.Value{
+			"provider":         cty.StringVal(providerType.ForDisplay()),
+			"config":           blockVal,
+			"include_resource": cty.BoolVal(includeResource),
+			"limit":            cty.NumberIntVal(limit),
+		}),
+	})
 	unmarkedBlockVal, _ := blockVal.UnmarkDeep()
 	if !unmarkedBlockVal.IsNull() && listSchema.ConfigSchema != nil && unmarkedBlockVal.Type().HasAttribute("config") && unmarkedBlockVal.GetAttr("config").IsNull() {
 		mp := unmarkedBlockVal.AsValueMap()

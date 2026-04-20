@@ -4,7 +4,9 @@
 package runbookgraph
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/hashicorp/hcl/v2"
@@ -25,15 +27,18 @@ import (
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
 // EvalContext tracks the values that are available while evaluating a runbook.
 type EvalContext struct {
-	config         *runbookconfigs.RunbookConfig
-	workspaceState *states.State
-	ui             UI
-	hooks          []Hook
-	emitLock       sync.Mutex
+	config            *runbookconfigs.RunbookConfig
+	workspaceState    *states.State
+	ui                UI
+	hooks             []Hook
+	emitLock          sync.Mutex
+	workspaceReadLock sync.Mutex
+	workspaceReads    map[string]struct{}
 
 	variables     terraform.InputValues
 	variablesLock sync.RWMutex
@@ -55,18 +60,20 @@ type EvalContextOpts struct {
 
 func NewEvalContext(opts EvalContextOpts) *EvalContext {
 	return &EvalContext{
-		config:         opts.Config,
-		workspaceState: opts.WorkspaceState,
-		ui:             opts.UI,
-		hooks:          append([]Hook(nil), opts.Hooks...),
-		emitLock:       sync.Mutex{},
-		variables:      make(terraform.InputValues),
-		variablesLock:  sync.RWMutex{},
-		providers:      make(map[addrs.Provider]providers.Interface),
-		providersLock:  sync.RWMutex{},
-		steps:          make(map[string]*stepEvalState),
-		stepOrder:      make([]string, 0),
-		stepsLock:      sync.RWMutex{},
+		config:            opts.Config,
+		workspaceState:    opts.WorkspaceState,
+		ui:                opts.UI,
+		hooks:             append([]Hook(nil), opts.Hooks...),
+		emitLock:          sync.Mutex{},
+		workspaceReadLock: sync.Mutex{},
+		workspaceReads:    map[string]struct{}{},
+		variables:         make(terraform.InputValues),
+		variablesLock:     sync.RWMutex{},
+		providers:         make(map[addrs.Provider]providers.Interface),
+		providersLock:     sync.RWMutex{},
+		steps:             make(map[string]*stepEvalState),
+		stepOrder:         make([]string, 0),
+		stepsLock:         sync.RWMutex{},
 	}
 }
 
@@ -553,6 +560,10 @@ func (ec *EvalContext) EvaluateExprForInstance(stepName string, instanceKey terr
 	if expr == nil {
 		return cty.NilVal, nil
 	}
+	ec.emitWorkspaceReadPlanInfoForExpr(stepName, instanceKey, expr)
+	if diags := ec.validateWorkspaceStateReferencesInExpr(expr); diags.HasErrors() {
+		return cty.DynamicVal, diags
+	}
 	scope := &lang.Scope{BaseDir: ".", PureOnly: true}
 	hclCtx := &hcl.EvalContext{
 		Variables: ec.expressionVariablesForInstance(stepName, instanceKey, repetitionData),
@@ -713,10 +724,10 @@ func (ec *EvalContext) workspaceVariables() cty.Value {
 	if config == nil || config.Module == nil {
 		return cty.EmptyObjectVal
 	}
-	return ec.workspaceModuleValue(config, config.Module)
+	return ec.workspaceModuleValue(config, config.Module, terraformaddrs.RootModuleInstance)
 }
 
-func (ec *EvalContext) workspaceModuleValue(config *configs.Config, module *configs.Module) cty.Value {
+func (ec *EvalContext) workspaceModuleValue(config *configs.Config, module *configs.Module, moduleAddr terraformaddrs.ModuleInstance) cty.Value {
 	attrs := map[string]cty.Value{}
 
 	outputs := map[string]cty.Value{}
@@ -739,18 +750,210 @@ func (ec *EvalContext) workspaceModuleValue(config *configs.Config, module *conf
 		actions[action.Type][action.Name] = cty.StringVal(key)
 	}
 	attrs["action"] = nestedObjectValue(actions)
-	attrs["data"] = cty.EmptyObjectVal
+
+	managedResources, dataResources := ec.workspaceResourceValues(moduleAddr)
+	for typ, values := range managedResources {
+		attrs[typ] = cty.ObjectVal(copyValueMap(values))
+	}
+	attrs["data"] = nestedObjectValue(dataResources)
 
 	children := map[string]cty.Value{}
 	for name, child := range config.Children {
 		if child == nil || child.Module == nil {
 			continue
 		}
-		children[name] = ec.workspaceModuleValue(child, child.Module)
+		children[name] = ec.workspaceChildModuleValue(name, child, moduleAddr)
 	}
 	attrs["module"] = cty.ObjectVal(copyValueMap(children))
 
 	return cty.ObjectVal(attrs)
+}
+
+func (ec *EvalContext) validateWorkspaceStateReferencesInExpr(expr hcl.Expression) tfdiags.Diagnostics {
+	if expr == nil {
+		return nil
+	}
+	var diags tfdiags.Diagnostics
+	for _, traversal := range expr.Variables() {
+		root, ok := traversal[0].(hcl.TraverseRoot)
+		if !ok || root.Name != "workspace" {
+			continue
+		}
+		ref, refDiags := runbookaddrs.ParseRef(traversal)
+		diags = diags.Append(refDiags)
+		if refDiags.HasErrors() || ref == nil {
+			continue
+		}
+		resourceRef, ok := ref.Subject.(runbookaddrs.WorkspaceResource)
+		if !ok {
+			continue
+		}
+		if workspaceResourceConfig(ec.Config(), resourceRef) == nil {
+			continue
+		}
+		if ec.workspaceResourceInState(resourceRef) {
+			continue
+		}
+		diags = diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Missing workspace state object",
+			Detail:   fmt.Sprintf("The workspace reference %s is declared in workspace configuration but no instance is available in workspace state. Workspace resource and data references are state-backed.", workspaceRefString(ref)),
+			Subject:  ref.SourceRange.ToHCL().Ptr(),
+		})
+	}
+	return diags
+}
+
+func (ec *EvalContext) workspaceResourceInState(ref runbookaddrs.WorkspaceResource) bool {
+	state := ec.WorkspaceState()
+	if state == nil {
+		return false
+	}
+	moduleAddr := terraformaddrs.RootModuleInstance
+	for _, call := range ref.Module.Calls {
+		moduleAddr = moduleAddr.Child(call.Name, call.InstanceKey)
+	}
+	moduleState := state.Module(moduleAddr)
+	if moduleState == nil {
+		return false
+	}
+	resourceState := moduleState.Resource(ref.Resource)
+	if resourceState == nil {
+		return false
+	}
+	_, ok := workspaceResourceStateValue(resourceState)
+	return ok
+}
+
+func (ec *EvalContext) workspaceChildModuleValue(name string, child *configs.Config, parentAddr terraformaddrs.ModuleInstance) cty.Value {
+	instances := ec.workspaceChildModuleInstances(parentAddr, name)
+	if len(instances) == 0 {
+		instances = []terraformaddrs.ModuleInstance{parentAddr.Child(name, terraformaddrs.NoKey)}
+	}
+	if len(instances) == 1 && instances[0][len(instances[0])-1].InstanceKey == terraformaddrs.NoKey {
+		return ec.workspaceModuleValue(child, child.Module, instances[0])
+	}
+	vals := map[string]cty.Value{}
+	for _, instance := range instances {
+		call := instance[len(instance)-1]
+		vals[instanceObjectKey(call.InstanceKey)] = ec.workspaceModuleValue(child, child.Module, instance)
+	}
+	return cty.ObjectVal(copyValueMap(vals))
+}
+
+func (ec *EvalContext) workspaceChildModuleInstances(parentAddr terraformaddrs.ModuleInstance, name string) []terraformaddrs.ModuleInstance {
+	state := ec.WorkspaceState()
+	if state == nil {
+		return nil
+	}
+	ret := make([]terraformaddrs.ModuleInstance, 0)
+	for _, moduleState := range state.Modules {
+		if moduleState == nil {
+			continue
+		}
+		if len(moduleState.Addr) != len(parentAddr)+1 {
+			continue
+		}
+		match := true
+		for i := range parentAddr {
+			if moduleState.Addr[i] != parentAddr[i] {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		call := moduleState.Addr[len(moduleState.Addr)-1]
+		if call.Name == name {
+			ret = append(ret, moduleState.Addr)
+		}
+	}
+	sort.Slice(ret, func(i, j int) bool {
+		return ret[i].String() < ret[j].String()
+	})
+	return ret
+}
+
+func (ec *EvalContext) workspaceResourceValues(moduleAddr terraformaddrs.ModuleInstance) (map[string]map[string]cty.Value, map[string]map[string]cty.Value) {
+	managed := map[string]map[string]cty.Value{}
+	data := map[string]map[string]cty.Value{}
+	state := ec.WorkspaceState()
+	if state == nil {
+		return managed, data
+	}
+	moduleState := state.Module(moduleAddr)
+	if moduleState == nil {
+		return managed, data
+	}
+	for _, resourceState := range moduleState.Resources {
+		if resourceState == nil {
+			continue
+		}
+		value, ok := workspaceResourceStateValue(resourceState)
+		if !ok {
+			continue
+		}
+		target := managed
+		if resourceState.Addr.Resource.Mode == terraformaddrs.DataResourceMode {
+			target = data
+		}
+		if target[resourceState.Addr.Resource.Type] == nil {
+			target[resourceState.Addr.Resource.Type] = map[string]cty.Value{}
+		}
+		target[resourceState.Addr.Resource.Type][resourceState.Addr.Resource.Name] = value
+	}
+	return managed, data
+}
+
+func workspaceResourceStateValue(resourceState *states.Resource) (cty.Value, bool) {
+	if resourceState == nil || len(resourceState.Instances) == 0 {
+		return cty.NilVal, false
+	}
+	if len(resourceState.Instances) == 1 {
+		if instance, ok := resourceState.Instances[terraformaddrs.NoKey]; ok && instance != nil && instance.Current != nil {
+			value, ok := workspaceResourceInstanceValue(instance.Current)
+			return value, ok
+		}
+	}
+	instances := map[string]cty.Value{}
+	for key, instance := range resourceState.Instances {
+		if instance == nil || instance.Current == nil {
+			continue
+		}
+		value, ok := workspaceResourceInstanceValue(instance.Current)
+		if !ok {
+			continue
+		}
+		instances[instanceObjectKey(key)] = value
+	}
+	if len(instances) == 0 {
+		return cty.NilVal, false
+	}
+	return cty.ObjectVal(copyValueMap(instances)), true
+}
+
+func workspaceResourceInstanceValue(obj *states.ResourceInstanceObjectSrc) (cty.Value, bool) {
+	if obj == nil {
+		return cty.NilVal, false
+	}
+	if obj.AttrsJSON != nil {
+		ty, err := ctyjson.ImpliedType(obj.AttrsJSON)
+		if err == nil {
+			value, err := ctyjson.Unmarshal(obj.AttrsJSON, ty)
+			if err == nil {
+				return value, true
+			}
+		}
+	}
+	if obj.AttrsFlat != nil {
+		flat := make(map[string]cty.Value, len(obj.AttrsFlat))
+		for k, v := range obj.AttrsFlat {
+			flat[k] = cty.StringVal(v)
+		}
+		return cty.ObjectVal(flat), true
+	}
+	return cty.NilVal, false
 }
 
 func nestedObjectValue(src map[string]map[string]cty.Value) cty.Value {
@@ -831,6 +1034,7 @@ func (ec *EvalContext) EvaluateBlockForInstance(stepName string, instanceKey ter
 	if body == nil {
 		return schema.EmptyValue(), nil, nil
 	}
+	ec.emitWorkspaceReadPlanInfoForBody(stepName, instanceKey, body)
 
 	funcs := (&lang.Scope{BaseDir: ".", PureOnly: true, ForProvider: true}).Functions()
 	hclCtx := &hcl.EvalContext{
@@ -843,6 +1047,119 @@ func (ec *EvalContext) EvaluateBlockForInstance(stepName string, instanceKey ter
 	val, evalDiags := hcldec.Decode(fixedBody, schema.DecoderSpec(), hclCtx)
 	diags = diags.Append(evalDiags)
 	return val, fixedBody, diags
+}
+
+func (ec *EvalContext) emitWorkspaceReadPlanInfoForExpr(stepName string, instanceKey terraformaddrs.InstanceKey, expr hcl.Expression) {
+	if expr == nil || stepName == "" {
+		return
+	}
+	ec.emitWorkspaceReadPlanInfo(stepName, instanceKey, expr.Variables())
+}
+
+func (ec *EvalContext) emitWorkspaceReadPlanInfoForBody(stepName string, instanceKey terraformaddrs.InstanceKey, body hcl.Body) {
+	if body == nil || stepName == "" {
+		return
+	}
+	attrs, _ := body.JustAttributes()
+	traversals := make([]hcl.Traversal, 0)
+	for _, attr := range attrs {
+		traversals = append(traversals, attr.Expr.Variables()...)
+	}
+	content, _, _ := body.PartialContent(&hcl.BodySchema{})
+	for _, block := range content.Blocks {
+		ec.emitWorkspaceReadPlanInfoForBody(stepName, instanceKey, block.Body)
+	}
+	ec.emitWorkspaceReadPlanInfo(stepName, instanceKey, traversals)
+}
+
+func (ec *EvalContext) emitWorkspaceReadPlanInfo(stepName string, instanceKey terraformaddrs.InstanceKey, traversals []hcl.Traversal) {
+	for _, traversal := range traversals {
+		if len(traversal) == 0 {
+			continue
+		}
+		root, ok := traversal[0].(hcl.TraverseRoot)
+		if !ok || root.Name != "workspace" {
+			continue
+		}
+		ref, diags := runbookaddrs.ParseRef(traversal)
+		if diags.HasErrors() || ref == nil {
+			continue
+		}
+		resourceRef, ok := ref.Subject.(runbookaddrs.WorkspaceResource)
+		if !ok {
+			continue
+		}
+		resourceCfg := workspaceResourceConfig(ec.Config(), resourceRef)
+		if resourceCfg == nil {
+			continue
+		}
+		attrs := workspaceRemainingTraversalAttrs(ref.Remaining)
+		key := fmt.Sprintf("%s|%s|%s", stepName, resourceRef.String(), strings.Join(attrs, "."))
+		ec.workspaceReadLock.Lock()
+		if _, exists := ec.workspaceReads[key]; exists {
+			ec.workspaceReadLock.Unlock()
+			continue
+		}
+		ec.workspaceReads[key] = struct{}{}
+		ec.workspaceReadLock.Unlock()
+		details := map[string]cty.Value{
+			"kind":       cty.StringVal(workspaceResourceKind(resourceRef)),
+			"provider":   cty.StringVal(providerTypeForResource(ec.Config(), resourceCfg).ForDisplay()),
+			"source":     cty.StringVal("workspace_state"),
+			"attributes": stringListValue(attrs),
+		}
+		ec.EmitStepPlanInfo(StepPlanInfo{
+			StepName:  stepName,
+			StepIndex: stepIndexForNameAndKey(ec, stepName, instanceKey),
+			Type:      "workspace_read",
+			Subject:   resourceRef.String(),
+			Status:    runbookruntime.StepStatusPlanned,
+			Details:   cty.ObjectVal(details),
+		})
+	}
+}
+
+func stepIndexForNameAndKey(ec *EvalContext, stepName string, instanceKey terraformaddrs.InstanceKey) int {
+	if ec == nil {
+		return 0
+	}
+	ec.stepsLock.RLock()
+	defer ec.stepsLock.RUnlock()
+	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
+	if !ok || state == nil || state.runtime == nil {
+		return 0
+	}
+	return state.runtime.Index
+}
+
+func workspaceResourceKind(ref runbookaddrs.WorkspaceResource) string {
+	if ref.Resource.Mode == terraformaddrs.DataResourceMode {
+		return "data"
+	}
+	return "resource"
+}
+
+func workspaceRemainingTraversalAttrs(traversal hcl.Traversal) []string {
+	attrs := make([]string, 0, len(traversal))
+	for _, step := range traversal {
+		attr, ok := step.(hcl.TraverseAttr)
+		if !ok {
+			continue
+		}
+		attrs = append(attrs, attr.Name)
+	}
+	return attrs
+}
+
+func stringListValue(values []string) cty.Value {
+	if len(values) == 0 {
+		return cty.ListValEmpty(cty.String)
+	}
+	ret := make([]cty.Value, 0, len(values))
+	for _, value := range values {
+		ret = append(ret, cty.StringVal(value))
+	}
+	return cty.ListVal(ret)
 }
 
 func variableValueType(variable *configs.Variable) cty.Type {

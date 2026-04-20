@@ -132,6 +132,25 @@ step "discover" {
 			if len(steps) != 1 {
 				t.Fatalf("expected one planned step, got %#v", plan)
 			}
+			info := plan["info"].([]any)
+			var entry map[string]any
+			for _, raw := range info {
+				candidate := raw.(map[string]any)
+				if candidate["type"] == "data" && candidate["subject"] == "data.test_data.selected" {
+					entry = candidate
+					break
+				}
+			}
+			if entry == nil {
+				t.Fatalf("expected data info entry, got %#v", plan)
+			}
+			details, ok := entry["details"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected structured details in plan info, got %#v", entry)
+			}
+			if details["provider"] != "hashicorp/test" {
+				t.Fatalf("unexpected provider details %#v", details)
+			}
 		}
 	}
 	if !found {
@@ -170,6 +189,277 @@ step "discover" {
 	}
 	if !strings.Contains(stderr, `condition     = false`) {
 		t.Fatalf("expected source code snippet in diagnostic, got: %s", stderr)
+	}
+}
+
+func TestRunbookPlanCommandLoadsWorkspaceStateForWorkspaceDataRefs(t *testing.T) {
+	td := t.TempDir()
+	writeFile(t, td+"/main.tf", `
+terraform {
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+data "test_data" "selected" {}
+`)
+	writeFile(t, td+"/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "discover" {
+  output "result" {
+    value = workspace.data.test_data.selected.id
+  }
+}
+`)
+	writeFile(t, td+"/terraform.tfstate", `
+{
+  "version": 4,
+  "terraform_version": "1.16.0",
+  "serial": 1,
+  "lineage": "2c4f1c98-35d6-4ac0-a5df-c5cbf33de8f4",
+  "outputs": {},
+  "resources": [
+    {
+      "mode": "data",
+      "type": "test_data",
+      "name": "selected",
+      "provider": "provider[\"registry.terraform.io/hashicorp/test\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "srv-123"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}
+`)
+	t.Chdir(td)
+
+	view, done := testView(t)
+	provider := runbookPlanFixtureProvider()
+	c := &RunbookPlanCommand{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}
+
+	code := c.Run([]string{"-no-color"})
+	output := done(t)
+	if code != 0 {
+		t.Fatalf("unexpected exit code %d: %s", code, output.All())
+	}
+	if strings.Contains(output.All(), "Missing workspace state object") {
+		t.Fatalf("expected workspace state-backed reference to resolve, got: %s", output.All())
+	}
+	if !strings.Contains(output.Stdout(), `# step.discover will be planned`) {
+		t.Fatalf("expected planned step summary in output, got: %s", output.Stdout())
+	}
+}
+
+func TestRunbookPlanCommandJSONIncludesWorkspaceReadInfo(t *testing.T) {
+	td := t.TempDir()
+	writeFile(t, td+"/main.tf", `
+terraform {
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+resource "test_resource" "selected" {}
+`)
+	writeFile(t, td+"/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "discover" {
+  output "result" {
+    value = workspace.test_resource.selected.id
+  }
+}
+`)
+	writeFile(t, td+"/terraform.tfstate", `
+{
+  "version": 4,
+  "terraform_version": "1.16.0",
+  "serial": 1,
+  "lineage": "0c58b738-4c90-4d6e-bdbf-a5dc4e0c0db4",
+  "outputs": {},
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "test_resource",
+      "name": "selected",
+      "provider": "provider[\"registry.terraform.io/hashicorp/test\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "srv-123"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}
+`)
+	t.Chdir(td)
+
+	view, done := testView(t)
+	provider := runbookPlanFixtureProvider()
+	c := &RunbookPlanCommand{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}
+
+	code := c.Run([]string{"-json"})
+	output := done(t)
+	if code != 0 {
+		t.Fatalf("unexpected exit code %d: %s", code, output.All())
+	}
+	lines := strings.Split(strings.TrimSpace(output.Stdout()), "\n")
+	var found bool
+	for _, line := range lines {
+		var msg map[string]any
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue
+		}
+		if msg["type"] != "runbook_plan" {
+			continue
+		}
+		plan := msg["plan"].(map[string]any)
+		info := plan["info"].([]any)
+		for _, raw := range info {
+			entry := raw.(map[string]any)
+			if entry["type"] != "workspace_read" || entry["subject"] != "workspace.test_resource.selected" {
+				continue
+			}
+			found = true
+			details := entry["details"].(map[string]any)
+			if details["kind"] != "resource" || details["provider"] != "hashicorp/test" || details["source"] != "workspace_state" {
+				t.Fatalf("unexpected workspace read details %#v", details)
+			}
+			attrs := details["attributes"].([]any)
+			if len(attrs) != 1 || attrs[0] != "id" {
+				t.Fatalf("unexpected workspace read attributes %#v", attrs)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected workspace_read info in output: %s", output.Stdout())
+	}
+}
+
+func TestRunbookPlanCommandLoadsWorkspaceStateForWorkspaceResourceRefs(t *testing.T) {
+	td := t.TempDir()
+	writeFile(t, td+"/main.tf", `
+terraform {
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+resource "test_resource" "selected" {}
+`)
+	writeFile(t, td+"/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "discover" {
+  output "result" {
+    value = workspace.test_resource.selected.id
+  }
+}
+`)
+	writeFile(t, td+"/terraform.tfstate", `
+{
+  "version": 4,
+  "terraform_version": "1.16.0",
+  "serial": 1,
+  "lineage": "4b9871c8-8d32-4a4c-b38d-f8c6aee8d954",
+  "outputs": {},
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "test_resource",
+      "name": "selected",
+      "provider": "provider[\"registry.terraform.io/hashicorp/test\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "srv-123"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}
+`)
+	t.Chdir(td)
+
+	view, done := testView(t)
+	provider := runbookPlanFixtureProvider()
+	c := &RunbookPlanCommand{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}
+
+	code := c.Run([]string{"-no-color"})
+	output := done(t)
+	if code != 0 {
+		t.Fatalf("unexpected exit code %d: %s", code, output.All())
+	}
+	if strings.Contains(output.All(), "Missing workspace state object") {
+		t.Fatalf("expected workspace state-backed resource reference to resolve, got: %s", output.All())
+	}
+	if !strings.Contains(output.Stdout(), `<= workspace resource "workspace.test_resource.selected" attributes=[id]`) {
+		t.Fatalf("expected workspace read detail in output, got: %s", output.Stdout())
+	}
+	if !strings.Contains(output.Stdout(), `# step.discover will be planned`) {
+		t.Fatalf("expected planned step summary in output, got: %s", output.Stdout())
 	}
 }
 
@@ -219,8 +509,11 @@ func runbookPlanFixtureProvider() *testing_provider.MockProvider {
 			Actions: map[string]providers.ActionSchema{
 				"test_action": {ConfigSchema: &configschema.Block{Attributes: map[string]*configschema.Attribute{"target": {Type: cty.String, Optional: true}}}},
 			},
+			ResourceTypes: map[string]providers.Schema{
+				"test_resource": {Body: &configschema.Block{Attributes: map[string]*configschema.Attribute{"id": {Type: cty.String, Computed: true}}}},
+			},
 			DataSources: map[string]providers.Schema{
-				"test_data": {Body: &configschema.Block{}},
+				"test_data": {Body: &configschema.Block{Attributes: map[string]*configschema.Attribute{"id": {Type: cty.String, Computed: true}}}},
 			},
 		},
 		ReadDataSourceResponse: &providers.ReadDataSourceResponse{

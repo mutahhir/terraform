@@ -12,6 +12,7 @@ import (
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
 type RunbookPlan interface {
@@ -43,6 +44,8 @@ type runbookPlanInfo struct {
 	Subject   string                    `json:"subject"`
 	Status    runbookruntime.StepStatus `json:"status"`
 	Value     json.RawMessage           `json:"value,omitempty"`
+	Details   json.RawMessage           `json:"details,omitempty"`
+	details   map[string]any            `json:"-"`
 	valueVal  cty.Value                 `json:"-"`
 }
 
@@ -81,6 +84,13 @@ func (v *RunbookPlanHuman) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 			entry.Value = encoded
 		}
 	}
+	if info.Details != cty.NilVal {
+		details := pruneUnsetValue(info.Details)
+		if encoded, err := ctyjson.Marshal(details, details.Type()); err == nil {
+			entry.Details = encoded
+			_ = json.Unmarshal(encoded, &entry.details)
+		}
+	}
 	v.info = append(v.info, entry)
 }
 func (v *RunbookPlanHuman) Plan(plan *runbookgraph.Plan) {
@@ -111,6 +121,8 @@ func (v *RunbookPlanHuman) Plan(plan *runbookgraph.Plan) {
 		for _, info := range stepInfo {
 			switch info.Type {
 			case "data":
+				reads++
+			case "workspace_read":
 				reads++
 			case "list":
 				lists++
@@ -144,6 +156,13 @@ func (v *RunbookPlanJSON) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	if info.Value != cty.NilVal {
 		if encoded, err := json.Marshal(tfdiags.CompactValueStr(info.Value)); err == nil {
 			entry.Value = encoded
+		}
+	}
+	if info.Details != cty.NilVal {
+		details := pruneUnsetValue(info.Details)
+		if encoded, err := ctyjson.Marshal(details, details.Type()); err == nil {
+			entry.Details = encoded
+			_ = json.Unmarshal(encoded, &entry.details)
 		}
 	}
 	v.info = append(v.info, entry)
@@ -226,6 +245,8 @@ func runbookPlanSymbol(typ string) string {
 	switch typ {
 	case "data":
 		return "<="
+	case "workspace_read":
+		return "<="
 	case "list":
 		return "<>"
 	case "execute":
@@ -239,6 +260,27 @@ func renderPlanInfo(info runbookPlanInfo, indentSize int) string {
 	switch info.Type {
 	case "data":
 		return fmt.Sprintf("data %q", info.Subject)
+	case "workspace_read":
+		if info.details != nil {
+			kind := "object"
+			if rawKind, ok := info.details["kind"].(string); ok && rawKind != "" {
+				kind = rawKind
+			}
+			attrs := ""
+			if rawAttrs, ok := info.details["attributes"].([]any); ok && len(rawAttrs) > 0 {
+				parts := make([]string, 0, len(rawAttrs))
+				for _, raw := range rawAttrs {
+					if attr, ok := raw.(string); ok && attr != "" {
+						parts = append(parts, attr)
+					}
+				}
+				if len(parts) > 0 {
+					attrs = fmt.Sprintf(" attributes=[%s]", strings.Join(parts, ", "))
+				}
+			}
+			return fmt.Sprintf("workspace %s %q%s", kind, info.Subject, attrs)
+		}
+		return fmt.Sprintf("workspace read %q", info.Subject)
 	case "list":
 		return fmt.Sprintf("list %q", info.Subject)
 	case "execute":
@@ -318,7 +360,7 @@ func pruneUnsetValue(v cty.Value) cty.Value {
 
 func shouldRenderPlanInfo(info runbookPlanInfo) bool {
 	switch info.Type {
-	case "data", "list", "execute":
+	case "data", "workspace_read", "list", "execute":
 		return true
 	default:
 		return false

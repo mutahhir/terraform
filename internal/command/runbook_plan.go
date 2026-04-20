@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform/internal/configs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runbookgraph "github.com/hashicorp/terraform/internal/runbooks/graph"
+	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
@@ -76,11 +77,35 @@ func (c *RunbookPlanCommand) Run(rawArgs []string) int {
 		return 1
 	}
 
+	b, backendDiags := c.backend(workspaceDir, arguments.ViewHuman)
+	diags = diags.Append(backendDiags)
+	if diags.HasErrors() {
+		view.Diagnostics(diags)
+		return 1
+	}
+	c.ignoreRemoteVersionConflict(b)
+
+	workspaceName, err := c.Workspace()
+	if err != nil {
+		view.Diagnostics(diags.Append(err))
+		return 1
+	}
+	stateFile, err := getStateFromBackend(b, workspaceName)
+	if err != nil {
+		view.Diagnostics(diags.Append(err))
+		return 1
+	}
+	var workspaceState *states.State
+	if stateFile != nil {
+		workspaceState = stateFile.State
+	}
+
 	plan, planDiags := runbookgraph.BuildPlan(config, &runbookgraph.PlannerOpts{
-		InputValues: inputValues,
-		Providers:   providerFactories,
-		UI:          view.UI(),
-		Hooks:       view.Hooks(),
+		InputValues:    inputValues,
+		Providers:      providerFactories,
+		WorkspaceState: workspaceState,
+		UI:             view.UI(),
+		Hooks:          view.Hooks(),
 	})
 	diags = diags.Append(planDiags)
 	if diags.HasErrors() {

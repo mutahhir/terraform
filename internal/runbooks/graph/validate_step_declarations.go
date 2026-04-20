@@ -2,15 +2,18 @@ package runbookgraph
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
+	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/lang"
 	"github.com/hashicorp/terraform/internal/lang/langrefs"
 	"github.com/hashicorp/terraform/internal/providers"
+	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
@@ -26,6 +29,18 @@ func validateStepDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalCon
 		diags = diags.Append(validateStepActionDeclarations(config, ctx, cache, step))
 		diags = diags.Append(validateStepDataDeclarations(config, ctx, cache, step))
 		diags = diags.Append(validateStepListDeclarations(config, ctx, cache, step))
+		for _, local := range step.Locals {
+			diags = diags.Append(validateWorkspaceReferencesInExpr(config, cache, local.Expr))
+		}
+		for _, output := range step.Outputs {
+			diags = diags.Append(validateWorkspaceReferencesInExpr(config, cache, output.Expr))
+		}
+		for _, condition := range step.Preconditions {
+			diags = diags.Append(validateWorkspaceReferencesInExpr(config, cache, condition.Condition))
+		}
+		for _, condition := range step.Postconditions {
+			diags = diags.Append(validateWorkspaceReferencesInExpr(config, cache, condition.Condition))
+		}
 	}
 	return diags
 }
@@ -33,6 +48,7 @@ func validateStepDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalCon
 func validateStepActionDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalContext, cache *providerSchemaCache, step *runbookconfigs.Step) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	for _, action := range step.Actions {
+		diags = diags.Append(validateWorkspaceReferencesInBody(config, cache, action.Config))
 		provider, schema, actionDiags := actionProviderSchema(config, cache, action)
 		diags = diags.Append(actionDiags)
 		if actionDiags.HasErrors() {
@@ -75,6 +91,7 @@ func validateStepActionDeclarations(config *runbookconfigs.RunbookConfig, ctx *E
 func validateStepDataDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalContext, cache *providerSchemaCache, step *runbookconfigs.Step) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	for _, data := range step.DataSources {
+		diags = diags.Append(validateWorkspaceReferencesInBody(config, cache, data.Config))
 		provider, schema, dataDiags := resourceProviderSchema(config, cache, data)
 		diags = diags.Append(dataDiags)
 		if dataDiags.HasErrors() {
@@ -117,6 +134,7 @@ func validateStepDataDeclarations(config *runbookconfigs.RunbookConfig, ctx *Eva
 func validateStepListDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalContext, cache *providerSchemaCache, step *runbookconfigs.Step) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	for _, list := range step.ListResources {
+		diags = diags.Append(validateWorkspaceReferencesInBody(config, cache, list.Config))
 		provider, schema, listDiags := resourceProviderSchema(config, cache, list)
 		diags = diags.Append(listDiags)
 		if listDiags.HasErrors() {
@@ -241,6 +259,153 @@ func hasDeferredBodyReferenceTraversal(traversal hcl.Traversal) bool {
 	default:
 		return false
 	}
+}
+
+func validateWorkspaceReferencesInBody(config *runbookconfigs.RunbookConfig, cache *providerSchemaCache, body hcl.Body) tfdiags.Diagnostics {
+	if body == nil {
+		return nil
+	}
+	attrs, _ := body.JustAttributes()
+	var diags tfdiags.Diagnostics
+	for _, attr := range attrs {
+		diags = diags.Append(validateWorkspaceReferencesInExpr(config, cache, attr.Expr))
+	}
+	content, _, _ := body.PartialContent(&hcl.BodySchema{})
+	for _, block := range content.Blocks {
+		diags = diags.Append(validateWorkspaceReferencesInBody(config, cache, block.Body))
+	}
+	return diags
+}
+
+func validateWorkspaceReferencesInExpr(config *runbookconfigs.RunbookConfig, cache *providerSchemaCache, expr hcl.Expression) tfdiags.Diagnostics {
+	if expr == nil {
+		return nil
+	}
+	var diags tfdiags.Diagnostics
+	for _, traversal := range expr.Variables() {
+		root, ok := traversal[0].(hcl.TraverseRoot)
+		if ok && root.Name != "workspace" {
+			continue
+		}
+		ref, refDiags := runbookaddrs.ParseRef(traversal)
+		diags = diags.Append(refDiags)
+		if refDiags.HasErrors() || ref == nil {
+			continue
+		}
+		resourceRef, ok := ref.Subject.(runbookaddrs.WorkspaceResource)
+		if !ok {
+			continue
+		}
+		diags = diags.Append(validateWorkspaceResourceReference(config, cache, ref, resourceRef))
+	}
+	return diags
+}
+
+func validateWorkspaceResourceReference(config *runbookconfigs.RunbookConfig, cache *providerSchemaCache, ref *runbookaddrs.Reference, resourceRef runbookaddrs.WorkspaceResource) tfdiags.Diagnostics {
+	resourceConfig := workspaceResourceConfig(config, resourceRef)
+	if resourceConfig == nil {
+		return tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Unknown workspace object",
+			Detail:   fmt.Sprintf("The workspace reference %s does not match any resource or data source in the workspace configuration.", workspaceRefString(ref)),
+			Subject:  ref.SourceRange.ToHCL().Ptr(),
+		})
+	}
+	_, schemaResp, diags := resourceProviderSchema(config, cache, resourceConfig)
+	if diags.HasErrors() {
+		return diags
+	}
+	resourceSchema := schemaResp.SchemaForResourceAddr(resourceConfig.Addr())
+	if resourceSchema.Body == nil {
+		return nil
+	}
+	return validateWorkspaceTraversalAgainstSchema(ref, resourceSchema.Body)
+}
+
+func validateWorkspaceTraversalAgainstSchema(ref *runbookaddrs.Reference, schema *configschema.Block) tfdiags.Diagnostics {
+	if ref == nil || len(ref.Remaining) == 0 || schema == nil {
+		return nil
+	}
+	var diags tfdiags.Diagnostics
+	if hclDiags := schema.StaticValidateTraversal(ref.Remaining); hclDiags.HasErrors() {
+		return diags.Append(hclDiags)
+	}
+	current := schema
+	for _, step := range ref.Remaining {
+		attr, ok := step.(hcl.TraverseAttr)
+		if !ok {
+			continue
+		}
+		attribute := current.Attributes[attr.Name]
+		if attribute == nil {
+			continue
+		}
+		if attribute.Sensitive {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Sensitive workspace attribute",
+				Detail:   fmt.Sprintf("The workspace reference %s targets sensitive attribute %q, which cannot be used in a runbook.", workspaceRefString(ref), attr.Name),
+				Subject:  step.SourceRange().Ptr(),
+			})
+		}
+		if attribute.WriteOnly {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Write-only workspace attribute",
+				Detail:   fmt.Sprintf("The workspace reference %s targets write-only attribute %q, which is not available from workspace state.", workspaceRefString(ref), attr.Name),
+				Subject:  step.SourceRange().Ptr(),
+			})
+		}
+		if attribute.NestedType != nil {
+			current = &configschema.Block{Attributes: attribute.NestedType.Attributes}
+		}
+	}
+	return diags
+}
+
+func workspaceResourceConfig(config *runbookconfigs.RunbookConfig, ref runbookaddrs.WorkspaceResource) *configs.Resource {
+	if config == nil || config.WorkspaceConfig == nil {
+		return nil
+	}
+	target := config.WorkspaceConfig
+	for _, call := range ref.Module.Calls {
+		child, ok := target.Children[call.Name]
+		if !ok || child == nil {
+			return nil
+		}
+		target = child
+	}
+	if target.Module == nil {
+		return nil
+	}
+	resources := target.Module.ManagedResources
+	if ref.Resource.Mode == terraformaddrs.DataResourceMode {
+		resources = target.Module.DataResources
+	}
+	for _, resource := range resources {
+		if resource != nil && resource.Type == ref.Resource.Type && resource.Name == ref.Resource.Name {
+			return resource
+		}
+	}
+	return nil
+}
+
+func workspaceRefString(ref *runbookaddrs.Reference) string {
+	if ref == nil || ref.Subject == nil {
+		return "workspace"
+	}
+	var b strings.Builder
+	b.WriteString(ref.Subject.String())
+	for _, step := range ref.Remaining {
+		switch s := step.(type) {
+		case hcl.TraverseAttr:
+			b.WriteByte('.')
+			b.WriteString(s.Name)
+		case hcl.TraverseIndex:
+			b.WriteString(tfdiags.TraversalStr(hcl.Traversal{step}))
+		}
+	}
+	return b.String()
 }
 
 func (c *providerSchemaCache) provider(providerType terraformaddrs.Provider) (providers.Interface, providers.ProviderSchema, tfdiags.Diagnostics) {
