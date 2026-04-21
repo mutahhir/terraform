@@ -60,6 +60,7 @@ func (c *RunbookExecuteCommand) Run(rawArgs []string) int {
 		view.Diagnostics(diags)
 		return 1
 	}
+	view.Prepare(plan)
 	planView.Plan(plan)
 
 	if !args.AutoApprove && args.ViewType != arguments.ViewJSON {

@@ -70,6 +70,12 @@ step "discover" {
 	if got := provider.InvokeActionRequest.PlannedActionData.GetAttr("target").AsString(); got != "srv-123" {
 		t.Fatalf("expected invoke action to receive planned target, got %q", got)
 	}
+	if !strings.Contains(output.Stdout(), "Runbook execution progress:") {
+		t.Fatalf("expected execution progress header, got: %s", output.Stdout())
+	}
+	if !strings.Contains(output.Stdout(), "[1/1] step.discover waiting") {
+		t.Fatalf("expected initial step overview, got: %s", output.Stdout())
+	}
 	if !strings.Contains(output.Stdout(), "step.discover is running") {
 		t.Fatalf("expected running step event, got: %s", output.Stdout())
 	}
@@ -84,6 +90,9 @@ step "discover" {
 	}
 	if !strings.Contains(output.Stdout(), "step.discover completed") {
 		t.Fatalf("expected completed step event, got: %s", output.Stdout())
+	}
+	if !strings.Contains(output.Stdout(), "Progress: 1 completed, 0 running, 0 waiting, 0 skipped, 0 failed.") {
+		t.Fatalf("expected execution progress summary, got: %s", output.Stdout())
 	}
 	if !strings.Contains(output.Stdout(), "Runbook execute complete.") {
 		t.Fatalf("expected execute summary, got: %s", output.Stdout())
