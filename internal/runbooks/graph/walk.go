@@ -28,10 +28,11 @@ type GraphNodeDynamicExpandable interface {
 }
 
 func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
-	return walkGraphVertices(graph, ctx, op, nil)
+	var graphMu sync.Mutex
+	return walkGraphVertices(graph, ctx, op, nil, &graphMu)
 }
 
-func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperation, allowed map[dag.Vertex]struct{}) tfdiags.Diagnostics {
+func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperation, allowed map[dag.Vertex]struct{}, graphMu *sync.Mutex) tfdiags.Diagnostics {
 	if graph == nil {
 		return nil
 	}
@@ -48,8 +49,15 @@ func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperatio
 		if _, loaded := visited.LoadOrStore(vertex, struct{}{}); loaded {
 			return nil
 		}
-		rewireExactStepOutputReferences(graph, vertex)
+		if op != walkOperationExecute {
+			graphMu.Lock()
+			rewireExactStepOutputReferences(graph, vertex)
+			graphMu.Unlock()
+		}
 		if expandable, ok := vertex.(GraphNodeDynamicExpandable); ok {
+			if op == walkOperationExecute {
+				return nil
+			}
 			if shouldSkipVertex(graph, ctx, vertex) {
 				markVertexSkipped(ctx, vertex, graph)
 				return nil
@@ -58,14 +66,18 @@ func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperatio
 			if expandDiags.HasErrors() {
 				return expandDiags
 			}
+			graphMu.Lock()
 			subsumeExpandedGraph(graph, expanded)
 			for _, expandedVertex := range expanded.Vertices() {
 				if dag.VertexName(expandedVertex) == "root" {
 					continue
 				}
-				rewireExactStepOutputReferences(graph, expandedVertex)
+				if op != walkOperationExecute {
+					rewireExactStepOutputReferences(graph, expandedVertex)
+				}
 			}
-			return walkGraphVertices(graph, ctx, op, vertexSet(expanded.Vertices()))
+			graphMu.Unlock()
+			return walkGraphVertices(graph, ctx, op, vertexSet(expanded.Vertices()), graphMu)
 		}
 		executable, ok := vertex.(GraphNodeExecutable)
 		if !ok {

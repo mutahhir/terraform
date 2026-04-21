@@ -65,11 +65,14 @@ type RunbookPlanHuman struct {
 	info []runbookPlanInfo
 }
 
-func (v *RunbookPlanHuman) UI() runbookgraph.UI                   { return v }
-func (v *RunbookPlanHuman) Hooks() []runbookgraph.Hook            { return []runbookgraph.Hook{v} }
-func (v *RunbookPlanHuman) Diagnostics(diags tfdiags.Diagnostics) { v.view.Diagnostics(diags) }
-func (v *RunbookPlanHuman) HelpPrompt()                           { v.view.HelpPrompt("runbook plan") }
-func (v *RunbookPlanHuman) PlannedStep(step *runbookruntime.Step) {}
+func (v *RunbookPlanHuman) UI() runbookgraph.UI                            { return v }
+func (v *RunbookPlanHuman) Hooks() []runbookgraph.Hook                     { return nil }
+func (v *RunbookPlanHuman) Diagnostics(diags tfdiags.Diagnostics)          { v.view.Diagnostics(diags) }
+func (v *RunbookPlanHuman) HelpPrompt()                                    { v.view.HelpPrompt("runbook plan") }
+func (v *RunbookPlanHuman) PlannedStep(step *runbookruntime.Step)          {}
+func (v *RunbookPlanHuman) ExecutingStep(step *runbookruntime.Step)        {}
+func (v *RunbookPlanHuman) ExecutedStep(step *runbookruntime.Step)         {}
+func (v *RunbookPlanHuman) ActionEvent(event runbookgraph.ActionExecEvent) {}
 func (v *RunbookPlanHuman) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	entry := runbookPlanInfo{
 		StepName:  info.StepName,
@@ -139,11 +142,14 @@ type RunbookPlanJSON struct {
 	info []runbookPlanInfo
 }
 
-func (v *RunbookPlanJSON) UI() runbookgraph.UI                   { return v }
-func (v *RunbookPlanJSON) Hooks() []runbookgraph.Hook            { return []runbookgraph.Hook{v} }
-func (v *RunbookPlanJSON) Diagnostics(diags tfdiags.Diagnostics) { v.view.Diagnostics(diags) }
-func (v *RunbookPlanJSON) HelpPrompt()                           {}
-func (v *RunbookPlanJSON) PlannedStep(step *runbookruntime.Step) {}
+func (v *RunbookPlanJSON) UI() runbookgraph.UI                            { return v }
+func (v *RunbookPlanJSON) Hooks() []runbookgraph.Hook                     { return nil }
+func (v *RunbookPlanJSON) Diagnostics(diags tfdiags.Diagnostics)          { v.view.Diagnostics(diags) }
+func (v *RunbookPlanJSON) HelpPrompt()                                    {}
+func (v *RunbookPlanJSON) PlannedStep(step *runbookruntime.Step)          {}
+func (v *RunbookPlanJSON) ExecutingStep(step *runbookruntime.Step)        {}
+func (v *RunbookPlanJSON) ExecutedStep(step *runbookruntime.Step)         {}
+func (v *RunbookPlanJSON) ActionEvent(event runbookgraph.ActionExecEvent) {}
 func (v *RunbookPlanJSON) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	entry := runbookPlanInfo{
 		StepName:  info.StepName,

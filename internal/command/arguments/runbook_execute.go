@@ -3,9 +3,10 @@ package arguments
 import "github.com/hashicorp/terraform/internal/tfdiags"
 
 type RunbookExecute struct {
-	Vars        *Vars
-	ViewType    ViewType
-	AutoApprove bool
+	Vars         *Vars
+	ViewType     ViewType
+	AutoApprove  bool
+	InputEnabled bool
 }
 
 func ParseRunbookExecute(args []string) (*RunbookExecute, tfdiags.Diagnostics) {
@@ -20,6 +21,7 @@ func ParseRunbookExecute(args []string) (*RunbookExecute, tfdiags.Diagnostics) {
 	cmdFlags.Var(runbook.Vars.vars, "var", "var")
 	cmdFlags.Var(runbook.Vars.varFiles, "var-file", "var-file")
 	cmdFlags.BoolVar(&runbook.AutoApprove, "auto-approve", false, "auto-approve")
+	cmdFlags.BoolVar(&runbook.InputEnabled, "input", true, "input")
 
 	var json bool
 	cmdFlags.BoolVar(&json, "json", false, "json")
@@ -33,9 +35,18 @@ func ParseRunbookExecute(args []string) (*RunbookExecute, tfdiags.Diagnostics) {
 	}
 
 	if json {
+		runbook.InputEnabled = false
 		runbook.ViewType = ViewJSON
 	} else {
 		runbook.ViewType = ViewHuman
+	}
+
+	if json && !runbook.AutoApprove {
+		diags = diags.Append(tfdiags.Sourceless(
+			tfdiags.Error,
+			"Auto-approve required",
+			"Terraform cannot ask for interactive approval when -json is set. Use -auto-approve with runbook execute -json.",
+		))
 	}
 
 	return runbook, diags

@@ -132,6 +132,47 @@ func (ec *EvalContext) EmitPlannedStep(step *runbookruntime.Step) {
 	}
 }
 
+func (ec *EvalContext) EmitExecutingStep(step *runbookruntime.Step) {
+	if step == nil {
+		return
+	}
+	ec.emitLock.Lock()
+	defer ec.emitLock.Unlock()
+	snapshot := cloneRuntimeStepValue(step)
+	if ec.ui != nil {
+		ec.ui.ExecutingStep(snapshot)
+	}
+	for _, hook := range ec.hooks {
+		hook.ExecutingStep(snapshot)
+	}
+}
+
+func (ec *EvalContext) EmitExecutedStep(step *runbookruntime.Step) {
+	if step == nil {
+		return
+	}
+	ec.emitLock.Lock()
+	defer ec.emitLock.Unlock()
+	snapshot := cloneRuntimeStepValue(step)
+	if ec.ui != nil {
+		ec.ui.ExecutedStep(snapshot)
+	}
+	for _, hook := range ec.hooks {
+		hook.ExecutedStep(snapshot)
+	}
+}
+
+func (ec *EvalContext) EmitActionEvent(event ActionExecEvent) {
+	ec.emitLock.Lock()
+	defer ec.emitLock.Unlock()
+	if ec.ui != nil {
+		ec.ui.ActionEvent(event)
+	}
+	for _, hook := range ec.hooks {
+		hook.ActionEvent(event)
+	}
+}
+
 func (ec *EvalContext) EmitStepPlanInfo(info StepPlanInfo) {
 	ec.emitLock.Lock()
 	defer ec.emitLock.Unlock()
@@ -322,18 +363,25 @@ func (ec *EvalContext) SetStepStatus(name string, status runbookruntime.StepStat
 }
 
 func (ec *EvalContext) setStepStatusWithKey(name string, instanceKey addrs.InstanceKey, status runbookruntime.StepStatus, reason string) {
+	var snapshot *runbookruntime.Step
 	ec.stepsLock.Lock()
-	defer ec.stepsLock.Unlock()
 
 	key := stepStateKey(name, instanceKey)
 	state := ec.ensureStepStateLocked(key)
 	if state.runtime == nil {
 		state.runtime = &runbookruntime.Step{Name: name, InstanceKey: instanceKey}
 	}
+	if state.runtime.Status == status && (reason == "" || state.runtime.SkipReason == reason) {
+		ec.stepsLock.Unlock()
+		return
+	}
 	state.runtime.Status = status
 	if reason != "" {
 		state.runtime.SkipReason = reason
 	}
+	snapshot = cloneRuntimeStepValue(state.runtime)
+	ec.stepsLock.Unlock()
+	ec.EmitExecutedStep(snapshot)
 }
 
 func (ec *EvalContext) SetStepOutput(stepName, outputName string, value cty.Value) {
@@ -398,26 +446,26 @@ func (ec *EvalContext) MarkActionPlanned(stepName string, addr addrs.Action) {
 	})
 }
 
-func (ec *EvalContext) setActionPlannedWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Action, config cty.Value) {
+func (ec *EvalContext) setActionPlannedWithKey(stepName string, instanceKey addrs.InstanceKey, actionKey string, config cty.Value) {
 	ec.setStepValueWithKey(stepName, instanceKey, func(state *stepEvalState) {
-		actionState, ok := state.actions[addr.String()]
+		actionState, ok := state.actions[actionKey]
 		if !ok {
 			actionState = &actionEvalState{}
-			state.actions[addr.String()] = actionState
+			state.actions[actionKey] = actionState
 		}
 		actionState.planned = true
 		actionState.plannedConfig = config
 	})
 }
 
-func (ec *EvalContext) actionPlannedConfigWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Action) (cty.Value, bool) {
+func (ec *EvalContext) actionPlannedConfigWithKey(stepName string, instanceKey addrs.InstanceKey, actionKey string) (cty.Value, bool) {
 	ec.stepsLock.RLock()
 	defer ec.stepsLock.RUnlock()
 	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
 	if !ok {
 		return cty.NilVal, false
 	}
-	actionState, ok := state.actions[addr.String()]
+	actionState, ok := state.actions[actionKey]
 	if !ok || actionState == nil || actionState.plannedConfig == cty.NilVal {
 		return cty.NilVal, false
 	}

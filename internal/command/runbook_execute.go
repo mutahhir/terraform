@@ -26,6 +26,8 @@ func (c *RunbookExecuteCommand) Run(rawArgs []string) int {
 
 	args, diags := arguments.ParseRunbookExecute(rawArgs)
 	view := views.NewRunbookExecute(args.ViewType, c.View)
+	planView := views.NewRunbookPlan(args.ViewType, c.View)
+	c.Meta.input = args.InputEnabled
 	if diags.HasErrors() {
 		view.Diagnostics(diags)
 		view.HelpPrompt()
@@ -50,12 +52,15 @@ func (c *RunbookExecuteCommand) Run(rawArgs []string) int {
 		InputValues:    inputValues,
 		Providers:      loaded.ProviderFactories,
 		WorkspaceState: loaded.WorkspaceState,
+		UI:             planView.UI(),
+		Hooks:          planView.Hooks(),
 	})
 	diags = diags.Append(planDiags)
 	if diags.HasErrors() {
 		view.Diagnostics(diags)
 		return 1
 	}
+	planView.Plan(plan)
 
 	if !args.AutoApprove && args.ViewType != arguments.ViewJSON {
 		c.Ui.Output("Runbook actions will be executed. Only 'yes' will be accepted to continue.\n")
@@ -74,6 +79,8 @@ func (c *RunbookExecuteCommand) Run(rawArgs []string) int {
 		InputValues:    inputValues,
 		Providers:      loaded.ProviderFactories,
 		WorkspaceState: loaded.WorkspaceState,
+		UI:             view.UI(),
+		Hooks:          view.Hooks(),
 	})
 	if execDiags.HasErrors() {
 		view.Diagnostics(execDiags)

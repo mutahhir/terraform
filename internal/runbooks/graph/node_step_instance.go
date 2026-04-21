@@ -43,6 +43,7 @@ func (n *NodeStepInstance) Execute(ctx *EvalContext, op walkOperation) tfdiags.D
 		ctx.EmitPlannedStep(step)
 	case walkOperationExecute:
 		step = ctx.ensureRunningStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
+		ctx.EmitExecutingStep(step)
 	default:
 		step = ctx.ensureStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
 	}

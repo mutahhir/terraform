@@ -5,6 +5,7 @@ import (
 	"github.com/hashicorp/terraform/internal/providers"
 	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
+	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	runtime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
@@ -103,6 +104,19 @@ func ExecutePlan(plan *Plan, opts *ExecuteOpts) tfdiags.Diagnostics {
 		evalCtx.ui = optsUI(opts)
 		evalCtx.hooks = optsHooks(opts)
 	}
+	evalCtx.stepsLock.Lock()
+	for _, step := range plan.Steps {
+		if step == nil {
+			continue
+		}
+		state, ok := evalCtx.steps[stepStateKey(step.Name, step.InstanceKey)]
+		if !ok || state == nil || state.runtime == nil {
+			continue
+		}
+		state.runtime.Status = runbookruntime.StepStatusPlanned
+		state.runtime.SkipReason = ""
+	}
+	evalCtx.stepsLock.Unlock()
 	diags := walkGraph(plan.Graph, evalCtx, walkOperationExecute)
 	if diags.HasErrors() {
 		return diags
