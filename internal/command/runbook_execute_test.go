@@ -64,19 +64,16 @@ step "discover" {
 	if !strings.Contains(output.Stdout(), "Terraform will perform the following runbook steps:") {
 		t.Fatalf("expected plan output before execute, got: %s", output.Stdout())
 	}
-	if strings.Index(output.Stdout(), "Terraform will perform the following runbook steps:") > strings.Index(output.Stdout(), "step.discover is running") {
+	if strings.Index(output.Stdout(), "Terraform will perform the following runbook steps:") > strings.Index(output.Stdout(), "step.discover is in progress") {
 		t.Fatalf("expected plan output to appear before execute events, got: %s", output.Stdout())
 	}
 	if got := provider.InvokeActionRequest.PlannedActionData.GetAttr("target").AsString(); got != "srv-123" {
 		t.Fatalf("expected invoke action to receive planned target, got %q", got)
 	}
-	if !strings.Contains(output.Stdout(), "Runbook execution progress:") {
-		t.Fatalf("expected execution progress header, got: %s", output.Stdout())
+	if !strings.Contains(output.Stdout(), "Runbook execution started.") {
+		t.Fatalf("expected execution start header, got: %s", output.Stdout())
 	}
-	if !strings.Contains(output.Stdout(), "[1/1] step.discover waiting") {
-		t.Fatalf("expected initial step overview, got: %s", output.Stdout())
-	}
-	if !strings.Contains(output.Stdout(), "step.discover is running") {
+	if !strings.Contains(output.Stdout(), "step.discover is in progress") {
 		t.Fatalf("expected running step event, got: %s", output.Stdout())
 	}
 	if !strings.Contains(output.Stdout(), "action action.test_action.notify is running") {
@@ -90,9 +87,6 @@ step "discover" {
 	}
 	if !strings.Contains(output.Stdout(), "step.discover completed") {
 		t.Fatalf("expected completed step event, got: %s", output.Stdout())
-	}
-	if !strings.Contains(output.Stdout(), "Progress: 1 completed, 0 running, 0 waiting, 0 skipped, 0 failed.") {
-		t.Fatalf("expected execution progress summary, got: %s", output.Stdout())
 	}
 	if !strings.Contains(output.Stdout(), "Runbook execute complete.") {
 		t.Fatalf("expected execute summary, got: %s", output.Stdout())

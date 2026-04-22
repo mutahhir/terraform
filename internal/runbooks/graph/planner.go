@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
+	"github.com/zclconf/go-cty/cty"
 )
 
 type PlannerOpts struct {
@@ -42,6 +43,31 @@ func (p *Plan) StepsRuntime() map[string]*runtime.Step {
 		ret[key] = step
 	}
 	return ret
+}
+
+func (p *Plan) OutputValues() (map[string]cty.Value, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	if p == nil || p.Config == nil || len(p.Config.Outputs) == 0 {
+		return nil, diags
+	}
+	if p.evalCtx == nil {
+		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Missing runbook plan context", "Runbook outputs require plan evaluation state."))
+	}
+
+	ret := make(map[string]cty.Value, len(p.Config.Outputs))
+	for _, name := range sortNames(p.Config.Outputs) {
+		output := p.Config.Outputs[name]
+		if output == nil {
+			continue
+		}
+		value, outputDiags := p.evalCtx.EvaluateExpr("", output.Expr)
+		diags = diags.Append(outputDiags)
+		if outputDiags.HasErrors() {
+			continue
+		}
+		ret[name] = value
+	}
+	return ret, diags
 }
 
 func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, tfdiags.Diagnostics) {

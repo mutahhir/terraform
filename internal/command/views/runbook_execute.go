@@ -2,9 +2,11 @@ package views
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/repl"
@@ -35,16 +37,20 @@ func NewRunbookExecute(vt arguments.ViewType, view *View) RunbookExecute {
 }
 
 type RunbookExecuteHuman struct {
-	view           *View
-	events         []runbookExecuteEvent
-	actions        []runbookgraph.ActionExecEvent
-	steps          []*runbookExecuteStepState
-	stepStateByIdx map[int]*runbookExecuteStepState
-	started        bool
-	liveMode       bool
-	renderedLines  int
-	lastActiveStep int
-	mu             sync.Mutex
+	view             *View
+	events           []runbookExecuteEvent
+	actions          []runbookgraph.ActionExecEvent
+	steps            []*runbookExecuteStepState
+	stepStateByAddr  map[string]*runbookExecuteStepState
+	stepStatesByIdx  map[int][]*runbookExecuteStepState
+	stepStatesByName map[string][]*runbookExecuteStepState
+	logs             []string
+	started          bool
+	liveMode         bool
+	renderedLines    int
+	spinnerIndex     int
+	spinnerStop      chan struct{}
+	mu               sync.Mutex
 }
 
 type runbookExecuteEvent struct {
@@ -63,10 +69,25 @@ type runbookExecuteStepState struct {
 	SkipReason       string
 	RunningReported  bool
 	TerminalReported bool
-	LogLines         []string
 }
 
-const runbookStepLogRetention = 200
+type runbookRenderLine struct {
+	Text  string
+	Green bool
+}
+
+const (
+	runbookExecuteLogRetention   = 200
+	runbookExecuteVisibleLogs    = 16
+	runbookExecuteSpinnerEvery   = 120 * time.Millisecond
+	runbookExecuteMinimumWidth   = 40
+	runbookExecuteSectionDivider = "-"
+)
+
+var (
+	runbookExecuteSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	runbookANSIEscapeRE         = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+)
 
 func (v *RunbookExecuteHuman) Diagnostics(diags tfdiags.Diagnostics) { v.view.Diagnostics(diags) }
 func (v *RunbookExecuteHuman) HelpPrompt()                           { v.view.HelpPrompt("runbook execute") }
@@ -74,12 +95,16 @@ func (v *RunbookExecuteHuman) Prepare(plan *runbookgraph.Plan) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	v.stopSpinnerLoopLocked()
 	v.started = false
 	v.liveMode = v.view.streams.Stdout.IsTerminal()
 	v.renderedLines = 0
-	v.lastActiveStep = 0
+	v.spinnerIndex = 0
+	v.logs = nil
 	v.steps = nil
-	v.stepStateByIdx = make(map[int]*runbookExecuteStepState)
+	v.stepStateByAddr = make(map[string]*runbookExecuteStepState)
+	v.stepStatesByIdx = make(map[int][]*runbookExecuteStepState)
+	v.stepStatesByName = make(map[string][]*runbookExecuteStepState)
 	if plan == nil {
 		return
 	}
@@ -100,10 +125,9 @@ func (v *RunbookExecuteHuman) Prepare(plan *runbookgraph.Plan) {
 			SkipReason: step.SkipReason,
 		}
 		v.steps = append(v.steps, state)
-		v.stepStateByIdx[state.Index] = state
-	}
-	if len(v.steps) > 0 {
-		v.lastActiveStep = v.steps[0].Index
+		v.stepStateByAddr[state.Address] = state
+		v.stepStatesByIdx[state.Index] = append(v.stepStatesByIdx[state.Index], state)
+		v.stepStatesByName[step.Name] = append(v.stepStatesByName[step.Name], state)
 	}
 }
 func (v *RunbookExecuteHuman) UI() runbookgraph.UI                   { return v }
@@ -111,50 +135,41 @@ func (v *RunbookExecuteHuman) Hooks() []runbookgraph.Hook            { return ni
 func (v *RunbookExecuteHuman) PlannedStep(step *runbookruntime.Step) {}
 func (v *RunbookExecuteHuman) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 }
+
 func (v *RunbookExecuteHuman) ActionEvent(event runbookgraph.ActionExecEvent) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
 	v.actions = append(v.actions, event)
-	v.beginExecutionOutput()
-	state := v.stepStateByIdx[event.StepIndex]
-	if state != nil {
-		v.lastActiveStep = state.Index
-	}
+	v.beginExecutionOutputLocked()
+	state := v.findStepStateForEventLocked(event.StepName, event.StepIndex)
 	if state != nil && !state.RunningReported && !state.TerminalReported {
 		state.RunningReported = true
 		state.Status = runbookruntime.StepStatusRunning
-		if v.liveMode {
-			v.appendStepLog(state, fmt.Sprintf("%s is running", state.Address))
-		} else {
-			v.view.streams.Printf("-> %s is running\n", v.renderStepLabel(state))
-		}
+		v.emitLogLocked(fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
 	}
+
 	prefix := v.renderActionPrefix(event.StepIndex)
 	switch event.Status {
 	case "running":
-		if v.liveMode {
-			v.appendStepLog(state, fmt.Sprintf("action %s is running", event.Subject))
-		} else {
-			v.view.streams.Printf("  %saction %s is running\n", prefix, event.Subject)
-		}
+		v.emitLogLocked(fmt.Sprintf("  %saction %s is running", prefix, event.Subject))
 	case "progress":
-		if v.liveMode {
-			v.appendStepLog(state, fmt.Sprintf("action %s: %s", event.Subject, event.Message))
+		if event.Message != "" {
+			v.emitLogLocked(fmt.Sprintf("  %saction %s: %s", prefix, event.Subject, event.Message))
 		} else {
-			v.view.streams.Printf("  %saction %s: %s\n", prefix, event.Subject, event.Message)
+			v.emitLogLocked(fmt.Sprintf("  %saction %s is making progress", prefix, event.Subject))
 		}
 	case "completed":
-		if v.liveMode {
-			v.appendStepLog(state, fmt.Sprintf("action %s completed", event.Subject))
-		} else {
-			v.view.streams.Printf("  %saction %s completed\n", prefix, event.Subject)
-		}
+		v.emitLogLocked(fmt.Sprintf("  %saction %s completed", prefix, event.Subject))
+	default:
+		v.emitLogLocked(fmt.Sprintf("  %saction %s %s", prefix, event.Subject, event.Status))
 	}
+
 	if v.liveMode {
-		v.redrawLive()
+		v.redrawLiveLocked()
 	}
 }
+
 func (v *RunbookExecuteHuman) ExecutingStep(step *runbookruntime.Step) {
 	if step == nil {
 		return
@@ -162,24 +177,24 @@ func (v *RunbookExecuteHuman) ExecutingStep(step *runbookruntime.Step) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	v.beginExecutionOutput()
+	v.beginExecutionOutputLocked()
 	state := v.syncStepState(step)
 	v.events = append(v.events, runbookExecuteEvent{StepName: step.Name, StepIndex: step.Index, Status: runbookruntime.StepStatusRunning})
 	if state == nil || state.TerminalReported || state.RunningReported {
 		if v.liveMode {
-			v.redrawLive()
+			v.redrawLiveLocked()
 		}
 		return
 	}
+
 	state.RunningReported = true
-	v.lastActiveStep = state.Index
+	state.Status = runbookruntime.StepStatusRunning
+	v.emitLogLocked(fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
 	if v.liveMode {
-		v.appendStepLog(state, fmt.Sprintf("%s is running", state.Address))
-		v.redrawLive()
-		return
+		v.redrawLiveLocked()
 	}
-	v.view.streams.Printf("-> %s is running\n", v.renderStepLabel(state))
 }
+
 func (v *RunbookExecuteHuman) ExecutedStep(step *runbookruntime.Step) {
 	if step == nil || step.Status == runbookruntime.StepStatusRunning || step.Status == runbookruntime.StepStatusPlanned || step.Status == runbookruntime.StepStatusPending {
 		return
@@ -187,8 +202,8 @@ func (v *RunbookExecuteHuman) ExecutedStep(step *runbookruntime.Step) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	v.beginExecutionOutput()
-	state := v.stepStateByIdx[step.Index]
+	v.beginExecutionOutputLocked()
+	state := v.findStepStateLocked(step)
 	alreadyReported := false
 	previousStatus := runbookruntime.StepStatus("")
 	previousReason := ""
@@ -197,79 +212,57 @@ func (v *RunbookExecuteHuman) ExecutedStep(step *runbookruntime.Step) {
 		previousStatus = state.Status
 		previousReason = state.SkipReason
 	}
+
 	state = v.syncStepState(step)
 	v.events = append(v.events, runbookExecuteEvent{StepName: step.Name, StepIndex: step.Index, Status: step.Status, Reason: step.SkipReason})
 	if state == nil {
 		return
 	}
-	v.lastActiveStep = state.Index
 	if alreadyReported && previousStatus == state.Status && previousReason == state.SkipReason {
 		if v.liveMode {
-			v.redrawLive()
+			v.redrawLiveLocked()
 		}
 		return
 	}
 	if !state.RunningReported {
 		state.RunningReported = true
-		if v.liveMode {
-			v.appendStepLog(state, fmt.Sprintf("%s is running", state.Address))
-		} else {
-			v.view.streams.Printf("-> %s is running\n", v.renderStepLabel(state))
-		}
+		v.emitLogLocked(fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
 	}
+
 	state.TerminalReported = true
 	switch step.Status {
 	case runbookruntime.StepStatusCompleted:
-		if v.liveMode {
-			v.appendStepLog(state, fmt.Sprintf("%s completed", state.Address))
-		} else {
-			v.view.streams.Printf("ok %s completed\n", v.renderStepLabel(state))
-		}
+		v.emitLogLocked(fmt.Sprintf("ok %s completed", v.renderStepLabel(state)))
 	case runbookruntime.StepStatusSkipped:
-		if v.liveMode {
-			message := fmt.Sprintf("%s skipped", state.Address)
-			if step.SkipReason != "" {
-				message = fmt.Sprintf("%s: %s", message, step.SkipReason)
-			}
-			v.appendStepLog(state, message)
-		} else {
-			v.view.streams.Printf("sk %s skipped", v.renderStepLabel(state))
-			if step.SkipReason != "" {
-				v.view.streams.Printf(": %s", step.SkipReason)
-			}
-			v.view.streams.Print("\n")
+		line := fmt.Sprintf("sk %s skipped", v.renderStepLabel(state))
+		if step.SkipReason != "" {
+			line = fmt.Sprintf("%s: %s", line, step.SkipReason)
 		}
+		v.emitLogLocked(line)
 	case runbookruntime.StepStatusFailed:
-		if v.liveMode {
-			message := fmt.Sprintf("%s failed", state.Address)
-			if step.SkipReason != "" {
-				message = fmt.Sprintf("%s: %s", message, step.SkipReason)
-			}
-			v.appendStepLog(state, message)
-		} else {
-			v.view.streams.Printf("!! %s failed", v.renderStepLabel(state))
-			if step.SkipReason != "" {
-				v.view.streams.Printf(": %s", step.SkipReason)
-			}
-			v.view.streams.Print("\n")
+		line := fmt.Sprintf("!! %s failed", v.renderStepLabel(state))
+		if step.SkipReason != "" {
+			line = fmt.Sprintf("%s: %s", line, step.SkipReason)
 		}
+		v.emitLogLocked(line)
 	}
+
 	if v.liveMode {
-		v.redrawLive()
-		return
+		v.redrawLiveLocked()
 	}
-	v.view.streams.Printf("   %s\n", v.renderProgressSummary())
 }
+
 func (v *RunbookExecuteHuman) Executed(plan *runbookgraph.Plan) {
 	v.mu.Lock()
+	v.stopSpinnerLoopLocked()
 	if v.liveMode {
-		v.redrawLive()
+		v.redrawLiveLocked()
 		v.renderedLines = 0
 		v.view.streams.Print("\n")
 	}
 	v.mu.Unlock()
 
-	steps := 0
+	completed := 0
 	skipped := 0
 	failed := 0
 	for _, step := range plan.Steps {
@@ -279,15 +272,17 @@ func (v *RunbookExecuteHuman) Executed(plan *runbookgraph.Plan) {
 		case runbookruntime.StepStatusFailed:
 			failed++
 		default:
-			steps++
+			completed++
 		}
 	}
-	v.view.streams.Printf("Runbook execute complete. Steps: %d completed, %d skipped, %d failed.\n", steps, skipped, failed)
-	outputs := collectRunbookExecuteOutputs(plan)
+	v.view.streams.Printf("Runbook execute complete. Steps: %d completed, %d skipped, %d failed.\n", completed, skipped, failed)
+
+	outputs, outputDiags := collectRunbookExecuteOutputs(plan)
+	v.Diagnostics(outputDiags)
 	if len(outputs) == 0 {
 		return
 	}
-	v.view.streams.Print("\nOutputs:\n")
+	v.view.streams.Print(v.view.colorize.Color("[reset][bold][green]\nOutputs:\n\n"))
 	keys := make([]string, 0, len(outputs))
 	for key := range outputs {
 		keys = append(keys, key)
@@ -344,42 +339,44 @@ func (v *RunbookExecuteJSON) Executed(plan *runbookgraph.Plan) {
 	v.view.log.Info("Runbook execute", "type", "runbook_execute", "plan", buildRunbookPlan(plan, nil), "events", v.events, "actions", v.actions)
 }
 
-func (v *RunbookExecuteHuman) beginExecutionOutput() {
+func (v *RunbookExecuteHuman) beginExecutionOutputLocked() {
 	if v.started {
 		return
 	}
 	v.started = true
 	if v.liveMode {
-		v.redrawLive()
+		v.startSpinnerLoopLocked()
+		v.redrawLiveLocked()
 		return
 	}
-	if len(v.steps) == 0 {
-		v.view.streams.Println("Runbook execution started.")
-		return
-	}
-	v.view.streams.Println("Runbook execution progress:")
-	for _, step := range v.steps {
-		v.view.streams.Printf("   %s %s\n", v.renderStepLabel(step), v.renderStepState(step))
-	}
-	v.view.streams.Printf("   %s\n\n", v.renderProgressSummary())
+	v.view.streams.Println("Runbook execution started.")
 }
 
 func (v *RunbookExecuteHuman) syncStepState(step *runbookruntime.Step) *runbookExecuteStepState {
 	if step == nil {
 		return nil
 	}
-	state, ok := v.stepStateByIdx[step.Index]
+	addr := formatRunbookRuntimeStepAddress(step)
+	state, ok := v.stepStateByAddr[addr]
 	if !ok {
 		state = &runbookExecuteStepState{
 			Index:   step.Index,
 			Order:   len(v.steps) + 1,
 			Total:   len(v.steps) + 1,
-			Address: formatRunbookRuntimeStepAddress(step),
+			Address: addr,
 		}
-		if v.stepStateByIdx == nil {
-			v.stepStateByIdx = make(map[int]*runbookExecuteStepState)
+		if v.stepStateByAddr == nil {
+			v.stepStateByAddr = make(map[string]*runbookExecuteStepState)
 		}
-		v.stepStateByIdx[step.Index] = state
+		if v.stepStatesByIdx == nil {
+			v.stepStatesByIdx = make(map[int][]*runbookExecuteStepState)
+		}
+		if v.stepStatesByName == nil {
+			v.stepStatesByName = make(map[string][]*runbookExecuteStepState)
+		}
+		v.stepStateByAddr[addr] = state
+		v.stepStatesByIdx[step.Index] = append(v.stepStatesByIdx[step.Index], state)
+		v.stepStatesByName[step.Name] = append(v.stepStatesByName[step.Name], state)
 		v.steps = append(v.steps, state)
 		for _, existing := range v.steps {
 			existing.Total = len(v.steps)
@@ -393,18 +390,118 @@ func (v *RunbookExecuteHuman) syncStepState(step *runbookruntime.Step) *runbookE
 	return state
 }
 
-func (v *RunbookExecuteHuman) appendStepLog(step *runbookExecuteStepState, line string) {
-	if step == nil || line == "" {
-		return
+func (v *RunbookExecuteHuman) findStepStateLocked(step *runbookruntime.Step) *runbookExecuteStepState {
+	if step == nil {
+		return nil
 	}
-	step.LogLines = append(step.LogLines, line)
-	if len(step.LogLines) > runbookStepLogRetention {
-		step.LogLines = append([]string(nil), step.LogLines[len(step.LogLines)-runbookStepLogRetention:]...)
+	if state := v.stepStateByAddr[formatRunbookRuntimeStepAddress(step)]; state != nil {
+		return state
+	}
+	return v.findStepStateForEventLocked(step.Name, step.Index)
+}
+
+func (v *RunbookExecuteHuman) findStepStateForEventLocked(stepName string, stepIndex int) *runbookExecuteStepState {
+	if candidates := v.stepStatesByIdx[stepIndex]; len(candidates) == 1 {
+		return candidates[0]
+	}
+	if candidates := v.stepStatesByIdx[stepIndex]; len(candidates) > 1 {
+		for _, candidate := range candidates {
+			if candidate != nil && candidate.Status == runbookruntime.StepStatusRunning {
+				return candidate
+			}
+		}
+		if stepName != "" {
+			for _, candidate := range candidates {
+				if candidate != nil && strings.HasPrefix(candidate.Address, "step."+stepName) {
+					return candidate
+				}
+			}
+		}
+		return candidates[0]
+	}
+	if stepName == "" {
+		return nil
+	}
+	candidates := v.stepStatesByName[stepName]
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	for _, candidate := range candidates {
+		if candidate != nil && candidate.Status == runbookruntime.StepStatusRunning {
+			return candidate
+		}
+	}
+	for _, candidate := range candidates {
+		if candidate != nil && !candidate.TerminalReported {
+			return candidate
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return nil
+}
+
+func (v *RunbookExecuteHuman) emitLogLocked(line string) {
+	for _, sanitized := range sanitizeRunbookLogLines(line) {
+		v.logs = append(v.logs, sanitized)
+		if len(v.logs) > runbookExecuteLogRetention {
+			v.logs = append([]string(nil), v.logs[len(v.logs)-runbookExecuteLogRetention:]...)
+		}
+		if !v.liveMode {
+			v.view.streams.Println(sanitized)
+		}
 	}
 }
 
-func (v *RunbookExecuteHuman) redrawLive() {
-	block := v.renderLiveBlock()
+func (v *RunbookExecuteHuman) startSpinnerLoopLocked() {
+	if !v.liveMode || v.spinnerStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	v.spinnerStop = stop
+	go func(stop <-chan struct{}) {
+		ticker := time.NewTicker(runbookExecuteSpinnerEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+			v.mu.Lock()
+			if v.spinnerStop != stop {
+				v.mu.Unlock()
+				return
+			}
+			v.spinnerIndex = (v.spinnerIndex + 1) % len(runbookExecuteSpinnerFrames)
+			if v.hasRunningStepsLocked() {
+				v.redrawLiveLocked()
+			}
+			v.mu.Unlock()
+		}
+	}(stop)
+}
+
+func (v *RunbookExecuteHuman) stopSpinnerLoopLocked() {
+	if v.spinnerStop == nil {
+		return
+	}
+	close(v.spinnerStop)
+	v.spinnerStop = nil
+}
+
+func (v *RunbookExecuteHuman) hasRunningStepsLocked() bool {
+	for _, step := range v.steps {
+		if step != nil && step.Status == runbookruntime.StepStatusRunning {
+			return true
+		}
+	}
+	return false
+}
+
+func (v *RunbookExecuteHuman) redrawLiveLocked() {
+	block := v.renderLiveBlockAtWidth(v.view.outputColumns())
 	if v.renderedLines > 0 {
 		v.view.streams.Printf("\x1b[%dA\r", v.renderedLines)
 		v.view.streams.Print("\x1b[0m\x1b[J")
@@ -415,114 +512,94 @@ func (v *RunbookExecuteHuman) redrawLive() {
 	v.renderedLines = strings.Count(block, "\n")
 }
 
-func (v *RunbookExecuteHuman) renderLiveBlock() string {
-	width := v.view.outputColumns()
-	if width < 40 {
-		width = 40
+func (v *RunbookExecuteHuman) renderLiveBlockAtWidth(width int) string {
+	if width < runbookExecuteMinimumWidth {
+		width = runbookExecuteMinimumWidth
 	}
-	separator := strings.Repeat("-", width)
-	var lines []string
-	lines = append(lines, "Runbook execution")
-	lines = append(lines, separator)
-	lines = append(lines, "Steps")
-	for _, line := range v.renderLiveSteps(width) {
-		lines = append(lines, line)
-	}
-	lines = append(lines, separator)
-	for _, line := range v.renderLiveLogs(width) {
-		lines = append(lines, line)
-	}
-	lines = append(lines, separator)
-	for _, line := range v.renderLiveFooter(width) {
-		lines = append(lines, line)
-	}
+	separator := strings.Repeat(runbookExecuteSectionDivider, width)
+	lines := []runbookRenderLine{{Text: "Runbook execution", Green: true}, {Text: separator}}
+	lines = append(lines, v.renderLiveLogsSection()...)
+	lines = append(lines, runbookRenderLine{Text: separator})
+	lines = append(lines, v.renderLiveInProgressSection()...)
+	lines = append(lines, runbookRenderLine{Text: separator})
+	lines = append(lines, v.renderLiveStatusSection()...)
+
 	wrapped := make([]string, 0, len(lines))
 	for _, line := range lines {
-		wrapped = append(wrapped, v.wrapLiveLines(line, width)...)
+		for _, part := range v.wrapLiveLines(line.Text, width) {
+			if line.Green {
+				wrapped = append(wrapped, v.greenLiveText(part))
+			} else {
+				wrapped = append(wrapped, part)
+			}
+		}
 	}
 	return strings.Join(wrapped, "\n") + "\n"
 }
 
-func (v *RunbookExecuteHuman) renderLiveSteps(width int) []string {
-	if len(v.steps) == 0 {
-		return []string{"  (no steps)"}
+func (v *RunbookExecuteHuman) renderLiveLogsSection() []runbookRenderLine {
+	ret := []runbookRenderLine{{Text: "Logs", Green: true}}
+	if len(v.logs) == 0 {
+		return append(ret, runbookRenderLine{Text: "  (waiting for output)"})
 	}
-	focusOrder := v.focusedStepOrder()
-	const windowSize = 8
-	start := maxInt(0, focusOrder-1-windowSize/2)
-	end := minInt(len(v.steps), start+windowSize)
-	if end-start < windowSize {
-		start = maxInt(0, end-windowSize)
-	}
-	ret := make([]string, 0, end-start+2)
+	start := maxInt(0, len(v.logs)-runbookExecuteVisibleLogs)
 	if start > 0 {
-		ret = append(ret, fmt.Sprintf("  ... %d earlier step(s)", start))
+		ret = append(ret, runbookRenderLine{Text: fmt.Sprintf("  ... %d earlier line(s)", start)})
 	}
-	for i := start; i < end; i++ {
-		step := v.steps[i]
-		cursor := " "
-		if step.Index == v.lastActiveStep {
-			cursor = ">"
-		}
-		ret = append(ret, fmt.Sprintf("%s %-9s %s", cursor, liveStatusLabel(step), step.Address))
-	}
-	if end < len(v.steps) {
-		ret = append(ret, fmt.Sprintf("  ... %d later step(s)", len(v.steps)-end))
+	for _, line := range v.logs[start:] {
+		ret = append(ret, runbookRenderLine{Text: "  " + line})
 	}
 	return ret
 }
 
-func (v *RunbookExecuteHuman) renderLiveLogs(width int) []string {
-	step := v.stepStateByIdx[v.lastActiveStep]
-	if step == nil && len(v.steps) > 0 {
-		step = v.steps[0]
-	}
-	if step == nil {
-		return []string{"Step output", "  (no output yet)"}
-	}
-	ret := []string{fmt.Sprintf("Step output: %s", step.Address)}
-	if len(step.LogLines) == 0 {
-		return append(ret, "  (waiting for output)")
-	}
-	const visibleLogs = 14
-	start := maxInt(0, len(step.LogLines)-visibleLogs)
-	if start > 0 {
-		ret = append(ret, fmt.Sprintf("  ... %d earlier line(s)", start))
-	}
-	for _, line := range step.LogLines[start:] {
-		ret = append(ret, "  "+line)
-	}
-	return ret
-}
-
-func (v *RunbookExecuteHuman) focusedStepOrder() int {
-	if step := v.stepStateByIdx[v.lastActiveStep]; step != nil {
-		return step.Order
-	}
+func (v *RunbookExecuteHuman) renderLiveInProgressSection() []runbookRenderLine {
+	ret := []runbookRenderLine{{Text: "Steps in progress", Green: true}}
+	running := 0
+	frame := runbookExecuteSpinnerFrames[v.spinnerIndex%len(runbookExecuteSpinnerFrames)]
 	for _, step := range v.steps {
-		if step.Status == runbookruntime.StepStatusRunning {
-			return step.Order
+		if step == nil || step.Status != runbookruntime.StepStatusRunning {
+			continue
 		}
-		if step.Status == runbookruntime.StepStatusPlanned || step.Status == runbookruntime.StepStatusPending {
-			return step.Order
-		}
+		running++
+		ret = append(ret, runbookRenderLine{Text: fmt.Sprintf("  %s %s", frame, v.renderStepLabel(step)), Green: true})
 	}
-	if len(v.steps) == 0 {
-		return 1
+	if running == 0 {
+		ret = append(ret, runbookRenderLine{Text: "  (no steps currently in progress)", Green: true})
 	}
-	return v.steps[len(v.steps)-1].Order
+	return ret
 }
 
-func (v *RunbookExecuteHuman) renderLiveFooter(width int) []string {
-	step := v.stepStateByIdx[v.lastActiveStep]
-	if step == nil && len(v.steps) > 0 {
-		step = v.steps[0]
+func (v *RunbookExecuteHuman) renderLiveStatusSection() []runbookRenderLine {
+	statusParts := make([]string, 0, len(v.steps))
+	completed := 0
+	running := 0
+	waiting := 0
+	skipped := 0
+	failed := 0
+	for _, step := range v.steps {
+		if step == nil {
+			continue
+		}
+		statusParts = append(statusParts, fmt.Sprintf("[%d/%d %s=%s]", step.Order, step.Total, step.Address, liveStatusToken(step)))
+		switch step.Status {
+		case runbookruntime.StepStatusCompleted:
+			completed++
+		case runbookruntime.StepStatusRunning:
+			running++
+		case runbookruntime.StepStatusSkipped:
+			skipped++
+		case runbookruntime.StepStatusFailed:
+			failed++
+		default:
+			waiting++
+		}
 	}
-	current := "Current step: none"
-	if step != nil {
-		current = fmt.Sprintf("Current step: %s (%s)", step.Address, strings.Trim(liveStatusLabel(step), "[]"))
+	statusLine := "Status: (no steps)"
+	if len(statusParts) > 0 {
+		statusLine = "Status: " + strings.Join(statusParts, " ")
 	}
-	return []string{current, v.renderProgressSummary()}
+	summaryLine := fmt.Sprintf("Summary: %d done, %d in progress, %d waiting, %d skipped, %d failed.", completed, running, waiting, skipped, failed)
+	return []runbookRenderLine{{Text: statusLine, Green: true}, {Text: summaryLine, Green: true}}
 }
 
 func (v *RunbookExecuteHuman) wrapLiveLines(line string, width int) []string {
@@ -564,6 +641,31 @@ func (v *RunbookExecuteHuman) wrapLiveLines(line string, width int) []string {
 	return lines
 }
 
+func (v *RunbookExecuteHuman) greenLiveText(text string) string {
+	if text == "" {
+		return text
+	}
+	return v.view.colorize.Color("[reset][bold][green]" + text + "[reset]")
+}
+
+func sanitizeRunbookLogLines(line string) []string {
+	if line == "" {
+		return nil
+	}
+	normalized := strings.ReplaceAll(line, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	parts := strings.Split(normalized, "\n")
+	ret := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = runbookANSIEscapeRE.ReplaceAllString(part, "")
+		ret = append(ret, strings.TrimRight(part, "\t "))
+	}
+	for len(ret) > 0 && ret[len(ret)-1] == "" {
+		ret = ret[:len(ret)-1]
+	}
+	return ret
+}
+
 func leadingIndent(line string) int {
 	count := 0
 	for _, r := range line {
@@ -583,21 +685,21 @@ func trimLeadingSpacesRunes(in []rune) []rune {
 	return in[idx:]
 }
 
-func liveStatusLabel(step *runbookExecuteStepState) string {
+func liveStatusToken(step *runbookExecuteStepState) string {
 	if step == nil {
-		return "[unknown]"
+		return "unknown"
 	}
 	switch step.Status {
 	case runbookruntime.StepStatusCompleted:
-		return "[done]"
+		return "done"
 	case runbookruntime.StepStatusSkipped:
-		return "[skipped]"
+		return "skipped"
 	case runbookruntime.StepStatusFailed:
-		return "[failed]"
+		return "failed"
 	case runbookruntime.StepStatusRunning:
-		return "[running]"
+		return "in-progress"
 	default:
-		return "[waiting]"
+		return "waiting"
 	}
 }
 
@@ -608,16 +710,9 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (v *RunbookExecuteHuman) renderActionPrefix(stepIndex int) string {
-	state, ok := v.stepStateByIdx[stepIndex]
-	if !ok || state == nil {
+	state := v.findStepStateForEventLocked("", stepIndex)
+	if state == nil {
 		return ""
 	}
 	return fmt.Sprintf("[%d/%d] ", state.Order, state.Total)
@@ -630,53 +725,6 @@ func (v *RunbookExecuteHuman) renderStepLabel(step *runbookExecuteStepState) str
 	return fmt.Sprintf("[%d/%d] %s", step.Order, step.Total, step.Address)
 }
 
-func (v *RunbookExecuteHuman) renderStepState(step *runbookExecuteStepState) string {
-	if step == nil {
-		return ""
-	}
-	switch step.Status {
-	case runbookruntime.StepStatusCompleted:
-		return "completed"
-	case runbookruntime.StepStatusSkipped:
-		if step.SkipReason != "" {
-			return fmt.Sprintf("skipped: %s", step.SkipReason)
-		}
-		return "skipped"
-	case runbookruntime.StepStatusFailed:
-		if step.SkipReason != "" {
-			return fmt.Sprintf("failed: %s", step.SkipReason)
-		}
-		return "failed"
-	case runbookruntime.StepStatusRunning:
-		return "running"
-	default:
-		return "waiting"
-	}
-}
-
-func (v *RunbookExecuteHuman) renderProgressSummary() string {
-	completed := 0
-	running := 0
-	waiting := 0
-	skipped := 0
-	failed := 0
-	for _, step := range v.steps {
-		switch step.Status {
-		case runbookruntime.StepStatusCompleted:
-			completed++
-		case runbookruntime.StepStatusRunning:
-			running++
-		case runbookruntime.StepStatusSkipped:
-			skipped++
-		case runbookruntime.StepStatusFailed:
-			failed++
-		default:
-			waiting++
-		}
-	}
-	return fmt.Sprintf("Progress: %d completed, %d running, %d waiting, %d skipped, %d failed.", completed, running, waiting, skipped, failed)
-}
-
 func formatRunbookRuntimeStepAddress(step *runbookruntime.Step) string {
 	if step == nil {
 		return "step"
@@ -687,22 +735,9 @@ func formatRunbookRuntimeStepAddress(step *runbookruntime.Step) string {
 	return fmt.Sprintf("step.%s%s", step.Name, step.InstanceKey.String())
 }
 
-func collectRunbookExecuteOutputs(plan *runbookgraph.Plan) map[string]cty.Value {
+func collectRunbookExecuteOutputs(plan *runbookgraph.Plan) (map[string]cty.Value, tfdiags.Diagnostics) {
 	if plan == nil {
-		return nil
+		return nil, nil
 	}
-	outputs := map[string]cty.Value{}
-	for _, step := range plan.Steps {
-		if step == nil || step.Outputs == cty.NilVal || !step.Outputs.IsKnown() || step.Outputs.IsNull() || !step.Outputs.Type().IsObjectType() {
-			continue
-		}
-		stepAddr := fmt.Sprintf("step.%s", step.Name)
-		if step.InstanceKey != nil {
-			stepAddr = fmt.Sprintf("step.%s%s", step.Name, step.InstanceKey.String())
-		}
-		for name, value := range step.Outputs.AsValueMap() {
-			outputs[fmt.Sprintf("%s.%s", stepAddr, name)] = value
-		}
-	}
-	return outputs
+	return plan.OutputValues()
 }
