@@ -69,6 +69,9 @@ type runbookExecuteStepState struct {
 	SkipReason       string
 	RunningReported  bool
 	TerminalReported bool
+	StartedAt        time.Time
+	FinishedAt       time.Time
+	LogLines         []string
 }
 
 type runbookRenderLine struct {
@@ -146,23 +149,24 @@ func (v *RunbookExecuteHuman) ActionEvent(event runbookgraph.ActionExecEvent) {
 	if state != nil && !state.RunningReported && !state.TerminalReported {
 		state.RunningReported = true
 		state.Status = runbookruntime.StepStatusRunning
-		v.emitLogLocked(fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
+		v.markStepStartedLocked(state)
+		v.emitStepLogLocked(state, fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
 	}
 
 	prefix := v.renderActionPrefix(event.StepIndex)
 	switch event.Status {
 	case "running":
-		v.emitLogLocked(fmt.Sprintf("  %saction %s is running", prefix, event.Subject))
+		v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s is running", prefix, event.Subject))
 	case "progress":
 		if event.Message != "" {
-			v.emitLogLocked(fmt.Sprintf("  %saction %s: %s", prefix, event.Subject, event.Message))
+			v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s: %s", prefix, event.Subject, event.Message))
 		} else {
-			v.emitLogLocked(fmt.Sprintf("  %saction %s is making progress", prefix, event.Subject))
+			v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s is making progress", prefix, event.Subject))
 		}
 	case "completed":
-		v.emitLogLocked(fmt.Sprintf("  %saction %s completed", prefix, event.Subject))
+		v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s completed", prefix, event.Subject))
 	default:
-		v.emitLogLocked(fmt.Sprintf("  %saction %s %s", prefix, event.Subject, event.Status))
+		v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s %s", prefix, event.Subject, event.Status))
 	}
 
 	if v.liveMode {
@@ -189,7 +193,8 @@ func (v *RunbookExecuteHuman) ExecutingStep(step *runbookruntime.Step) {
 
 	state.RunningReported = true
 	state.Status = runbookruntime.StepStatusRunning
-	v.emitLogLocked(fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
+	v.markStepStartedLocked(state)
+	v.emitStepLogLocked(state, fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
 	if v.liveMode {
 		v.redrawLiveLocked()
 	}
@@ -226,25 +231,27 @@ func (v *RunbookExecuteHuman) ExecutedStep(step *runbookruntime.Step) {
 	}
 	if !state.RunningReported {
 		state.RunningReported = true
-		v.emitLogLocked(fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
+		v.markStepStartedLocked(state)
+		v.emitStepLogLocked(state, fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
 	}
 
 	state.TerminalReported = true
+	v.markStepFinishedLocked(state)
 	switch step.Status {
 	case runbookruntime.StepStatusCompleted:
-		v.emitLogLocked(fmt.Sprintf("ok %s completed", v.renderStepLabel(state)))
+		v.emitStepLogLocked(state, fmt.Sprintf("ok %s completed", v.renderStepLabel(state)))
 	case runbookruntime.StepStatusSkipped:
 		line := fmt.Sprintf("sk %s skipped", v.renderStepLabel(state))
 		if step.SkipReason != "" {
 			line = fmt.Sprintf("%s: %s", line, step.SkipReason)
 		}
-		v.emitLogLocked(line)
+		v.emitStepLogLocked(state, line)
 	case runbookruntime.StepStatusFailed:
 		line := fmt.Sprintf("!! %s failed", v.renderStepLabel(state))
 		if step.SkipReason != "" {
 			line = fmt.Sprintf("%s: %s", line, step.SkipReason)
 		}
-		v.emitLogLocked(line)
+		v.emitStepLogLocked(state, line)
 	}
 
 	if v.liveMode {
@@ -276,6 +283,7 @@ func (v *RunbookExecuteHuman) Executed(plan *runbookgraph.Plan) {
 		}
 	}
 	v.view.streams.Printf("Runbook execute complete. Steps: %d completed, %d skipped, %d failed.\n", completed, skipped, failed)
+	v.renderExecutionReport(plan)
 
 	outputs, outputDiags := collectRunbookExecuteOutputs(plan)
 	v.Diagnostics(outputDiags)
@@ -385,6 +393,9 @@ func (v *RunbookExecuteHuman) syncStepState(step *runbookruntime.Step) *runbookE
 	if !(state.TerminalReported && step.Status == runbookruntime.StepStatusRunning) {
 		state.Status = step.Status
 	}
+	if step.Status == runbookruntime.StepStatusRunning {
+		v.markStepStartedLocked(state)
+	}
 	state.SkipReason = step.SkipReason
 	state.Address = formatRunbookRuntimeStepAddress(step)
 	return state
@@ -398,6 +409,25 @@ func (v *RunbookExecuteHuman) findStepStateLocked(step *runbookruntime.Step) *ru
 		return state
 	}
 	return v.findStepStateForEventLocked(step.Name, step.Index)
+}
+
+func (v *RunbookExecuteHuman) markStepStartedLocked(step *runbookExecuteStepState) {
+	if step == nil || !step.StartedAt.IsZero() {
+		return
+	}
+	step.StartedAt = time.Now()
+}
+
+func (v *RunbookExecuteHuman) markStepFinishedLocked(step *runbookExecuteStepState) {
+	if step == nil {
+		return
+	}
+	if step.StartedAt.IsZero() {
+		step.StartedAt = time.Now()
+	}
+	if step.FinishedAt.IsZero() {
+		step.FinishedAt = time.Now()
+	}
 }
 
 func (v *RunbookExecuteHuman) findStepStateForEventLocked(stepName string, stepIndex int) *runbookExecuteStepState {
@@ -440,6 +470,23 @@ func (v *RunbookExecuteHuman) findStepStateForEventLocked(stepName string, stepI
 		return candidates[0]
 	}
 	return nil
+}
+
+func (v *RunbookExecuteHuman) emitStepLogLocked(step *runbookExecuteStepState, line string) {
+	if step == nil {
+		v.emitLogLocked(line)
+		return
+	}
+	for _, sanitized := range sanitizeRunbookLogLines(line) {
+		step.LogLines = append(step.LogLines, sanitized)
+		v.logs = append(v.logs, sanitized)
+		if len(v.logs) > runbookExecuteLogRetention {
+			v.logs = append([]string(nil), v.logs[len(v.logs)-runbookExecuteLogRetention:]...)
+		}
+		if !v.liveMode {
+			v.view.streams.Println(sanitized)
+		}
+	}
 }
 
 func (v *RunbookExecuteHuman) emitLogLocked(line string) {
@@ -570,7 +617,7 @@ func (v *RunbookExecuteHuman) renderLiveInProgressSection() []runbookRenderLine 
 }
 
 func (v *RunbookExecuteHuman) renderLiveStatusSection() []runbookRenderLine {
-	statusParts := make([]string, 0, len(v.steps))
+	ret := []runbookRenderLine{{Text: "Status", Green: true}}
 	completed := 0
 	running := 0
 	waiting := 0
@@ -580,7 +627,7 @@ func (v *RunbookExecuteHuman) renderLiveStatusSection() []runbookRenderLine {
 		if step == nil {
 			continue
 		}
-		statusParts = append(statusParts, fmt.Sprintf("[%d/%d %s=%s]", step.Order, step.Total, step.Address, liveStatusToken(step)))
+		ret = append(ret, runbookRenderLine{Text: fmt.Sprintf("  [%d/%d] %s = %s", step.Order, step.Total, step.Address, liveStatusToken(step)), Green: true})
 		switch step.Status {
 		case runbookruntime.StepStatusCompleted:
 			completed++
@@ -594,12 +641,12 @@ func (v *RunbookExecuteHuman) renderLiveStatusSection() []runbookRenderLine {
 			waiting++
 		}
 	}
-	statusLine := "Status: (no steps)"
-	if len(statusParts) > 0 {
-		statusLine = "Status: " + strings.Join(statusParts, " ")
+	if len(v.steps) == 0 {
+		ret = append(ret, runbookRenderLine{Text: "  (no steps)", Green: true})
 	}
 	summaryLine := fmt.Sprintf("Summary: %d done, %d in progress, %d waiting, %d skipped, %d failed.", completed, running, waiting, skipped, failed)
-	return []runbookRenderLine{{Text: statusLine, Green: true}, {Text: summaryLine, Green: true}}
+	ret = append(ret, runbookRenderLine{Text: summaryLine, Green: true})
+	return ret
 }
 
 func (v *RunbookExecuteHuman) wrapLiveLines(line string, width int) []string {
@@ -656,9 +703,20 @@ func sanitizeRunbookLogLines(line string) []string {
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
 	parts := strings.Split(normalized, "\n")
 	ret := make([]string, 0, len(parts))
+	lastBlank := true
 	for _, part := range parts {
 		part = runbookANSIEscapeRE.ReplaceAllString(part, "")
-		ret = append(ret, strings.TrimRight(part, "\t "))
+		part = strings.TrimRight(part, "\t ")
+		if strings.TrimSpace(part) == "" {
+			if lastBlank {
+				continue
+			}
+			ret = append(ret, "")
+			lastBlank = true
+			continue
+		}
+		ret = append(ret, part)
+		lastBlank = false
 	}
 	for len(ret) > 0 && ret[len(ret)-1] == "" {
 		ret = ret[:len(ret)-1]
@@ -703,6 +761,95 @@ func liveStatusToken(step *runbookExecuteStepState) string {
 	}
 }
 
+func executionReportStatus(step *runbookExecuteStepState) string {
+	if step == nil {
+		return "Unknown"
+	}
+	switch step.Status {
+	case runbookruntime.StepStatusCompleted:
+		return "Complete"
+	case runbookruntime.StepStatusSkipped:
+		return "Skipped"
+	case runbookruntime.StepStatusFailed:
+		return "Error"
+	case runbookruntime.StepStatusRunning:
+		return "In Progress"
+	default:
+		return "Waiting"
+	}
+}
+
+func executionReportDuration(step *runbookExecuteStepState) string {
+	if step == nil || step.StartedAt.IsZero() {
+		return "n/a"
+	}
+	end := step.FinishedAt
+	if end.IsZero() {
+		end = step.StartedAt
+	}
+	duration := end.Sub(step.StartedAt).Round(time.Millisecond)
+	if duration < 0 {
+		duration = 0
+	}
+	return duration.String()
+}
+
+func executionReportHeaderColor(step *runbookExecuteStepState) string {
+	if step == nil {
+		return "[reset][bold]"
+	}
+	switch step.Status {
+	case runbookruntime.StepStatusCompleted:
+		return "[reset][bold][green]"
+	case runbookruntime.StepStatusSkipped:
+		return "[reset][bold][yellow]"
+	case runbookruntime.StepStatusFailed:
+		return "[reset][bold][red]"
+	case runbookruntime.StepStatusRunning:
+		return "[reset][bold][cyan]"
+	default:
+		return "[reset][bold][yellow]"
+	}
+}
+
+func formatExecutionReportLogLines(lines []string) []string {
+	if len(lines) == 0 {
+		return nil
+	}
+	ret := make([]string, 0, len(lines))
+	lastBlank := true
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, "\t ")
+		if strings.TrimSpace(trimmed) == "" {
+			if lastBlank {
+				continue
+			}
+			ret = append(ret, "")
+			lastBlank = true
+			continue
+		}
+		content := strings.TrimLeft(trimmed, " ")
+		switch {
+		case strings.HasPrefix(content, "-> "):
+			content = "step: " + strings.TrimPrefix(content, "-> ")
+		case strings.HasPrefix(content, "ok "):
+			content = "step: " + strings.TrimPrefix(content, "ok ")
+		case strings.HasPrefix(content, "sk "):
+			content = "step: " + strings.TrimPrefix(content, "sk ")
+		case strings.HasPrefix(content, "!! "):
+			content = "step: " + strings.TrimPrefix(content, "!! ")
+		case strings.Contains(content, "action "):
+			content = "  action: " + content
+		}
+		ret = append(ret, content)
+		lastBlank = false
+	}
+	for len(ret) > 0 && ret[len(ret)-1] == "" {
+		ret = ret[:len(ret)-1]
+	}
+	return ret
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a
@@ -733,6 +880,32 @@ func formatRunbookRuntimeStepAddress(step *runbookruntime.Step) string {
 		return fmt.Sprintf("step.%s", step.Name)
 	}
 	return fmt.Sprintf("step.%s%s", step.Name, step.InstanceKey.String())
+}
+
+func (v *RunbookExecuteHuman) renderExecutionReport(plan *runbookgraph.Plan) {
+	if len(v.steps) == 0 {
+		return
+	}
+	v.view.streams.Print(v.view.colorize.Color("[reset][bold][green]\nExecution Report\n"))
+	for _, step := range v.steps {
+		if step == nil {
+			continue
+		}
+		header := fmt.Sprintf("  - Step %d: %s [Status: %s] [Duration: %s]", step.Order, step.Address, executionReportStatus(step), executionReportDuration(step))
+		v.view.streams.Print(v.view.colorize.Color(executionReportHeaderColor(step) + header + "[reset]\n"))
+		formattedLogs := formatExecutionReportLogLines(step.LogLines)
+		if len(formattedLogs) == 0 {
+			v.view.streams.Println("    | (no logs)")
+			continue
+		}
+		for _, line := range formattedLogs {
+			if line == "" {
+				v.view.streams.Println("    |")
+				continue
+			}
+			v.view.streams.Printf("    | %s\n", line)
+		}
+	}
 }
 
 func collectRunbookExecuteOutputs(plan *runbookgraph.Plan) (map[string]cty.Value, tfdiags.Diagnostics) {

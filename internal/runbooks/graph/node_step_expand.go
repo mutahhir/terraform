@@ -221,6 +221,9 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 			refTargets[runbookaddrs.StepOutput{Step: runbookaddrs.StepInstance{StepName: n.StepName, InstanceKey: expanded.key}, OutputName: output.Name}.String()] = child
 			outputs = append(outputs, child)
 		}
+		finalize := &NodeStepFinalize{Step: instance}
+		g.Add(finalize)
+		g.Connect(dag.BasicEdge(finalize, instance))
 		for _, local := range locals {
 			connectStepReferences(&g, n.StepName, local, referencesForStepLocal(local.Local), refTargets)
 		}
@@ -247,6 +250,30 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 		}
 		for _, output := range outputs {
 			connectStepReferences(&g, n.StepName, output, referencesForStepOutput(output.Output), refTargets)
+		}
+		for _, local := range locals {
+			g.Connect(dag.BasicEdge(finalize, local))
+		}
+		for _, action := range actions {
+			g.Connect(dag.BasicEdge(finalize, action))
+		}
+		for _, data := range dataNodes {
+			g.Connect(dag.BasicEdge(finalize, data))
+		}
+		for _, list := range listNodes {
+			g.Connect(dag.BasicEdge(finalize, list))
+		}
+		for _, execution := range executions {
+			g.Connect(dag.BasicEdge(finalize, execution))
+		}
+		for _, condition := range preconditions {
+			g.Connect(dag.BasicEdge(finalize, condition))
+		}
+		for _, condition := range postconditions {
+			g.Connect(dag.BasicEdge(finalize, condition))
+		}
+		for _, output := range outputs {
+			g.Connect(dag.BasicEdge(finalize, output))
 		}
 	}
 	if err := (&terraform.RootTransformer{}).Transform(&g); err != nil {

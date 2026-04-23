@@ -125,6 +125,37 @@ func TestBuildPlanPreservesRuntimeOutputsWhenProvided(t *testing.T) {
 	}
 }
 
+func TestPlanOutputValuesReturnsTopLevelRunbookOutputs(t *testing.T) {
+	plan, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"producer": {
+				Name:    "producer",
+				Outputs: []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `"srv-123"`)}},
+			},
+		},
+		Outputs: map[string]*configs.Output{
+			"summary": {Name: "summary", Expr: mustParseExpression(t, `step.producer.result`)},
+		},
+	}, nil)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if executeDiags := ExecutePlan(plan, nil); executeDiags.HasErrors() {
+		t.Fatalf("unexpected execute diagnostics: %s", executeDiags.Err())
+	}
+
+	outputs, outputDiags := plan.OutputValues()
+	if outputDiags.HasErrors() {
+		t.Fatalf("unexpected output diagnostics: %s", outputDiags.Err())
+	}
+	if len(outputs) != 1 {
+		t.Fatalf("expected 1 top-level output, got %d", len(outputs))
+	}
+	if got := outputs["summary"].AsString(); got != "srv-123" {
+		t.Fatalf("expected summary output, got %q", got)
+	}
+}
+
 func TestBuildPlanValidatesProviderBackedStepDeclarations(t *testing.T) {
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{

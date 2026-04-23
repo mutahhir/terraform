@@ -318,6 +318,11 @@ func stepForVertex(ctx *EvalContext, vertex dag.Vertex) (*runbookruntime.Step, b
 			return nil, false
 		}
 		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
+	case *NodeStepFinalize:
+		if node.Step == nil {
+			return nil, false
+		}
+		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
 	default:
 		stepName, ok := stepNameForVertex(vertex)
 		if !ok {
@@ -356,6 +361,10 @@ func setStepStatusForVertex(ctx *EvalContext, vertex dag.Vertex, status runbookr
 			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
 		}
 	case *NodeStepOutput:
+		if node.Step != nil {
+			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
+		}
+	case *NodeStepFinalize:
 		if node.Step != nil {
 			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
 		}
@@ -398,6 +407,8 @@ func stepNameForVertex(vertex dag.Vertex) (string, bool) {
 	case *NodeStepCondition:
 		return node.Step.StepName, node.Step != nil
 	case *NodeStepOutput:
+		return node.Step.StepName, node.Step != nil
+	case *NodeStepFinalize:
 		return node.Step.StepName, node.Step != nil
 	default:
 		return "", false

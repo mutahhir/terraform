@@ -313,6 +313,45 @@ step "deploy" {
 	}
 }
 
+func TestLoadRunbookConfigDirInvalidStepConditionDoesNotPanic(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", ``)
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "deploy" {
+  postcondition {
+    expression = true
+    message    = "unexpected"
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	got, diags := p.LoadRunbookConfigDir("/runbook", "/workspace")
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
+	}
+	if got == nil {
+		t.Fatal("expected config but got nil")
+	}
+	step := got.Steps["deploy"]
+	if step == nil {
+		t.Fatal("expected deploy step")
+	}
+	if len(step.Postconditions) != 1 {
+		t.Fatalf("expected one postcondition block, got %d", len(step.Postconditions))
+	}
+	if step.Postconditions[0].Condition != nil {
+		t.Fatal("expected invalid condition expression to remain unset")
+	}
+	if step.Postconditions[0].ErrorMessage != nil {
+		t.Fatal("expected invalid error_message expression to remain unset")
+	}
+}
+
 func writeTestFile(t *testing.T, fs afero.Fs, path, src string) {
 	t.Helper()
 	if err := afero.WriteFile(fs, path, []byte(src), 0o644); err != nil {

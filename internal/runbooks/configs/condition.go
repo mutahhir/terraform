@@ -41,20 +41,24 @@ func decodeConditionBlock(block *hcl.Block) (*Condition, hcl.Diagnostics) {
 	content, moreDiags := block.Body.Content(conditionSchema)
 	diags = append(diags, moreDiags...)
 
-	cr.Condition = content.Attributes["condition"].Expr
+	if attr, exists := content.Attributes["condition"]; exists {
+		cr.Condition = attr.Expr
 
-	if len(cr.Condition.Variables()) == 0 {
-		// A condition expression that doesn't refer to any variable is
-		// pointless, because its result would always be a constant.
-		diags = diags.Append(&hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("Invalid %s expression", block.Type),
-			Detail:   "The condition expression must refer to at least one object from elsewhere in the configuration, or else its result would not be checking anything.",
-			Subject:  cr.Condition.Range().Ptr(),
-		})
+		if len(cr.Condition.Variables()) == 0 {
+			// A condition expression that doesn't refer to any variable is
+			// pointless, because its result would always be a constant.
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid %s expression", block.Type),
+				Detail:   "The condition expression must refer to at least one object from elsewhere in the configuration, or else its result would not be checking anything.",
+				Subject:  cr.Condition.Range().Ptr(),
+			})
+		}
 	}
 
-	cr.ErrorMessage = content.Attributes["error_message"].Expr
+	if attr, exists := content.Attributes["error_message"]; exists {
+		cr.ErrorMessage = attr.Expr
+	}
 
 	if attr, exists := content.Attributes["on_failure"]; exists {
 		onFailVal, err := attr.Expr.Value(nil)

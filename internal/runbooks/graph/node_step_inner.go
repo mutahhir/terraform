@@ -554,6 +554,47 @@ func (n *NodeStepCondition) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 	return diags
 }
 
+type NodeStepFinalize struct {
+	Step *NodeStepInstance
+}
+
+func (n *NodeStepFinalize) Hashcode() interface{} {
+	key := ""
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+		if n.Step.InstanceKey != nil {
+			key = n.Step.InstanceKey.String()
+		}
+	}
+	return [3]string{"step_finalize", stepName, key}
+}
+
+func (n *NodeStepFinalize) Name() string {
+	stepName := ""
+	if n.Step != nil {
+		stepName = n.Step.StepName
+	}
+	if n.Step == nil || n.Step.InstanceKey == nil {
+		return fmt.Sprintf("step.%s (finalize)", stepName)
+	}
+	return fmt.Sprintf("step.%s%s (finalize)", stepName, n.Step.InstanceKey.String())
+}
+
+func (n *NodeStepFinalize) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
+	if diags := requireStepInstance(n.Step); diags.HasErrors() {
+		return diags
+	}
+	if op != walkOperationExecute {
+		return nil
+	}
+	if ctx.stepHasStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusFailed, runbookruntime.StepStatusSkipped) {
+		return nil
+	}
+	ctx.setStepStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusCompleted, "")
+	return nil
+}
+
 type NodeStepOutput struct {
 	Step   *NodeStepInstance
 	Output *configs.Output
@@ -592,9 +633,6 @@ func (n *NodeStepOutput) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diag
 		return diags
 	}
 	ctx.setStepOutputWithKey(n.Step.StepName, n.Step.InstanceKey, n.Output.Name, value)
-	if ctx.stepHasStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusPlanned) {
-		ctx.setStepStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusCompleted, "")
-	}
 	return nil
 }
 

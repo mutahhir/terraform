@@ -46,6 +46,10 @@ step "discover" {
     value = data.test_data.selected.id
   }
 }
+
+output "summary" {
+  value = step.discover.result
+}
 `)
 	t.Chdir(td)
 
@@ -88,11 +92,26 @@ step "discover" {
 	if !strings.Contains(output.Stdout(), "step.discover completed") {
 		t.Fatalf("expected completed step event, got: %s", output.Stdout())
 	}
+	if strings.Index(output.Stdout(), "action action.test_action.notify completed") > strings.Index(output.Stdout(), "step.discover completed") {
+		t.Fatalf("expected step completion after action completion, got: %s", output.Stdout())
+	}
 	if !strings.Contains(output.Stdout(), "Runbook execute complete.") {
 		t.Fatalf("expected execute summary, got: %s", output.Stdout())
 	}
-	if !strings.Contains(output.Stdout(), "Outputs:") || !strings.Contains(output.Stdout(), `step.discover.result = "srv-123"`) {
+	if !strings.Contains(output.Stdout(), "Execution Report") {
+		t.Fatalf("expected execution report, got: %s", output.Stdout())
+	}
+	if !strings.Contains(output.Stdout(), "Step 1: step.discover [Status: Complete] [Duration:") {
+		t.Fatalf("expected step report entry with duration, got: %s", output.Stdout())
+	}
+	if !strings.Contains(output.Stdout(), "|   action: [1/1] action action.test_action.notify: invoking") {
+		t.Fatalf("expected normalized step logs in execution report, got: %s", output.Stdout())
+	}
+	if !strings.Contains(output.Stdout(), "Outputs:") || !strings.Contains(output.Stdout(), `summary = "srv-123"`) {
 		t.Fatalf("expected execute outputs in output, got: %s", output.Stdout())
+	}
+	if strings.Contains(output.Stdout(), `step.discover.result = "srv-123"`) {
+		t.Fatalf("expected only top-level runbook outputs, got: %s", output.Stdout())
 	}
 }
 

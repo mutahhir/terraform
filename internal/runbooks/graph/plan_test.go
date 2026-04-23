@@ -225,8 +225,19 @@ func TestNodeExpandStepDynamicExpandMakesPostconditionsDependOnExecute(t *testin
 
 	executionNode := &NodeStepExecution{Step: &NodeStepInstance{StepName: "deploy"}, Index: 0}
 	postconditionNode := &NodeStepCondition{Step: &NodeStepInstance{StepName: "deploy"}, Condition: postcondition}
+	outputNode := &NodeStepOutput{Step: &NodeStepInstance{StepName: "deploy"}, Output: &configs.Output{Name: "result"}}
+	finalizeNode := &NodeStepFinalize{Step: &NodeStepInstance{StepName: "deploy"}}
 	if !graph.DownEdges(postconditionNode).Include(executionNode) {
 		t.Fatal("expected postcondition to depend on execute")
+	}
+	if !graph.DownEdges(finalizeNode).Include(executionNode) {
+		t.Fatal("expected finalize to depend on execute")
+	}
+	if !graph.DownEdges(finalizeNode).Include(postconditionNode) {
+		t.Fatal("expected finalize to depend on postcondition")
+	}
+	if !graph.DownEdges(finalizeNode).Include(outputNode) {
+		t.Fatal("expected finalize to depend on output")
 	}
 }
 
