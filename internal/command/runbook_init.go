@@ -6,11 +6,9 @@ import (
 
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/command/views"
-	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/depsfile"
 	"github.com/hashicorp/terraform/internal/providercache"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
-	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type RunbookInitCommand struct {
@@ -50,16 +48,6 @@ func (c *RunbookInitCommand) Run(rawArgs []string) int {
 	c.View.SetConfigSources(func() map[string][]byte {
 		return runbookConfigSources(runbookDir)
 	})
-
-	if runbookDir == workspaceDir && configs.NewParser(nil).IsConfigDir(runbookDir) {
-		diags = diags.Append(tfdiags.Sourceless(
-			tfdiags.Error,
-			"Runbook directory must not be the workspace root",
-			"Runbook initialization requires a dedicated subdirectory. Move the .tfrun.hcl files into a runbook directory such as runbooks/<name>/ and run this command there.",
-		))
-		view.Diagnostics(diags)
-		return 1
-	}
 
 	parser := runbookconfigs.NewRunbookParser(nil)
 	config, parseDiags := parser.LoadRunbookConfigDir(runbookDir, workspaceDir)
@@ -145,7 +133,7 @@ func (c *RunbookInitCommand) Help() string {
 	return strings.TrimSpace(`
 Usage: terraform [global options] runbook init [options]
 
-  Initializes the runbook in the current working directory.
+  Initializes the runbook in the current runbook directory.
 
 Options:
 

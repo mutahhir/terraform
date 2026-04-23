@@ -743,10 +743,16 @@ func (c *runbookCommandBase) discoverRunbookPaths(pwd string) (string, string, t
 		}
 	}
 	if !hasRunbook {
-		return "", "", diags.Append(tfdiags.Sourceless(tfdiags.Error, "No runbook configuration files", "Runbook command requires at least one .tfrun.hcl file in the current working directory."))
+		return "", "", diags.Append(tfdiags.Sourceless(tfdiags.Error, "No runbook configuration files", "Runbook command requires at least one .tfrun.hcl file in the current runbook directory."))
 	}
 
-	return pwd, discoverRunbookWorkspaceDir(pwd), diags
+	workspaceDir := discoverRunbookWorkspaceDir(pwd)
+	parser := configs.NewParser(nil)
+	if pwd == workspaceDir && parser.IsConfigDir(pwd) {
+		return "", "", diags.Append(tfdiags.Sourceless(tfdiags.Error, "Runbook directory must not be the workspace root", "Runbook commands require a dedicated subdirectory. Move the .tfrun.hcl files into a runbook directory such as runbooks/<name>/ and run the command there, or use the global -chdir flag."))
+	}
+
+	return pwd, workspaceDir, diags
 }
 
 func discoverRunbookWorkspaceDir(runbookDir string) string {

@@ -19,6 +19,8 @@ func (c *RunbookCommand) Help() string {
 Usage: terraform [global options] runbook <subcommand> [options]
 
   Commands for initializing, planning, and executing Terraform runbooks.
+  Runbook commands operate on the current runbook directory; use the global
+  -chdir flag to select a runbook subdirectory from elsewhere.
 
   Subcommands:
     init      Prepare a runbook working directory

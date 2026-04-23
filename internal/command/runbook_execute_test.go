@@ -2,6 +2,7 @@ package command
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,9 +13,9 @@ import (
 )
 
 func TestRunbookExecuteCommandInvokesPlannedActionConfig(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -51,7 +52,7 @@ output "summary" {
   value = step.discover.result
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := runbookExecuteFixtureProvider()
@@ -116,9 +117,9 @@ output "summary" {
 }
 
 func TestRunbookExecuteCommandFailsFalsePostcondition(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -156,7 +157,7 @@ step "discover" {
   }
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := runbookExecuteFixtureProvider()
@@ -176,9 +177,9 @@ step "discover" {
 }
 
 func TestRunbookExecuteCommandJSONEmitsEvents(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -211,7 +212,7 @@ step "discover" {
   }
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := runbookExecuteFixtureProvider()
@@ -258,14 +259,14 @@ step "discover" {
 }
 
 func TestRunbookExecuteCommandJSONRequiresAutoApprove(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	c := NewRunbookExecuteCommand(Meta{View: view})
@@ -281,9 +282,9 @@ runbook {
 }
 
 func TestRunbookExecuteCommandAllowsEmptyOptionalActionConfig(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -308,7 +309,7 @@ step "summary" {
   }
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := &testing_provider.MockProvider{
@@ -348,9 +349,9 @@ step "summary" {
 }
 
 func TestRunbookExecuteCommandRepeatedStepsExecuteOnce(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -382,7 +383,7 @@ step "invoke" {
   }
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	count := 0
@@ -412,13 +413,13 @@ step "invoke" {
 }
 
 func TestRunbookExecuteCommandWorkspaceActionAllowsEmptyOptionalConfig(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", `
 action "test_action" "workspace_optional" {
   config {}
 }
 `)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -439,7 +440,7 @@ step "summary" {
   }
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := &testing_provider.MockProvider{
@@ -475,7 +476,7 @@ step "summary" {
 }
 
 func TestRunbookExecuteCommandWorkspaceActionUsesConfiguredOptionalAttrs(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", `
 action "test_action" "workspace_optional" {
   config {
@@ -485,7 +486,7 @@ action "test_action" "workspace_optional" {
   }
 }
 `)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -506,7 +507,7 @@ step "summary" {
   }
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := &testing_provider.MockProvider{

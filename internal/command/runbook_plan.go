@@ -65,7 +65,7 @@ func (c *RunbookPlanCommand) Help() string {
 	return strings.TrimSpace(`
 Usage: terraform [global options] runbook plan [options]
 
-  Builds a speculative plan for the runbook in the current working directory.
+  Builds a speculative plan for the runbook in the current runbook directory.
 
 Options:
 

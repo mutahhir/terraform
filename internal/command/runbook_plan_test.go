@@ -17,9 +17,9 @@ import (
 )
 
 func TestRunbookPlanCommand(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -52,7 +52,7 @@ step "discover" {
   }
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
@@ -85,9 +85,9 @@ step "discover" {
 }
 
 func TestRunbookPlanCommandJSON(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -108,7 +108,7 @@ step "discover" {
   }
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
@@ -163,9 +163,9 @@ step "discover" {
 }
 
 func TestRunbookPlanCommandShowsDiagnosticSnippet(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 }
@@ -177,7 +177,7 @@ step "discover" {
   }
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view}}}
@@ -197,7 +197,7 @@ step "discover" {
 }
 
 func TestRunbookPlanCommandLoadsWorkspaceStateForWorkspaceDataRefs(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", `
 terraform {
   required_providers {
@@ -211,7 +211,7 @@ provider "test" {}
 
 data "test_data" "selected" {}
 `)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -230,7 +230,7 @@ step "discover" {
   }
 }
 `)
-	writeFile(t, td+"/terraform.tfstate", `
+	stateSrc := `
 {
   "version": 4,
   "terraform_version": "1.16.0",
@@ -257,8 +257,10 @@ step "discover" {
   ],
   "check_results": null
 }
-`)
-	t.Chdir(td)
+`
+	writeFile(t, td+"/terraform.tfstate", stateSrc)
+	writeFile(t, filepath.Join(runbookDir, "terraform.tfstate"), stateSrc)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
@@ -278,7 +280,7 @@ step "discover" {
 }
 
 func TestRunbookPlanCommandJSONIncludesWorkspaceReadInfo(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", `
 terraform {
   required_providers {
@@ -292,7 +294,7 @@ provider "test" {}
 
 resource "test_resource" "selected" {}
 `)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -311,7 +313,7 @@ step "discover" {
   }
 }
 `)
-	writeFile(t, td+"/terraform.tfstate", `
+	stateSrc := `
 {
   "version": 4,
   "terraform_version": "1.16.0",
@@ -338,8 +340,10 @@ step "discover" {
   ],
   "check_results": null
 }
-`)
-	t.Chdir(td)
+`
+	writeFile(t, td+"/terraform.tfstate", stateSrc)
+	writeFile(t, filepath.Join(runbookDir, "terraform.tfstate"), stateSrc)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
@@ -384,7 +388,7 @@ step "discover" {
 }
 
 func TestRunbookPlanCommandLoadsWorkspaceStateForWorkspaceResourceRefs(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", `
 terraform {
   required_providers {
@@ -398,7 +402,7 @@ provider "test" {}
 
 resource "test_resource" "selected" {}
 `)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 
@@ -417,7 +421,7 @@ step "discover" {
   }
 }
 `)
-	writeFile(t, td+"/terraform.tfstate", `
+	stateSrc := `
 {
   "version": 4,
   "terraform_version": "1.16.0",
@@ -444,8 +448,10 @@ step "discover" {
   ],
   "check_results": null
 }
-`)
-	t.Chdir(td)
+`
+	writeFile(t, td+"/terraform.tfstate", stateSrc)
+	writeFile(t, filepath.Join(runbookDir, "terraform.tfstate"), stateSrc)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	provider := runbookPlanFixtureProvider()
@@ -467,21 +473,18 @@ step "discover" {
 	}
 }
 
-func TestRunbookPlanDiscoverRunbookPaths_CurrentDirIsWorkspace(t *testing.T) {
+func TestRunbookPlanDiscoverRunbookPaths_RejectsWorkspaceRootRunbook(t *testing.T) {
 	td := t.TempDir()
 	writeFile(t, td+"/main.tf", ``)
 	writeFile(t, td+"/main.tfrun.hcl", `step "discover" {}`)
 
 	c := &RunbookPlanCommand{}
-	runbookDir, workspaceDir, diags := c.discoverRunbookPaths(td)
-	if diags.HasErrors() {
-		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	_, _, diags := c.discoverRunbookPaths(td)
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
 	}
-	if runbookDir != td {
-		t.Fatalf("wrong runbook dir %q", runbookDir)
-	}
-	if workspaceDir != td {
-		t.Fatalf("wrong workspace dir %q", workspaceDir)
+	if got := diags.Err().Error(); !strings.Contains(got, "Runbook directory must not be the workspace root") {
+		t.Fatalf("unexpected diagnostics: %s", got)
 	}
 }
 
@@ -558,9 +561,9 @@ func TestRunbookMetaUsesTfrunDataDir(t *testing.T) {
 }
 
 func TestRunbookPlanCommandFailsForUndeclaredRunbookProvider(t *testing.T) {
-	td := t.TempDir()
+	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", ``)
-	writeFile(t, td+"/main.tfrun.hcl", `
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
 runbook {
   terraform_version = ">= 1.0.0"
 }
@@ -569,7 +572,7 @@ step "discover" {
   data "test_data" "selected" {}
 }
 `)
-	t.Chdir(td)
+	t.Chdir(runbookDir)
 
 	view, done := testView(t)
 	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view}}}
@@ -698,6 +701,16 @@ step "discover" {
 	if !strings.Contains(output.Stderr(), "Runbook dependencies are out of date") {
 		t.Fatalf("expected stale dependency diagnostic, got: %s", output.All())
 	}
+}
+
+func setupRunbookDir(t *testing.T) (string, string) {
+	t.Helper()
+	workspaceDir := t.TempDir()
+	runbookDir := filepath.Join(workspaceDir, "runbooks", "deploy")
+	if err := os.MkdirAll(runbookDir, 0o755); err != nil {
+		t.Fatalf("mkdir runbook dir: %s", err)
+	}
+	return workspaceDir, runbookDir
 }
 
 func writeDependencyLockFile(t *testing.T, path string, versions map[string]string) {

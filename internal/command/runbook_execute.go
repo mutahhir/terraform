@@ -95,7 +95,7 @@ func (c *RunbookExecuteCommand) Help() string {
 	return strings.TrimSpace(`
 Usage: terraform [global options] runbook execute [options]
 
-  Executes the runbook in the current working directory.
+  Executes the runbook in the current runbook directory.
 
 Options:
 
