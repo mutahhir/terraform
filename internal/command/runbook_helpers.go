@@ -1,9 +1,12 @@
 package command
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -23,8 +26,9 @@ import (
 )
 
 const (
-	runbookDependencyLockFilename = ".tfrun.lock.hcl"
-	runbookDataDirName            = ".tfrun"
+	runbookDependencyLockFilename     = ".tfrun.lock.hcl"
+	runbookDataDirName                = ".tfrun"
+	runbookDependencyMetadataFilename = "dependency-metadata.json"
 )
 
 type runbookCommandBase struct {
@@ -66,6 +70,14 @@ func (c *runbookCommandBase) loadRunbook(rawArgs []string, vars *arguments.Vars)
 	diags = diags.Append(validateDeclaredRunbookProviderUsage(config))
 	if diags.HasErrors() {
 		return nil, diags
+	}
+	if c.testingOverrides == nil {
+		workspaceLocks, workspaceLockDiags := workspaceLockedDependencies(workspaceDir)
+		diags = diags.Append(workspaceLockDiags)
+		diags = diags.Append(validateRunbookDependencyMetadata(runbookDir, config, workspaceLocks))
+		if diags.HasErrors() {
+			return nil, diags
+		}
 	}
 
 	providerFactories, err := c.runbookProviderFactories(runbookDir)
@@ -122,12 +134,33 @@ func runbookConfigSources(runbookDir string) map[string][]byte {
 	return ret
 }
 
+type runbookDeclaredProviderMetadata struct {
+	Source             string `json:"source,omitempty"`
+	Provider           string `json:"provider,omitempty"`
+	VersionConstraints string `json:"version_constraints,omitempty"`
+}
+
+type runbookWorkspaceProviderRef struct {
+	Reference string `json:"reference,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+}
+
+type runbookDependencyMetadata struct {
+	DeclaredProviders           map[string]runbookDeclaredProviderMetadata `json:"declared_providers,omitempty"`
+	WorkspaceProviderRefs       []runbookWorkspaceProviderRef              `json:"workspace_provider_refs,omitempty"`
+	WorkspaceProviderSelections map[string]string                          `json:"workspace_provider_selections,omitempty"`
+}
+
 func runbookDependencyLockPath(runbookDir string) string {
 	return filepath.Join(runbookDir, runbookDependencyLockFilename)
 }
 
 func runbookDataDirPath(runbookDir string) string {
 	return filepath.Join(runbookDir, runbookDataDirName)
+}
+
+func runbookDependencyMetadataPath(runbookDir string) string {
+	return filepath.Join(runbookDataDirPath(runbookDir), runbookDependencyMetadataFilename)
 }
 
 func (c *runbookCommandBase) runbookMeta(runbookDir string) Meta {
@@ -414,6 +447,238 @@ func runbookWorkspaceProviderRequirements(config *runbookconfigs.RunbookConfig) 
 		}
 	}
 	return reqs
+}
+
+func collectRunbookWorkspaceProviderRefs(config *runbookconfigs.RunbookConfig) []runbookWorkspaceProviderRef {
+	seen := map[string]runbookWorkspaceProviderRef{}
+	addRef := func(reference string, provider terraformaddrs.Provider) {
+		if provider == (terraformaddrs.Provider{}) {
+			return
+		}
+		key := reference + "|" + provider.String()
+		seen[key] = runbookWorkspaceProviderRef{Reference: reference, Provider: provider.ForDisplay()}
+	}
+	visitTraversal := func(traversal hcl.Traversal) {
+		if len(traversal) == 0 {
+			return
+		}
+		root, ok := traversal[0].(hcl.TraverseRoot)
+		if !ok || root.Name != "workspace" {
+			return
+		}
+		ref, diags := runbookaddrs.ParseRef(traversal)
+		if diags.HasErrors() || ref == nil {
+			return
+		}
+		switch target := ref.Subject.(type) {
+		case runbookaddrs.WorkspaceResource:
+			resource, module := workspaceResourceConfigWithModule(config, target)
+			if resource == nil || module == nil {
+				return
+			}
+			addRef(target.String(), module.ProviderForLocalConfig(resource.ProviderConfigAddr()))
+		case runbookaddrs.WorkspaceAction:
+			action, module := workspaceActionConfigWithModule(config, target)
+			if action == nil || module == nil {
+				return
+			}
+			addRef(target.String(), module.ProviderForLocalConfig(action.ProviderConfigAddr()))
+		}
+	}
+	visitExpr := func(expr hcl.Expression) {
+		if expr == nil {
+			return
+		}
+		for _, traversal := range expr.Variables() {
+			visitTraversal(traversal)
+		}
+	}
+	var visitBody func(body hcl.Body)
+	visitBody = func(body hcl.Body) {
+		if body == nil {
+			return
+		}
+		attrs, _ := body.JustAttributes()
+		for _, attr := range attrs {
+			visitExpr(attr.Expr)
+		}
+		content, _, _ := body.PartialContent(&hcl.BodySchema{})
+		for _, block := range content.Blocks {
+			visitBody(block.Body)
+		}
+	}
+	if config != nil {
+		for _, output := range config.Outputs {
+			if output != nil {
+				visitExpr(output.Expr)
+			}
+		}
+		for _, step := range config.Steps {
+			if step == nil {
+				continue
+			}
+			visitExpr(step.Count)
+			visitExpr(step.ForEach)
+			for _, local := range step.Locals {
+				if local != nil {
+					visitExpr(local.Expr)
+				}
+			}
+			for _, output := range step.Outputs {
+				if output != nil {
+					visitExpr(output.Expr)
+				}
+			}
+			for _, condition := range step.Preconditions {
+				if condition != nil {
+					visitExpr(condition.Condition)
+					visitExpr(condition.ErrorMessage)
+				}
+			}
+			for _, condition := range step.Postconditions {
+				if condition != nil {
+					visitExpr(condition.Condition)
+					visitExpr(condition.ErrorMessage)
+				}
+			}
+			for _, action := range step.Actions {
+				if action != nil {
+					visitExpr(action.Count)
+					visitExpr(action.ForEach)
+					visitBody(action.Config)
+				}
+			}
+			for _, resource := range step.DataSources {
+				if resource != nil {
+					visitExpr(resource.Count)
+					visitExpr(resource.ForEach)
+					visitBody(resource.Config)
+				}
+			}
+			for _, resource := range step.ListResources {
+				if resource != nil {
+					visitExpr(resource.Count)
+					visitExpr(resource.ForEach)
+					visitBody(resource.Config)
+					if resource.List != nil {
+						visitExpr(resource.List.IncludeResource)
+						visitExpr(resource.List.Limit)
+					}
+				}
+			}
+			for _, execution := range step.Executions {
+				if execution != nil {
+					for _, traversal := range execution.InvokeAction {
+						visitTraversal(traversal)
+					}
+				}
+			}
+		}
+	}
+	ret := make([]runbookWorkspaceProviderRef, 0, len(seen))
+	for _, ref := range seen {
+		ret = append(ret, ref)
+	}
+	sort.Slice(ret, func(i, j int) bool {
+		if ret[i].Reference != ret[j].Reference {
+			return ret[i].Reference < ret[j].Reference
+		}
+		return ret[i].Provider < ret[j].Provider
+	})
+	return ret
+}
+
+func generateRunbookDependencyMetadata(config *runbookconfigs.RunbookConfig, workspaceLocks *depsfile.Locks) runbookDependencyMetadata {
+	meta := runbookDependencyMetadata{
+		DeclaredProviders:           map[string]runbookDeclaredProviderMetadata{},
+		WorkspaceProviderSelections: map[string]string{},
+	}
+	if config != nil && config.ProviderRequirements != nil {
+		localNames := make([]string, 0, len(config.ProviderRequirements.RequiredProviders))
+		for localName := range config.ProviderRequirements.RequiredProviders {
+			localNames = append(localNames, localName)
+		}
+		sort.Strings(localNames)
+		for _, localName := range localNames {
+			providerReq := config.ProviderRequirements.RequiredProviders[localName]
+			if providerReq == nil {
+				continue
+			}
+			meta.DeclaredProviders[localName] = runbookDeclaredProviderMetadata{
+				Source:             providerReq.Source,
+				Provider:           providerReq.Type.ForDisplay(),
+				VersionConstraints: providerReq.Requirement.Required.String(),
+			}
+		}
+	}
+	meta.WorkspaceProviderRefs = collectRunbookWorkspaceProviderRefs(config)
+	if workspaceLocks != nil {
+		for _, ref := range meta.WorkspaceProviderRefs {
+			providerAddr, diags := terraformaddrs.ParseProviderSourceString(ref.Provider)
+			if diags.HasErrors() {
+				continue
+			}
+			if lock := workspaceLocks.Provider(providerAddr); lock != nil {
+				meta.WorkspaceProviderSelections[ref.Provider] = lock.Version().String()
+			}
+		}
+	}
+	if len(meta.DeclaredProviders) == 0 {
+		meta.DeclaredProviders = nil
+	}
+	if len(meta.WorkspaceProviderRefs) == 0 {
+		meta.WorkspaceProviderRefs = nil
+	}
+	if len(meta.WorkspaceProviderSelections) == 0 {
+		meta.WorkspaceProviderSelections = nil
+	}
+	return meta
+}
+
+func writeRunbookDependencyMetadata(runbookDir string, meta runbookDependencyMetadata) tfdiags.Diagnostics {
+	if err := os.MkdirAll(runbookDataDirPath(runbookDir), 0o755); err != nil {
+		return tfdiags.Diagnostics{}.Append(err)
+	}
+	raw, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return tfdiags.Diagnostics{}.Append(err)
+	}
+	if err := os.WriteFile(runbookDependencyMetadataPath(runbookDir), raw, 0o644); err != nil {
+		return tfdiags.Diagnostics{}.Append(err)
+	}
+	return nil
+}
+
+func validateRunbookDependencyMetadata(runbookDir string, config *runbookconfigs.RunbookConfig, workspaceLocks *depsfile.Locks) tfdiags.Diagnostics {
+	path := runbookDependencyMetadataPath(runbookDir)
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
+			tfdiags.Error,
+			"Runbook dependencies are out of date",
+			"Runbook dependencies have not been initialized. Re-run 'terraform runbook init'.",
+		))
+	}
+	if err != nil {
+		return tfdiags.Diagnostics{}.Append(err)
+	}
+	var recorded runbookDependencyMetadata
+	if err := json.Unmarshal(raw, &recorded); err != nil {
+		return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
+			tfdiags.Error,
+			"Invalid runbook dependency metadata",
+			fmt.Sprintf("The runbook dependency metadata file %s could not be read: %s", path, err),
+		))
+	}
+	current := generateRunbookDependencyMetadata(config, workspaceLocks)
+	if !reflect.DeepEqual(recorded, current) {
+		return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
+			tfdiags.Error,
+			"Runbook dependencies are out of date",
+			"Runbook dependencies no longer match the current runbook or workspace configuration. Re-run 'terraform runbook init'.",
+		))
+	}
+	return nil
 }
 
 func workspaceResourceConfigWithModule(config *runbookconfigs.RunbookConfig, ref runbookaddrs.WorkspaceResource) (*configs.Resource, *configs.Module) {

@@ -128,6 +128,12 @@ func (c *RunbookInitCommand) Run(rawArgs []string) int {
 		view.Diagnostics(diags)
 		return 1
 	}
+	metadataDiags := writeRunbookDependencyMetadata(runbookDir, generateRunbookDependencyMetadata(config, workspaceLocks))
+	diags = diags.Append(metadataDiags)
+	if diags.HasErrors() {
+		view.Diagnostics(diags)
+		return 1
+	}
 
 	view.Log("Writing lock file: %s", runbookDependencyLockFilename)
 	view.Log("Installing providers into: %s/", runbookDataDirName)

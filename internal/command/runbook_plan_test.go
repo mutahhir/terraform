@@ -9,6 +9,8 @@ import (
 
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
+	"github.com/hashicorp/terraform/internal/depsfile"
+	"github.com/hashicorp/terraform/internal/getproviders/providerreqs"
 	"github.com/hashicorp/terraform/internal/providers"
 	testing_provider "github.com/hashicorp/terraform/internal/providers/testing"
 	"github.com/zclconf/go-cty/cty"
@@ -579,6 +581,138 @@ step "discover" {
 	}
 	if !strings.Contains(output.Stderr(), "Undeclared runbook provider") {
 		t.Fatalf("expected undeclared provider diagnostic, got: %s", output.All())
+	}
+}
+
+func TestRunbookPlanCommandDetectsStaleRunbookDependencyMetadata(t *testing.T) {
+	td := t.TempDir()
+	writeFile(t, td+"/main.tf", ``)
+	runbookDir := filepath.Join(td, "runbooks", "deploy")
+	if err := os.MkdirAll(runbookDir, 0o755); err != nil {
+		t.Fatalf("mkdir runbook dir: %s", err)
+	}
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source  = "hashicorp/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+provider "test" {}
+`)
+	t.Chdir(runbookDir)
+	providerSource, close := newMockProviderSource(t, map[string][]string{"test": {"1.0.0"}})
+	defer close()
+	view, done := testView(t)
+	initCmd := NewRunbookInitCommand(Meta{View: view, ProviderSource: providerSource})
+	if code := initCmd.Run([]string{"-no-color"}); code != 0 {
+		output := done(t)
+		t.Fatalf("unexpected init exit code %d: %s", code, output.All())
+	}
+	done(t)
+
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source  = "hashicorp/test"
+      version = "2.0.0"
+    }
+  }
+}
+
+provider "test" {}
+`)
+
+	view, done = testView(t)
+	planCmd := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view}}}
+	code := planCmd.Run([]string{"-no-color"})
+	output := done(t)
+	if code != 1 {
+		t.Fatalf("expected failure exit code, got %d: %s", code, output.All())
+	}
+	if !strings.Contains(output.Stderr(), "Runbook dependencies are out of date") {
+		t.Fatalf("expected stale dependency diagnostic, got: %s", output.All())
+	}
+}
+
+func TestRunbookPlanCommandDetectsStaleWorkspaceDependencyMetadata(t *testing.T) {
+	td := t.TempDir()
+	writeFile(t, td+"/main.tf", `
+terraform {
+  required_providers {
+    test = {
+      source  = "hashicorp/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+provider "test" {}
+
+resource "test_resource" "selected" {}
+`)
+	writeDependencyLockFile(t, filepath.Join(td, dependencyLockFilename), map[string]string{"test": "1.0.0"})
+	runbookDir := filepath.Join(td, "runbooks", "deploy")
+	if err := os.MkdirAll(runbookDir, 0o755); err != nil {
+		t.Fatalf("mkdir runbook dir: %s", err)
+	}
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "discover" {
+  output "result" {
+    value = workspace.test_resource.selected.id
+  }
+}
+`)
+	t.Chdir(runbookDir)
+	providerSource, close := newMockProviderSource(t, map[string][]string{"test": {"1.0.0", "2.0.0"}})
+	defer close()
+	view, done := testView(t)
+	initCmd := NewRunbookInitCommand(Meta{View: view, ProviderSource: providerSource})
+	if code := initCmd.Run([]string{"-no-color"}); code != 0 {
+		output := done(t)
+		t.Fatalf("unexpected init exit code %d: %s", code, output.All())
+	}
+	done(t)
+
+	writeDependencyLockFile(t, filepath.Join(td, dependencyLockFilename), map[string]string{"test": "2.0.0"})
+
+	view, done = testView(t)
+	planCmd := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view}}}
+	code := planCmd.Run([]string{"-no-color"})
+	output := done(t)
+	if code != 1 {
+		t.Fatalf("expected failure exit code, got %d: %s", code, output.All())
+	}
+	if !strings.Contains(output.Stderr(), "Runbook dependencies are out of date") {
+		t.Fatalf("expected stale dependency diagnostic, got: %s", output.All())
+	}
+}
+
+func writeDependencyLockFile(t *testing.T, path string, versions map[string]string) {
+	t.Helper()
+	locks := depsfile.NewLocks()
+	for name, version := range versions {
+		locks.SetProvider(
+			addrs.NewDefaultProvider(name),
+			providerreqs.MustParseVersion(version),
+			providerreqs.MustParseVersionConstraints("="+version),
+			nil,
+		)
+	}
+	if diags := depsfile.SaveLocksToFile(locks, path); diags.HasErrors() {
+		t.Fatalf("write lock file %s: %s", path, diags.Err())
 	}
 }
 
