@@ -1,6 +1,7 @@
 package command
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,12 +9,20 @@ import (
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/backend/backendrun"
 	"github.com/hashicorp/terraform/internal/command/arguments"
+	"github.com/hashicorp/terraform/internal/command/workdir"
 	"github.com/hashicorp/terraform/internal/configs"
+	"github.com/hashicorp/terraform/internal/depsfile"
+	"github.com/hashicorp/terraform/internal/getproviders/providerreqs"
 	"github.com/hashicorp/terraform/internal/providers"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
+)
+
+const (
+	runbookDependencyLockFilename = ".tfrun.lock.hcl"
+	runbookDataDirName            = ".tfrun"
 )
 
 type runbookCommandBase struct {
@@ -56,7 +65,7 @@ func (c *runbookCommandBase) loadRunbook(rawArgs []string, vars *arguments.Vars)
 		return nil, diags
 	}
 
-	providerFactories, err := c.ProviderFactories()
+	providerFactories, err := c.runbookProviderFactories(runbookDir)
 	if err != nil {
 		return nil, diags.Append(err)
 	}
@@ -108,6 +117,87 @@ func runbookConfigSources(runbookDir string) map[string][]byte {
 		ret[path] = src
 	}
 	return ret
+}
+
+func runbookDependencyLockPath(runbookDir string) string {
+	return filepath.Join(runbookDir, runbookDependencyLockFilename)
+}
+
+func runbookDataDirPath(runbookDir string) string {
+	return filepath.Join(runbookDir, runbookDataDirName)
+}
+
+func (c *runbookCommandBase) runbookMeta(runbookDir string) Meta {
+	meta := c.Meta
+	wd := workdir.NewDir(runbookDir)
+	if c.WorkingDir != nil {
+		wd.OverrideOriginalWorkingDir(c.WorkingDir.OriginalWorkingDir())
+	}
+	wd.OverrideDataDir(runbookDataDirPath(runbookDir))
+	meta.WorkingDir = wd
+	return meta
+}
+
+func (c *runbookCommandBase) runbookLockedDependencies(runbookDir string) (*depsfile.Locks, tfdiags.Diagnostics) {
+	path := runbookDependencyLockPath(runbookDir)
+	_, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return c.annotateDependencyLocksWithOverrides(depsfile.NewLocks()), nil
+	}
+	if err != nil {
+		return nil, tfdiags.Diagnostics{}.Append(err)
+	}
+
+	ret, diags := depsfile.LoadLocksFromFile(path)
+	return c.annotateDependencyLocksWithOverrides(ret), diags
+}
+
+func (c *runbookCommandBase) runbookProviderFactories(runbookDir string) (map[terraformaddrs.Provider]providers.Factory, error) {
+	locks, diags := c.runbookLockedDependencies(runbookDir)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("failed to read runbook dependency lock file: %s", diags.Err())
+	}
+	meta := c.runbookMeta(runbookDir)
+	return meta.ProviderFactoriesFromLocks(locks)
+}
+
+func (c *runbookCommandBase) replaceRunbookLockedDependencies(runbookDir string, new *depsfile.Locks) tfdiags.Diagnostics {
+	return depsfile.SaveLocksToFile(new, runbookDependencyLockPath(runbookDir))
+}
+
+func runbookProviderRequirements(config *runbookconfigs.RunbookConfig) (providerreqs.Requirements, tfdiags.Diagnostics) {
+	reqs := make(providerreqs.Requirements)
+	if config == nil || config.ProviderRequirements == nil {
+		return reqs, nil
+	}
+
+	var diags tfdiags.Diagnostics
+	for _, providerReq := range config.ProviderRequirements.RequiredProviders {
+		if providerReq == nil {
+			continue
+		}
+		constraintStr := providerReq.Requirement.Required.String()
+		if constraintStr == "" {
+			diags = diags.Append(tfdiags.Sourceless(
+				tfdiags.Error,
+				"Missing provider version constraint",
+				fmt.Sprintf("Runbook provider %s must declare a version constraint in required_providers.", providerReq.Type.ForDisplay()),
+			))
+			continue
+		}
+		constraints, err := providerreqs.ParseVersionConstraints(constraintStr)
+		if err != nil {
+			diags = diags.Append(tfdiags.Sourceless(
+				tfdiags.Error,
+				"Invalid provider version constraint",
+				fmt.Sprintf("Runbook provider %s declares invalid version constraints %q: %s", providerReq.Type.ForDisplay(), constraintStr, err),
+			))
+			continue
+		}
+		reqs[providerReq.Type] = append(reqs[providerReq.Type], constraints...)
+	}
+
+	return reqs, diags
 }
 
 func (c *runbookCommandBase) discoverRunbookPaths(pwd string) (string, string, tfdiags.Diagnostics) {

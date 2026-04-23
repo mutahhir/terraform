@@ -18,9 +18,10 @@ func (c *RunbookCommand) Help() string {
 	return strings.TrimSpace(`
 Usage: terraform [global options] runbook <subcommand> [options]
 
-  Commands for planning and executing Terraform runbooks.
+  Commands for initializing, planning, and executing Terraform runbooks.
 
   Subcommands:
+    init      Prepare a runbook working directory
     plan      Build a speculative runbook plan
     execute   Execute the planned runbook steps
 `)

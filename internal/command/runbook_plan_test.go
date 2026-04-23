@@ -3,9 +3,11 @@ package command
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/providers"
 	testing_provider "github.com/hashicorp/terraform/internal/providers/testing"
@@ -521,6 +523,36 @@ func runbookPlanFixtureProvider() *testing_provider.MockProvider {
 		},
 	}
 	return provider
+}
+
+func TestRunbookProviderFactoriesIgnoreTerraformLockFile(t *testing.T) {
+	td := t.TempDir()
+	writeFile(t, td+"/main.tfrun.hcl", `runbook { terraform_version = ">= 1.0.0" }`)
+	writeFile(t, td+"/.terraform.lock.hcl", `this is not a valid lock file`)
+
+	view, _ := testView(t)
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(runbookPlanFixtureProvider())}}}
+
+	factories, err := c.runbookProviderFactories(td)
+	if err != nil {
+		t.Fatalf("expected runbook-specific lock loading to ignore .terraform.lock.hcl: %s", err)
+	}
+	if _, ok := factories[addrs.NewDefaultProvider("test")]; !ok {
+		t.Fatal("expected testing override provider factory to be available")
+	}
+}
+
+func TestRunbookMetaUsesTfrunDataDir(t *testing.T) {
+	td := t.TempDir()
+	view, _ := testView(t)
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view}}}
+
+	meta := c.runbookMeta(td)
+	got := filepath.ToSlash(meta.providerLocalCacheDir().BasePath())
+	want := filepath.ToSlash(filepath.Join(td, runbookDataDirName, "providers"))
+	if got != want {
+		t.Fatalf("wrong runbook provider cache dir %q, want %q", got, want)
+	}
 }
 
 func writeFile(t *testing.T, path, src string) {

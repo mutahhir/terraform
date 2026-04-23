@@ -292,6 +292,10 @@ func initCommands(
 			return &command.RunbookCommand{Meta: meta}, nil
 		},
 
+		"runbook init": func() (cli.Command, error) {
+			return command.NewRunbookInitCommand(meta), nil
+		},
+
 		"runbook plan": func() (cli.Command, error) {
 			return command.NewRunbookPlanCommand(meta), nil
 		},
