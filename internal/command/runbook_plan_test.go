@@ -555,6 +555,33 @@ func TestRunbookMetaUsesTfrunDataDir(t *testing.T) {
 	}
 }
 
+func TestRunbookPlanCommandFailsForUndeclaredRunbookProvider(t *testing.T) {
+	td := t.TempDir()
+	writeFile(t, td+"/main.tf", ``)
+	writeFile(t, td+"/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "discover" {
+  data "test_data" "selected" {}
+}
+`)
+	t.Chdir(td)
+
+	view, done := testView(t)
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view}}}
+
+	code := c.Run([]string{"-no-color"})
+	output := done(t)
+	if code != 1 {
+		t.Fatalf("expected failure exit code, got %d: %s", code, output.All())
+	}
+	if !strings.Contains(output.Stderr(), "Undeclared runbook provider") {
+		t.Fatalf("expected undeclared provider diagnostic, got: %s", output.All())
+	}
+}
+
 func writeFile(t *testing.T, path, src string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {

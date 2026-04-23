@@ -6,9 +6,11 @@ import (
 
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/command/views"
+	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/depsfile"
 	"github.com/hashicorp/terraform/internal/providercache"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type RunbookInitCommand struct {
@@ -49,9 +51,20 @@ func (c *RunbookInitCommand) Run(rawArgs []string) int {
 		return runbookConfigSources(runbookDir)
 	})
 
+	if runbookDir == workspaceDir && configs.NewParser(nil).IsConfigDir(runbookDir) {
+		diags = diags.Append(tfdiags.Sourceless(
+			tfdiags.Error,
+			"Runbook directory must not be the workspace root",
+			"Runbook initialization requires a dedicated subdirectory. Move the .tfrun.hcl files into a runbook directory such as runbooks/<name>/ and run this command there.",
+		))
+		view.Diagnostics(diags)
+		return 1
+	}
+
 	parser := runbookconfigs.NewRunbookParser(nil)
 	config, parseDiags := parser.LoadRunbookConfigDir(runbookDir, workspaceDir)
 	diags = diags.Append(parseDiags)
+	diags = diags.Append(validateDeclaredRunbookProviderUsage(config))
 	if diags.HasErrors() {
 		view.Diagnostics(diags)
 		return 1
@@ -62,6 +75,12 @@ func (c *RunbookInitCommand) Run(rawArgs []string) int {
 	if diags.HasErrors() {
 		view.Diagnostics(diags)
 		return 1
+	}
+	workspaceReqs := runbookWorkspaceProviderRequirements(config)
+	for provider, constraints := range workspaceReqs {
+		if _, exists := reqs[provider]; !exists {
+			reqs[provider] = constraints
+		}
 	}
 
 	if err := os.MkdirAll(runbookDataDirPath(runbookDir), 0o755); err != nil {
@@ -80,6 +99,13 @@ func (c *RunbookInitCommand) Run(rawArgs []string) int {
 		view.Diagnostics(diags)
 		return 1
 	}
+	workspaceLocks, workspaceLockDiags := workspaceLockedDependencies(workspaceDir)
+	diags = diags.Append(workspaceLockDiags)
+	if diags.HasErrors() {
+		view.Diagnostics(diags)
+		return 1
+	}
+	startingLocks := c.mergeLockedDependencies(previousLocks, workspaceLocks)
 
 	mode := providercache.InstallNewProvidersOnly
 	if args.Upgrade {
@@ -87,7 +113,7 @@ func (c *RunbookInitCommand) Run(rawArgs []string) int {
 	}
 
 	view.Log("Initializing runbook providers...")
-	newLocks, err := inst.EnsureProviderVersions(ctx, previousLocks, reqs, mode)
+	newLocks, err := inst.EnsureProviderVersions(ctx, startingLocks, reqs, mode)
 	if err != nil {
 		view.Diagnostics(diags.Append(err))
 		return 1
