@@ -254,7 +254,7 @@ func hasDeferredBodyReferenceTraversal(traversal hcl.Traversal) bool {
 		return false
 	}
 	switch root.Name {
-	case "each", "count", "local", "data", "list", "step", "steps", "action", "workspace":
+	case "each", "count", "local", "data", "list", "step", "action", "workspace":
 		return true
 	default:
 		return false

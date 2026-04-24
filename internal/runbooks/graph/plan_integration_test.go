@@ -39,11 +39,7 @@ step "deploy" {
 }
 `)
 
-	parser := runbookconfigs.NewRunbookParser(fs)
-	config, parseDiags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
-	if parseDiags.HasErrors() {
-		t.Fatalf("unexpected parse diagnostics: %s", parseDiags.Error())
-	}
+	config := loadIntegrationRunbookConfig(t, fs)
 
 	_, buildDiags := BuildPlan(config, &PlannerOpts{})
 	if !buildDiags.HasErrors() {
@@ -73,14 +69,7 @@ output "summary" {
 step "deploy" {}
 `)
 
-	parser := runbookconfigs.NewRunbookParser(fs)
-	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
-	if diags.HasErrors() {
-		t.Fatalf("unexpected diagnostics: %s", diags.Error())
-	}
-	if config == nil {
-		t.Fatal("expected config but got nil")
-	}
+	config := loadIntegrationRunbookConfig(t, fs)
 
 	graph, buildDiags := (&PlanBuilder{Config: config}).Build()
 	if buildDiags.HasErrors() {
@@ -200,14 +189,7 @@ output "summary" {
 }
 `)
 
-	parser := runbookconfigs.NewRunbookParser(fs)
-	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
-	if diags.HasErrors() {
-		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
-	}
-	if config == nil {
-		t.Fatal("expected config but got nil")
-	}
+	config := loadIntegrationRunbookConfig(t, fs)
 
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -338,14 +320,7 @@ step "discover" {
 }
 `)
 
-	parser := runbookconfigs.NewRunbookParser(fs)
-	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
-	if diags.HasErrors() {
-		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
-	}
-	if config == nil {
-		t.Fatal("expected config but got nil")
-	}
+	config := loadIntegrationRunbookConfig(t, fs)
 
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -456,11 +431,7 @@ step "deploy" {
 }
 `)
 
-	parser := runbookconfigs.NewRunbookParser(fs)
-	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
-	if diags.HasErrors() {
-		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
-	}
+	config := loadIntegrationRunbookConfig(t, fs)
 
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -572,11 +543,7 @@ step "consumer" {
 }
 `)
 
-	parser := runbookconfigs.NewRunbookParser(fs)
-	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
-	if diags.HasErrors() {
-		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
-	}
+	config := loadIntegrationRunbookConfig(t, fs)
 
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -660,11 +627,7 @@ step "inspect" {
 }
 `)
 
-	parser := runbookconfigs.NewRunbookParser(fs)
-	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
-	if diags.HasErrors() {
-		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
-	}
+	config := loadIntegrationRunbookConfig(t, fs)
 
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -737,11 +700,7 @@ step "inspect" {
 }
 `)
 
-	parser := runbookconfigs.NewRunbookParser(fs)
-	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
-	if diags.HasErrors() {
-		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
-	}
+	config := loadIntegrationRunbookConfig(t, fs)
 
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -805,11 +764,7 @@ step "inspect" {
 }
 `)
 
-	parser := runbookconfigs.NewRunbookParser(fs)
-	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
-	if diags.HasErrors() {
-		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
-	}
+	config := loadIntegrationRunbookConfig(t, fs)
 
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{

@@ -36,22 +36,8 @@ func TestParseRefStepOutput(t *testing.T) {
 	}
 }
 
-func TestParseRefStepsOutput(t *testing.T) {
-	ref, diags := ParseRef(mustParseTraversal(t, `steps.deploy.result`))
-	if diags.HasErrors() {
-		t.Fatalf("unexpected diagnostics: %s", diags.Err())
-	}
-	output, ok := ref.Subject.(StepOutput)
-	if !ok {
-		t.Fatalf("expected StepOutput, got %T", ref.Subject)
-	}
-	if output.Step.StepName != "deploy" || output.OutputName != "result" {
-		t.Fatalf("unexpected step output address: %s", output.String())
-	}
-}
-
 func TestParseRefWholeStep(t *testing.T) {
-	ref, diags := ParseRef(mustParseTraversal(t, `steps.deploy`))
+	ref, diags := ParseRef(mustParseTraversal(t, `step.deploy`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
@@ -61,6 +47,13 @@ func TestParseRefWholeStep(t *testing.T) {
 	}
 	if step.Step.StepName != "deploy" {
 		t.Fatalf("unexpected step name: %s", step.String())
+	}
+}
+
+func TestParseRefRejectsPluralStepsRoot(t *testing.T) {
+	_, diags := ParseRef(mustParseTraversal(t, `steps.deploy.result`))
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
 	}
 }
 

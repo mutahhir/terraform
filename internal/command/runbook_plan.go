@@ -6,6 +6,8 @@ import (
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/command/views"
 	runbookgraph "github.com/hashicorp/terraform/internal/runbooks/graph"
+	runbookplanfile "github.com/hashicorp/terraform/internal/runbooks/runbookplanfile"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type RunbookPlanCommand struct {
@@ -58,6 +60,22 @@ func (c *RunbookPlanCommand) Run(rawArgs []string) int {
 	}
 
 	view.Plan(plan)
+	if args.OutPath != "" {
+		saved, err := runbookgraph.ExportSavedPlan(plan, runbookConfigSources(loaded.RunbookDir), inputValues)
+		if err != nil {
+			view.Diagnostics(tfdiags.Diagnostics{}.Append(err))
+			return 1
+		}
+		saved.RunbookLockFile = readOptionalFile(runbookDependencyLockPath(loaded.RunbookDir))
+		saved.TerraformLockFile = readOptionalFile(workspaceDependencyLockPath(loaded.WorkspaceDir))
+		if err := runbookplanfile.Write(args.OutPath, saved); err != nil {
+			view.Diagnostics(tfdiags.Diagnostics{}.Append(err))
+			return 1
+		}
+		if args.ViewType != arguments.ViewJSON && c.Ui != nil {
+			c.Ui.Output("Saved the runbook plan to: " + args.OutPath + "\n")
+		}
+	}
 	return 0
 }
 
@@ -65,11 +83,12 @@ func (c *RunbookPlanCommand) Help() string {
 	return strings.TrimSpace(`
 Usage: terraform [global options] runbook plan [options]
 
-  Builds a speculative plan for the runbook in the current runbook directory.
+  Builds a plan for the runbook in the current runbook directory.
 
 Options:
 
   -json             Emit machine-readable JSON output.
+  -out=FILE         Save the generated runbook plan to the given file.
   -var 'foo=bar'    Set a value for one of the runbook input variables.
   -var-file=FILE    Load variable values from the given file.
   -no-color         Disable color in output.

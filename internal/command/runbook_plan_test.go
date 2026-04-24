@@ -506,6 +506,27 @@ func TestRunbookPlanDiscoverRunbookPaths_NestedRunbookUsesNearestWorkspaceRoot(t
 	}
 }
 
+func TestRunbookPlanDiscoverRunbookPaths_AllowsNestedRunbookConfigFiles(t *testing.T) {
+	td := t.TempDir()
+	writeFile(t, td+"/main.tf", ``)
+	if err := os.MkdirAll(td+"/runbooks/deploy/steps", 0o755); err != nil {
+		t.Fatalf("mkdir runbook dir: %s", err)
+	}
+	writeFile(t, td+"/runbooks/deploy/steps/deploy.tfrun.hcl", `step "discover" {}`)
+
+	c := &RunbookPlanCommand{}
+	runbookDir, workspaceDir, diags := c.discoverRunbookPaths(td + "/runbooks/deploy")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if runbookDir != td+"/runbooks/deploy" {
+		t.Fatalf("wrong runbook dir %q", runbookDir)
+	}
+	if workspaceDir != td {
+		t.Fatalf("wrong workspace dir %q", workspaceDir)
+	}
+}
+
 func runbookPlanFixtureProvider() *testing_provider.MockProvider {
 	provider := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{

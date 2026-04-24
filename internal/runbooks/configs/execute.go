@@ -17,6 +17,15 @@ func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 
 	content, moreDiags := block.Body.Content(executeSchema)
 	diags = append(diags, moreDiags...)
+	if len(content.Blocks) == 0 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Empty execute block",
+			Detail:   "An execute block must contain at least one invoke_action block.",
+			Subject:  block.DefRange.Ptr(),
+		})
+		return nil, diags
+	}
 
 	for _, innerBlock := range content.Blocks {
 		switch innerBlock.Type {

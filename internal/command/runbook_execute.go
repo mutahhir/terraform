@@ -3,9 +3,12 @@ package command
 import (
 	"strings"
 
+	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/command/views"
+	"github.com/hashicorp/terraform/internal/providers"
 	runbookgraph "github.com/hashicorp/terraform/internal/runbooks/graph"
+	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
@@ -34,36 +37,56 @@ func (c *RunbookExecuteCommand) Run(rawArgs []string) int {
 		return 1
 	}
 
-	loaded, loadDiags := c.loadRunbook(rawArgs, args.Vars)
-	diags = diags.Append(loadDiags)
-	if diags.HasErrors() {
-		view.Diagnostics(diags)
-		return 1
-	}
+	var plan *runbookgraph.Plan
+	var inputValues terraform.InputValues
+	var providerFactories map[terraformaddrs.Provider]providers.Factory
+	var workspaceState *states.State
+	if args.PlanPath != "" {
+		saved, config, factories, loadDiags := c.loadSavedRunbookPlan(args.PlanPath)
+		diags = diags.Append(loadDiags)
+		if diags.HasErrors() {
+			view.Diagnostics(diags)
+			return 1
+		}
+		providerFactories = factories
+		plan, diags = runbookgraph.ImportSavedPlan(config, saved, factories)
+		if diags.HasErrors() {
+			view.Diagnostics(diags)
+			return 1
+		}
+	} else {
+		loaded, loadDiags := c.loadRunbook(rawArgs, args.Vars)
+		diags = diags.Append(loadDiags)
+		if diags.HasErrors() {
+			view.Diagnostics(diags)
+			return 1
+		}
 
-	inputValues, valueDiags := c.collectRunbookVariableValues(loaded.Config, args.Vars)
-	diags = diags.Append(valueDiags)
-	if diags.HasErrors() {
-		view.Diagnostics(diags)
-		return 1
-	}
-
-	plan, planDiags := runbookgraph.BuildPlan(loaded.Config, &runbookgraph.PlannerOpts{
-		InputValues:    inputValues,
-		Providers:      loaded.ProviderFactories,
-		WorkspaceState: loaded.WorkspaceState,
-		UI:             planView.UI(),
-		Hooks:          planView.Hooks(),
-	})
-	diags = diags.Append(planDiags)
-	if diags.HasErrors() {
-		view.Diagnostics(diags)
-		return 1
+		var valueDiags tfdiags.Diagnostics
+		inputValues, valueDiags = c.collectRunbookVariableValues(loaded.Config, args.Vars)
+		diags = diags.Append(valueDiags)
+		if diags.HasErrors() {
+			view.Diagnostics(diags)
+			return 1
+		}
+		providerFactories = loaded.ProviderFactories
+		workspaceState = loaded.WorkspaceState
+		plan, diags = runbookgraph.BuildPlan(loaded.Config, &runbookgraph.PlannerOpts{
+			InputValues:    inputValues,
+			Providers:      loaded.ProviderFactories,
+			WorkspaceState: loaded.WorkspaceState,
+			UI:             planView.UI(),
+			Hooks:          planView.Hooks(),
+		})
+		if diags.HasErrors() {
+			view.Diagnostics(diags)
+			return 1
+		}
 	}
 	view.Prepare(plan)
 	planView.Plan(plan)
 
-	if !args.AutoApprove && args.ViewType != arguments.ViewJSON {
+	if args.PlanPath == "" && !args.AutoApprove && args.ViewType != arguments.ViewJSON {
 		c.Ui.Output("Runbook actions will be executed. Only 'yes' will be accepted to continue.\n")
 		confirmed, err := c.confirm(&terraform.InputOpts{Id: "runbook-execute-approve", Query: "Do you want to perform these runbook steps?"})
 		if err != nil {
@@ -78,8 +101,8 @@ func (c *RunbookExecuteCommand) Run(rawArgs []string) int {
 
 	execDiags := runbookgraph.ExecutePlan(plan, &runbookgraph.ExecuteOpts{
 		InputValues:    inputValues,
-		Providers:      loaded.ProviderFactories,
-		WorkspaceState: loaded.WorkspaceState,
+		Providers:      providerFactories,
+		WorkspaceState: workspaceState,
 		UI:             view.UI(),
 		Hooks:          view.Hooks(),
 	})
@@ -93,9 +116,10 @@ func (c *RunbookExecuteCommand) Run(rawArgs []string) int {
 
 func (c *RunbookExecuteCommand) Help() string {
 	return strings.TrimSpace(`
-Usage: terraform [global options] runbook execute [options]
+Usage: terraform [global options] runbook execute [options] [PLANFILE]
 
-  Executes the runbook in the current runbook directory.
+  Executes the runbook in the current runbook directory, or from a saved
+  runbook plan file.
 
 Options:
 

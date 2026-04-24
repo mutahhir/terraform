@@ -22,9 +22,9 @@ type RunbookFile struct {
 type RunbookConfig struct {
 	WorkspaceSourceDir string
 	WorkspaceConfig    *configs.Config
-	// We can have multiple runbook directories within a single root module
-	// The boundary for runbooks is all tfrun.hcl files within the same
-	// directory constitute the same runbook
+	// We can have multiple runbook directories within a single root module.
+	// The boundary for a runbook is all .tfrun.hcl files within the same
+	// directory tree rooted at RunbookSourceDir.
 	RunbookSourceDir string
 
 	Steps map[string]*Step

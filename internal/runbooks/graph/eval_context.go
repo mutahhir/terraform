@@ -39,6 +39,7 @@ type EvalContext struct {
 	emitLock          sync.Mutex
 	workspaceReadLock sync.Mutex
 	workspaceReads    map[string]struct{}
+	planInfo          []StepPlanInfo
 
 	variables     terraform.InputValues
 	variablesLock sync.RWMutex
@@ -67,6 +68,7 @@ func NewEvalContext(opts EvalContextOpts) *EvalContext {
 		emitLock:          sync.Mutex{},
 		workspaceReadLock: sync.Mutex{},
 		workspaceReads:    map[string]struct{}{},
+		planInfo:          make([]StepPlanInfo, 0),
 		variables:         make(terraform.InputValues),
 		variablesLock:     sync.RWMutex{},
 		providers:         make(map[addrs.Provider]providers.Interface),
@@ -176,12 +178,21 @@ func (ec *EvalContext) EmitActionEvent(event ActionExecEvent) {
 func (ec *EvalContext) EmitStepPlanInfo(info StepPlanInfo) {
 	ec.emitLock.Lock()
 	defer ec.emitLock.Unlock()
+	ec.planInfo = append(ec.planInfo, info)
 	if ec.ui != nil {
 		ec.ui.PlannedStepInfo(info)
 	}
 	for _, hook := range ec.hooks {
 		hook.PlannedStepInfo(info)
 	}
+}
+
+func (ec *EvalContext) PlanInfo() []StepPlanInfo {
+	ec.emitLock.Lock()
+	defer ec.emitLock.Unlock()
+	ret := make([]StepPlanInfo, len(ec.planInfo))
+	copy(ret, ec.planInfo)
+	return ret
 }
 
 type stepEvalState struct {
@@ -748,7 +759,6 @@ func (ec *EvalContext) expressionVariablesForInstance(stepName string, instanceK
 	}
 	stepVals := cty.ObjectVal(stepAttrs)
 	variables["step"] = stepVals
-	variables["steps"] = stepVals
 	variables["workspace"] = ec.workspaceVariables()
 
 	return variables

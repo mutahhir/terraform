@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/terraform/internal/providers"
 	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
+	runbookplanfile "github.com/hashicorp/terraform/internal/runbooks/runbookplanfile"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -79,7 +80,7 @@ func (c *runbookCommandBase) loadRunbook(rawArgs []string, vars *arguments.Vars)
 	})
 
 	parser := runbookconfigs.NewRunbookParser(nil)
-	config, parseDiags := parser.LoadRunbookConfigDir(runbookDir, workspaceDir)
+	config, parseDiags := loadRunbookConfigWithWorkspace(parser, runbookDir, workspaceDir)
 	diags = diags.Append(parseDiags)
 	diags = diags.Append(validateDeclaredRunbookProviderUsage(config))
 	if diags.HasErrors() {
@@ -114,17 +115,90 @@ func (c *runbookCommandBase) loadRunbook(rawArgs []string, vars *arguments.Vars)
 	}, diags
 }
 
+func loadRunbookConfigWithWorkspace(parser *runbookconfigs.RunbookParser, runbookDir, workspaceDir string) (*runbookconfigs.RunbookConfig, hcl.Diagnostics) {
+	config, diags := parser.LoadRunbookConfigDir(runbookDir)
+	if config == nil {
+		return nil, diags
+	}
+
+	workspaceConfig, workspaceDiags := parser.LoadWorkspaceReferencesConfig(workspaceDir)
+	diags = append(diags, workspaceDiags...)
+	config.WorkspaceConfig = workspaceConfig
+	config.WorkspaceSourceDir = workspaceDir
+	return config, diags
+}
+
+func (c *runbookCommandBase) loadSavedRunbookPlan(path string) (*runbookplanfile.Plan, *runbookconfigs.RunbookConfig, map[terraformaddrs.Provider]providers.Factory, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	var err error
+	if c.pluginPath == nil {
+		if c.pluginPath, err = c.loadPluginPath(); err != nil {
+			return nil, nil, nil, diags.Append(err)
+		}
+	}
+	saved, err := runbookplanfile.Read(path)
+	if err != nil {
+		return nil, nil, nil, diags.Append(err)
+	}
+	c.View.SetConfigSources(func() map[string][]byte {
+		return copyConfigSources(saved.Sources)
+	})
+	parser := runbookconfigs.NewRunbookParser(nil)
+	config, parseDiags := parser.LoadRunbookConfigSources(saved.RunbookSourceDir, saved.Sources)
+	diags = diags.Append(parseDiags)
+	diags = diags.Append(validateDeclaredRunbookProviderUsage(config))
+	if diags.HasErrors() {
+		return nil, nil, nil, diags
+	}
+	var providerFactories map[terraformaddrs.Provider]providers.Factory
+	if len(saved.RunbookLockFile) != 0 {
+		locks, lockDiags := depsfile.LoadLocksFromBytes(saved.RunbookLockFile, runbookDependencyLockFilename)
+		diags = diags.Append(lockDiags)
+		if diags.HasErrors() {
+			return nil, nil, nil, diags
+		}
+		locks = c.annotateDependencyLocksWithOverrides(locks)
+		meta := c.runbookMeta(saved.RunbookSourceDir)
+		providerFactories, err = meta.ProviderFactoriesFromLocks(locks)
+	} else {
+		providerFactories, err = c.runbookProviderFactories(saved.RunbookSourceDir)
+	}
+	if err != nil {
+		return nil, nil, nil, diags.Append(err)
+	}
+	return saved, config, providerFactories, diags
+}
+
+func copyConfigSources(in map[string][]byte) map[string][]byte {
+	ret := make(map[string][]byte, len(in))
+	for k, v := range in {
+		copyV := make([]byte, len(v))
+		copy(copyV, v)
+		ret[k] = copyV
+	}
+	return ret
+}
+
+func readOptionalFile(path string) []byte {
+	if path == "" {
+		return nil
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	copySrc := make([]byte, len(src))
+	copy(copySrc, src)
+	return copySrc
+}
+
 func runbookConfigSources(runbookDir string) map[string][]byte {
 	ret := map[string][]byte{}
-	entries, err := os.ReadDir(runbookDir)
+	paths, err := runbookConfigFilePaths(runbookDir)
 	if err != nil {
 		return ret
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".tfrun.hcl") {
-			continue
-		}
-		path := filepath.Join(runbookDir, entry.Name())
+	for _, path := range paths {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -132,6 +206,36 @@ func runbookConfigSources(runbookDir string) map[string][]byte {
 		ret[path] = src
 	}
 	return ret
+}
+
+func runbookConfigFilePaths(runbookDir string) ([]string, error) {
+	var paths []string
+	if err := filepath.Walk(runbookDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == runbookDir {
+			return nil
+		}
+
+		name := info.Name()
+		if strings.HasPrefix(name, ".") {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() || !strings.HasSuffix(name, ".tfrun.hcl") {
+			return nil
+		}
+
+		paths = append(paths, path)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 type runbookDeclaredProviderMetadata struct {
@@ -809,22 +913,12 @@ func workspaceActionConfigWithModule(config *runbookconfigs.RunbookConfig, addr 
 
 func (c *runbookCommandBase) discoverRunbookPaths(pwd string) (string, string, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
-	entries, err := os.ReadDir(pwd)
+	paths, err := runbookConfigFilePaths(pwd)
 	if err != nil {
 		return "", "", diags.Append(err)
 	}
-	hasRunbook := false
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if strings.HasSuffix(entry.Name(), ".tfrun.hcl") {
-			hasRunbook = true
-			break
-		}
-	}
-	if !hasRunbook {
-		return "", "", diags.Append(tfdiags.Sourceless(tfdiags.Error, "No runbook configuration files", "Runbook command requires at least one .tfrun.hcl file in the current runbook directory."))
+	if len(paths) == 0 {
+		return "", "", diags.Append(tfdiags.Sourceless(tfdiags.Error, "No runbook configuration files", "Runbook command requires at least one .tfrun.hcl file in the current runbook directory or its subdirectories."))
 	}
 
 	workspaceDir := discoverRunbookWorkspaceDir(pwd)

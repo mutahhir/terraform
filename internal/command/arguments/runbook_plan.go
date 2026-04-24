@@ -5,6 +5,7 @@ import "github.com/hashicorp/terraform/internal/tfdiags"
 type RunbookPlan struct {
 	Vars     *Vars
 	ViewType ViewType
+	OutPath  string
 }
 
 func ParseRunbookPlan(args []string) (*RunbookPlan, tfdiags.Diagnostics) {
@@ -21,6 +22,7 @@ func ParseRunbookPlan(args []string) (*RunbookPlan, tfdiags.Diagnostics) {
 
 	var json bool
 	cmdFlags.BoolVar(&json, "json", false, "json")
+	cmdFlags.StringVar(&runbook.OutPath, "out", "", "out")
 
 	if err := cmdFlags.Parse(args); err != nil {
 		diags = diags.Append(tfdiags.Sourceless(

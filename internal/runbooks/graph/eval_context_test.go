@@ -106,11 +106,11 @@ func TestEvalContextEvaluateExprSupportsFunctions(t *testing.T) {
 	}
 }
 
-func TestEvalContextExpressionVariablesExposePluralStepsAlias(t *testing.T) {
+func TestEvalContextExpressionVariablesExposeStepValues(t *testing.T) {
 	ctx := NewEvalContext(EvalContextOpts{})
 	ctx.SetStepOutput("discover", "result", cty.StringVal("srv-123"))
 
-	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `steps.discover.result`))
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `step.discover.result`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
@@ -126,7 +126,7 @@ func TestEvalContextExpressionVariablesExposeRepeatedStepsAsObjects(t *testing.T
 	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invoke_target", cty.StringVal("lambda-b"))
 	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invocation_output", cty.StringVal("ok-b"))
 
-	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `steps.smoke_invoke_lambda.primary.invocation_output`))
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `step.smoke_invoke_lambda.primary.invocation_output`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
@@ -134,7 +134,7 @@ func TestEvalContextExpressionVariablesExposeRepeatedStepsAsObjects(t *testing.T
 		t.Fatalf("wrong repeated step value %#v", value)
 	}
 
-	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `length(values(steps.smoke_invoke_lambda))`))
+	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `length(values(step.smoke_invoke_lambda))`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
@@ -150,7 +150,7 @@ func TestEvalContextExpressionVariablesExposeWholeRepeatedStepTraversal(t *testi
 	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invoke_target", cty.StringVal("lambda-b"))
 	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invocation_output", cty.StringVal("ok-b"))
 
-	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `one([for step in values(steps.smoke_invoke_lambda) : step.invocation_output if step.invoke_target == "lambda-a"])`))
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `one([for step in values(step.smoke_invoke_lambda) : step.invocation_output if step.invoke_target == "lambda-a"])`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}

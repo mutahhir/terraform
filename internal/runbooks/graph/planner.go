@@ -24,10 +24,11 @@ type PlannerOpts struct {
 type ExecuteOpts = PlannerOpts
 
 type Plan struct {
-	Config  *runbookconfigs.RunbookConfig
-	Graph   *terraform.Graph
-	Steps   []*runtime.Step
-	evalCtx *EvalContext
+	Config   *runbookconfigs.RunbookConfig
+	Graph    *terraform.Graph
+	Steps    []*runtime.Step
+	PlanInfo []StepPlanInfo
+	evalCtx  *EvalContext
 }
 
 func (p *Plan) StepsRuntime() map[string]*runtime.Step {
@@ -115,7 +116,7 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 		return nil, diags
 	}
 
-	return &Plan{Config: config, Graph: graph, Steps: evalCtx.StepsInOrder(), evalCtx: evalCtx}, diags
+	return &Plan{Config: config, Graph: graph, Steps: evalCtx.StepsInOrder(), PlanInfo: evalCtx.PlanInfo(), evalCtx: evalCtx}, diags
 }
 
 func ExecutePlan(plan *Plan, opts *ExecuteOpts) tfdiags.Diagnostics {

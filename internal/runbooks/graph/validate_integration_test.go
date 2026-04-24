@@ -37,7 +37,7 @@ provider "test" {
 step "deploy" {}
 `)
 
-	config := loadRunbookForValidationTest(t, fs)
+	config := loadIntegrationRunbookConfig(t, fs)
 	provider := mockRunbookProviderWithConfigSchema(&configschema.Block{
 		Attributes: map[string]*configschema.Attribute{
 			"region": {
@@ -81,7 +81,7 @@ provider "test" {
 step "deploy" {}
 `)
 
-	config := loadRunbookForValidationTest(t, fs)
+	config := loadIntegrationRunbookConfig(t, fs)
 	provider := mockRunbookProviderWithConfigSchema(&configschema.Block{
 		Attributes: map[string]*configschema.Attribute{
 			"region": {
@@ -104,17 +104,24 @@ step "deploy" {}
 	}
 }
 
-func loadRunbookForValidationTest(t *testing.T, fs afero.Fs) *runbookconfigs.RunbookConfig {
+func loadIntegrationRunbookConfig(t *testing.T, fs afero.Fs) *runbookconfigs.RunbookConfig {
 	t.Helper()
 
 	parser := runbookconfigs.NewRunbookParser(fs)
-	config, diags := parser.LoadRunbookConfigDir("/runbook", "/workspace")
+	config, diags := parser.LoadRunbookConfigDir("/runbook")
 	if diags.HasErrors() {
 		t.Fatalf("unexpected parse diagnostics: %s", diags.Error())
 	}
 	if config == nil {
 		t.Fatal("expected config but got nil")
 	}
+
+	workspaceConfig, workspaceDiags := parser.LoadWorkspaceReferencesConfig("/workspace")
+	if workspaceDiags.HasErrors() {
+		t.Fatalf("unexpected workspace diagnostics: %s", workspaceDiags.Error())
+	}
+	config.WorkspaceConfig = workspaceConfig
+	config.WorkspaceSourceDir = "/workspace"
 
 	return config
 }

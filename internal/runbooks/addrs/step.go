@@ -5,5 +5,5 @@ type Step struct {
 }
 
 func (s Step) String() string {
-	return "steps." + s.Step.String()
+	return "step." + s.Step.String()
 }

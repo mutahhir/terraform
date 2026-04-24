@@ -44,13 +44,15 @@ func (c *RunbookInitCommand) Run(rawArgs []string) int {
 		view.Diagnostics(diags)
 		return 1
 	}
-	_ = workspaceDir
+
+	// Set up the view to read from the runbook config sources, so that
+	// any diagnostics emitted from parsing the runbook configs will have the appropriate context.
 	c.View.SetConfigSources(func() map[string][]byte {
 		return runbookConfigSources(runbookDir)
 	})
 
 	parser := runbookconfigs.NewRunbookParser(nil)
-	config, parseDiags := parser.LoadRunbookConfigDir(runbookDir, workspaceDir)
+	config, parseDiags := loadRunbookConfigWithWorkspace(parser, runbookDir, workspaceDir)
 	diags = diags.Append(parseDiags)
 	diags = diags.Append(validateDeclaredRunbookProviderUsage(config))
 	if diags.HasErrors() {

@@ -178,7 +178,35 @@ func (v *RunbookPlanJSON) Plan(plan *runbookgraph.Plan) {
 }
 
 func buildRunbookPlan(plan *runbookgraph.Plan, info []runbookPlanInfo) runbookPlan {
-	ret := runbookPlan{Info: append([]runbookPlanInfo(nil), info...)}
+	ret := runbookPlan{}
+	if len(info) != 0 {
+		ret.Info = append([]runbookPlanInfo(nil), info...)
+	} else if plan != nil && len(plan.PlanInfo) != 0 {
+		ret.Info = make([]runbookPlanInfo, 0, len(plan.PlanInfo))
+		for _, raw := range plan.PlanInfo {
+			entry := runbookPlanInfo{
+				StepName:  raw.StepName,
+				StepIndex: raw.StepIndex,
+				Type:      raw.Type,
+				Subject:   raw.Subject,
+				Status:    raw.Status,
+				valueVal:  raw.Value,
+			}
+			if raw.Value != cty.NilVal {
+				if encoded, err := json.Marshal(tfdiags.CompactValueStr(raw.Value)); err == nil {
+					entry.Value = encoded
+				}
+			}
+			if raw.Details != cty.NilVal {
+				details := pruneUnsetValue(raw.Details)
+				if encoded, err := ctyjson.Marshal(details, details.Type()); err == nil {
+					entry.Details = encoded
+					_ = json.Unmarshal(encoded, &entry.details)
+				}
+			}
+			ret.Info = append(ret.Info, entry)
+		}
+	}
 	if plan == nil {
 		return ret
 	}

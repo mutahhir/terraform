@@ -2,7 +2,9 @@ package runbookconfigs
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	version "github.com/hashicorp/go-version"
@@ -63,10 +65,49 @@ func (p *RunbookParser) loadRunbookConfigFile(path string) (*RunbookFile, hcl.Di
 	return p.parseRunbookConfigFile(body, diags)
 }
 
-func (p *RunbookParser) LoadRunbookConfigDir(path, rootModulePath string) (*RunbookConfig, hcl.Diagnostics) {
+func (p *RunbookParser) LoadRunbookConfigDir(path string) (*RunbookConfig, hcl.Diagnostics) {
+	files, diags := p.loadRunbookConfigFiles(path)
+
+	result, moreDiags := NewRunbook(files)
+	diags = append(diags, moreDiags...)
+	if result == nil {
+		return nil, diags
+	}
+
+	result.RunbookSourceDir = path
+	return result, diags
+}
+
+func (p *RunbookParser) loadRunbookConfigFiles(path string) ([]*RunbookFile, hcl.Diagnostics) {
+	var files []*RunbookFile
 	var diags hcl.Diagnostics
 
-	infos, err := p.fs.ReadDir(path)
+	err := afero.Walk(p.fs.Fs, path, func(currentPath string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if currentPath == path {
+			return nil
+		}
+
+		name := info.Name()
+		if strings.HasPrefix(name, ".") {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() || !strings.HasSuffix(name, ".tfrun.hcl") {
+			return nil
+		}
+
+		file, fileDiags := p.loadRunbookConfigFile(currentPath)
+		diags = append(diags, fileDiags...)
+		if file != nil {
+			files = append(files, file)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -75,49 +116,44 @@ func (p *RunbookParser) LoadRunbookConfigDir(path, rootModulePath string) (*Runb
 		}}
 	}
 
-	var files []*RunbookFile
-	for _, info := range infos {
-		if info.IsDir() {
-			continue
-		}
-		name := info.Name()
-		if !strings.HasSuffix(name, ".tfrun.hcl") || strings.HasPrefix(name, ".") {
-			continue
-		}
+	return files, diags
+}
 
-		file, fileDiags := p.loadRunbookConfigFile(filepath.Join(path, name))
-		diags = append(diags, fileDiags...)
-		if file != nil {
-			files = append(files, file)
+func (p *RunbookParser) LoadRunbookConfigSources(rootDir string, sources map[string][]byte) (*RunbookConfig, hcl.Diagnostics) {
+	fs := afero.NewMemMapFs()
+	paths := make([]string, 0, len(sources))
+	for path := range sources {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, hcl.Diagnostics{{Severity: hcl.DiagError, Summary: "Failed to reconstruct runbook sources", Detail: err.Error()}}
+		}
+		if err := afero.WriteFile(fs, path, sources[path], 0o644); err != nil {
+			return nil, hcl.Diagnostics{{Severity: hcl.DiagError, Summary: "Failed to reconstruct runbook sources", Detail: err.Error()}}
 		}
 	}
+	clone := NewRunbookParser(fs)
+	return clone.LoadRunbookConfigDir(rootDir)
+}
 
-	result, moreDiags := NewRunbook(files)
-	diags = append(diags, moreDiags...)
-	if result == nil {
+func (p *RunbookParser) LoadWorkspaceReferencesConfig(rootModulePath string) (*configs.Config, hcl.Diagnostics) {
+	workspaceParser := configs.NewParser(p.fs.Fs)
+	rootModule, diags := workspaceParser.LoadConfigDir(rootModulePath)
+	if rootModule == nil {
 		return nil, diags
 	}
 
-	// Load the terraform workspace so we can reference things like workspace.actions
-	workspaceParser := configs.NewParser(p.fs.Fs)
-	rootModule, workspaceDiags := workspaceParser.LoadConfigDir(rootModulePath)
-	diags = append(diags, workspaceDiags...)
-	if rootModule != nil {
-		workspaceCfg, buildDiags := configs.BuildConfig(rootModule, configs.ModuleWalkerFunc(
-			func(req *configs.ModuleRequest) (*configs.Module, *version.Version, hcl.Diagnostics) {
-				// For now, runbooks support only already-present local module sources
-				// relative to the root module directory.
-				sourcePath := filepath.Join(rootModulePath, req.SourceAddr.String())
-				mod, loadDiags := workspaceParser.LoadConfigDir(sourcePath)
-				return mod, nil, loadDiags
-			},
-		), nil)
-		diags = append(diags, buildDiags...)
-		result.WorkspaceConfig = workspaceCfg
-	}
-
-	result.RunbookSourceDir = path
-	result.WorkspaceSourceDir = rootModulePath
-
-	return result, diags
+	workspaceCfg, buildDiags := configs.BuildConfig(rootModule, configs.ModuleWalkerFunc(
+		func(req *configs.ModuleRequest) (*configs.Module, *version.Version, hcl.Diagnostics) {
+			// For now, runbooks support only already-present local module sources
+			// relative to the root module directory.
+			sourcePath := filepath.Join(rootModulePath, req.SourceAddr.String())
+			mod, loadDiags := workspaceParser.LoadConfigDir(sourcePath)
+			return mod, nil, loadDiags
+		},
+	), nil)
+	diags = append(diags, buildDiags...)
+	return workspaceCfg, diags
 }

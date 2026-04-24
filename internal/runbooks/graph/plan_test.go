@@ -352,7 +352,7 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutpu
 			},
 			"consumer": {
 				Name:   "consumer",
-				Locals: []*configs.Local{{Name: "copied", Expr: mustParseExpression(t, `steps.producer.result`)}},
+				Locals: []*configs.Local{{Name: "copied", Expr: mustParseExpression(t, `step.producer.result`)}},
 			},
 		},
 	})
@@ -367,7 +367,7 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutpu
 			},
 			"consumer": {
 				Name:   "consumer",
-				Locals: []*configs.Local{{Name: "copied", Expr: mustParseExpression(t, `steps.producer.result`)}},
+				Locals: []*configs.Local{{Name: "copied", Expr: mustParseExpression(t, `step.producer.result`)}},
 			},
 		},
 	}})
@@ -392,7 +392,7 @@ func TestStepReferenceTransformerConnectsWholeStepReferences(t *testing.T) {
 			},
 			"summarize": {
 				Name:    "summarize",
-				Outputs: []*configs.Output{{Name: "summary", Expr: mustParseExpression(t, `length(values(steps.smoke_invoke_lambda))`)}},
+				Outputs: []*configs.Output{{Name: "summary", Expr: mustParseExpression(t, `length(values(step.smoke_invoke_lambda))`)}},
 			},
 		},
 	})

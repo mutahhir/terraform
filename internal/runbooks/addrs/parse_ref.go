@@ -38,7 +38,7 @@ func ParseRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
 	case "list":
 		typ, name, rng, remain, diags := parseDoubleAttrRef(traversal)
 		return &Reference{Subject: terraformaddrs.Resource{Mode: terraformaddrs.ListResourceMode, Type: typ, Name: name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
-	case "step", "steps":
+	case "step":
 		stepName, rng, remain, diags := parseSingleAttrRef(traversal)
 		if diags.HasErrors() {
 			return nil, diags
@@ -211,11 +211,8 @@ func parseWorkspaceRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics
 		remain := traversal[idx+2:]
 		if len(remain) > 0 {
 			if index, ok := remain[0].(hcl.TraverseIndex); ok {
-				parsed, err := terraformaddrs.ParseInstanceKey(index.Key)
-				if err == nil {
-					resource.Name = resource.Name
+				if _, err := terraformaddrs.ParseInstanceKey(index.Key); err == nil {
 					remain = remain[1:]
-					_ = parsed
 				}
 			}
 		}
