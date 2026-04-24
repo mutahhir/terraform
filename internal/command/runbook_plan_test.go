@@ -145,21 +145,18 @@ step "discover" {
 			if len(steps) != 1 {
 				t.Fatalf("expected one planned step, got %#v", plan)
 			}
-			info := plan["info"].([]any)
-			var entry map[string]any
-			for _, raw := range info {
-				candidate := raw.(map[string]any)
-				if candidate["type"] == "data" && candidate["subject"] == "data.test_data.selected" {
-					entry = candidate
-					break
-				}
+			step := steps[0].(map[string]any)
+			reads, ok := step["reads"].([]any)
+			if !ok || len(reads) != 1 {
+				t.Fatalf("expected one read entry, got %#v", step)
 			}
-			if entry == nil {
-				t.Fatalf("expected data info entry, got %#v", plan)
+			entry := reads[0].(map[string]any)
+			if entry["type"] != "data" || entry["subject"] != "data.test_data.selected" {
+				t.Fatalf("unexpected read entry %#v", entry)
 			}
 			details, ok := entry["details"].(map[string]any)
 			if !ok {
-				t.Fatalf("expected structured details in plan info, got %#v", entry)
+				t.Fatalf("expected structured details in read entry, got %#v", entry)
 			}
 			if details["provider"] != "hashicorp/test" {
 				t.Fatalf("unexpected provider details %#v", details)
@@ -372,8 +369,12 @@ step "discover" {
 			continue
 		}
 		plan := msg["plan"].(map[string]any)
-		info := plan["info"].([]any)
-		for _, raw := range info {
+		steps := plan["steps"].([]any)
+		if len(steps) != 1 {
+			t.Fatalf("expected one step, got %#v", plan)
+		}
+		reads := steps[0].(map[string]any)["reads"].([]any)
+		for _, raw := range reads {
 			entry := raw.(map[string]any)
 			if entry["type"] != "workspace_read" || entry["subject"] != "workspace.test_resource.selected" {
 				continue

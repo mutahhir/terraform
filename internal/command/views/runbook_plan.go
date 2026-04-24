@@ -28,6 +28,49 @@ type runbookPlan struct {
 	Info  []runbookPlanInfo `json:"info"`
 }
 
+type runbookJSONPlan struct {
+	Steps   []runbookJSONStep    `json:"steps"`
+	Summary runbookJSONPlanStats `json:"summary,omitempty"`
+}
+
+type runbookJSONPlanStats struct {
+	RunnableSteps int `json:"runnable_steps,omitempty"`
+	SkippedSteps  int `json:"skipped_steps,omitempty"`
+	Reads         int `json:"reads,omitempty"`
+	Lists         int `json:"lists,omitempty"`
+	Executes      int `json:"executes,omitempty"`
+}
+
+type runbookJSONStep struct {
+	Name        string                     `json:"name"`
+	Index       int                        `json:"index"`
+	InstanceKey string                     `json:"instance_key,omitempty"`
+	Status      runbookruntime.StepStatus  `json:"status"`
+	SkipReason  string                     `json:"skip_reason,omitempty"`
+	Reads       []runbookJSONInfo          `json:"reads,omitempty"`
+	Lists       []runbookJSONInfo          `json:"lists,omitempty"`
+	Actions     []runbookJSONAction        `json:"actions,omitempty"`
+	Executions  []runbookJSONExecution     `json:"executions,omitempty"`
+	Outputs     map[string]json.RawMessage `json:"outputs,omitempty"`
+}
+
+type runbookJSONInfo struct {
+	Type    string          `json:"type,omitempty"`
+	Subject string          `json:"subject"`
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+type runbookJSONAction struct {
+	Subject string          `json:"subject"`
+	Config  json.RawMessage `json:"config,omitempty"`
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+type runbookJSONExecution struct {
+	Action string          `json:"action"`
+	Config json.RawMessage `json:"config,omitempty"`
+}
+
 type runbookPlanStep struct {
 	Name         string                     `json:"name"`
 	Index        int                        `json:"index"`
@@ -170,7 +213,7 @@ func (v *RunbookPlanJSON) Plan(plan *runbookgraph.Plan) {
 		msg = "Runbook show"
 		typ = "runbook_show"
 	}
-	v.view.log.Info(msg, "type", typ, "plan", buildRunbookPlan(plan, v.info))
+	v.view.log.Info(msg, "type", typ, "plan", buildRunbookJSONPlan(plan, v.info))
 }
 
 func renderRunbookPlanHuman(view *View, viewPlan runbookPlan, mode runbookPlanRenderMode) {
@@ -256,13 +299,58 @@ func (v *RunbookShowJSON) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	v.info = append(v.info, entry)
 }
 func (v *RunbookShowJSON) Plan(plan *runbookgraph.Plan) {
-	ret := buildRunbookPlan(plan, v.info)
+	ret := buildRunbookJSONPlan(plan, v.info)
 	enc, err := json.MarshalIndent(ret, "", "  ")
 	if err != nil {
 		v.view.streams.Eprintf("Failed to marshal runbook show json: %s", err)
 		return
 	}
 	v.view.streams.Println(string(enc))
+}
+
+func buildRunbookJSONPlan(plan *runbookgraph.Plan, info []runbookPlanInfo) runbookJSONPlan {
+	viewPlan := buildRunbookPlan(plan, info)
+	ret := runbookJSONPlan{
+		Steps: make([]runbookJSONStep, 0, len(viewPlan.Steps)),
+		Summary: runbookJSONPlanStats{
+			RunnableSteps: countRunnableSteps(viewPlan.Steps),
+			SkippedSteps:  countSkippedSteps(viewPlan.Steps),
+		},
+	}
+	infoByStep := make(map[string][]runbookPlanInfo)
+	for _, item := range viewPlan.Info {
+		key := fmt.Sprintf("%s[%d]", item.StepName, item.StepIndex)
+		infoByStep[key] = append(infoByStep[key], item)
+	}
+	for _, step := range viewPlan.Steps {
+		stepInfo := dedupePlanInfo(infoByStep[fmt.Sprintf("%s[%d]", step.Name, step.Index)])
+		sections := classifyRunbookStepInfo(stepInfo)
+		jsonStep := runbookJSONStep{
+			Name:        step.Name,
+			Index:       step.Index,
+			InstanceKey: step.InstanceKey,
+			Status:      step.Status,
+			SkipReason:  step.SkipReason,
+			Outputs:     step.Outputs,
+		}
+		for _, item := range sections.reads {
+			jsonStep.Reads = append(jsonStep.Reads, runbookJSONInfo{Type: item.Type, Subject: item.Subject, Details: item.Details})
+			ret.Summary.Reads++
+		}
+		for _, item := range sections.lists {
+			jsonStep.Lists = append(jsonStep.Lists, runbookJSONInfo{Type: item.Type, Subject: item.Subject, Details: item.Details})
+			ret.Summary.Lists++
+		}
+		for _, item := range sections.actions {
+			jsonStep.Actions = append(jsonStep.Actions, runbookJSONAction{Subject: item.Subject, Config: item.Value, Details: item.Details})
+		}
+		for _, item := range sections.executions {
+			jsonStep.Executions = append(jsonStep.Executions, runbookJSONExecution{Action: item.Subject, Config: item.Value})
+			ret.Summary.Executes++
+		}
+		ret.Steps = append(ret.Steps, jsonStep)
+	}
+	return ret
 }
 
 func buildRunbookPlan(plan *runbookgraph.Plan, info []runbookPlanInfo) runbookPlan {

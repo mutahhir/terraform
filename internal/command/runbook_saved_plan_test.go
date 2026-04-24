@@ -713,9 +713,14 @@ step "discover" {
 	if !ok || len(steps) != 1 {
 		t.Fatalf("expected one step in shown artifact, got: %#v", shown)
 	}
-	info, ok := shown["info"].([]any)
-	if !ok || len(info) == 0 {
-		t.Fatalf("expected info entries in shown artifact, got: %#v", shown)
+	step := steps[0].(map[string]any)
+	reads, ok := step["reads"].([]any)
+	if !ok || len(reads) == 0 {
+		t.Fatalf("expected hierarchical reads in shown artifact, got: %#v", shown)
+	}
+	outputs, ok := step["outputs"].(map[string]any)
+	if !ok || outputs["result"] != `"srv-123"` {
+		t.Fatalf("expected outputs in shown artifact, got: %#v", shown)
 	}
 }
 

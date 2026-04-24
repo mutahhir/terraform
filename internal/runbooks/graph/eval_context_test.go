@@ -136,17 +136,43 @@ func TestEvalContextExpressionVariablesIncludeDeclaredStepsBeforeRuntimeState(t 
 	}
 }
 
-func TestEvalContextEvaluateExprRejectsReservedStepForVariable(t *testing.T) {
+func TestEvalContextEvaluateExprRejectsReservedRunbookSymbolsForVariables(t *testing.T) {
 	ctx := NewEvalContext(EvalContextOpts{})
 	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("primary"), "invoke_target", cty.StringVal("lambda-a"))
 	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("primary"), "invocation_output", cty.StringVal("ok-a"))
 
-	_, diags := ctx.EvaluateExpr("", mustParseExpression(t, `one([for step in values(step.smoke_invoke_lambda) : step.invocation_output if step.invoke_target == "lambda-a"])`))
-	if !diags.HasErrors() {
-		t.Fatal("expected diagnostics but got none")
+	tests := []struct {
+		name   string
+		expr   string
+		symbol string
+	}{
+		{
+			name:   "step",
+			expr:   `one([for step in values(step.smoke_invoke_lambda) : step.invocation_output if step.invoke_target == "lambda-a"])`,
+			symbol: "step",
+		},
+		{
+			name:   "workspace",
+			expr:   `one([for workspace in values(step.smoke_invoke_lambda) : workspace.invocation_output if workspace.invoke_target == "lambda-a"])`,
+			symbol: "workspace",
+		},
+		{
+			name:   "var",
+			expr:   `one([for var in values(step.smoke_invoke_lambda) : var.invocation_output if var.invoke_target == "lambda-a"])`,
+			symbol: "var",
+		},
 	}
-	if got := diags.Err().Error(); !strings.Contains(got, "Reserved runbook symbol") {
-		t.Fatalf("expected reserved symbol diagnostic, got: %s", got)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, diags := ctx.EvaluateExpr("", mustParseExpression(t, test.expr))
+			if !diags.HasErrors() {
+				t.Fatal("expected diagnostics but got none")
+			}
+			if got := diags.Err().Error(); !strings.Contains(got, "Reserved runbook symbol") || !strings.Contains(got, test.symbol) {
+				t.Fatalf("expected reserved symbol diagnostic for %q, got: %s", test.symbol, got)
+			}
+		})
 	}
 }
 

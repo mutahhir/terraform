@@ -6,7 +6,21 @@ import (
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
-const reservedRunbookStepSymbol = "step"
+var reservedRunbookSymbols = map[string]struct{}{
+	"count":     {},
+	"data":      {},
+	"each":      {},
+	"list":      {},
+	"local":     {},
+	"step":      {},
+	"var":       {},
+	"workspace": {},
+}
+
+func isReservedRunbookSymbol(name string) bool {
+	_, ok := reservedRunbookSymbols[name]
+	return ok
+}
 
 func validateReservedRunbookSymbolsInExpr(expr hcl.Expression) tfdiags.Diagnostics {
 	if expr == nil {
@@ -24,15 +38,18 @@ func validateReservedRunbookSymbolsInExpr(expr hcl.Expression) tfdiags.Diagnosti
 		if !ok {
 			return nil
 		}
-		if forExpr.KeyVar != reservedRunbookStepSymbol && forExpr.ValVar != reservedRunbookStepSymbol {
-			return nil
+		for _, name := range []string{forExpr.KeyVar, forExpr.ValVar} {
+			if name == "" || !isReservedRunbookSymbol(name) {
+				continue
+			}
+			return hcl.Diagnostics{&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Reserved runbook symbol",
+				Detail:   "The identifier \"" + name + "\" is reserved due to its special meaning in runbook expressions and cannot be used as a temporary variable in for expressions. Use a different variable name.",
+				Subject:  forExpr.SrcRange.Ptr(),
+			}}
 		}
-		return hcl.Diagnostics{&hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Reserved runbook symbol",
-			Detail:   "The identifier \"step\" is reserved for runbook step references and cannot be used as a temporary variable in for expressions. Use a different variable name.",
-			Subject:  forExpr.SrcRange.Ptr(),
-		}}
+		return nil
 	})
 	diags = append(diags, visitDiags...)
 	return tfdiags.Diagnostics{}.Append(diags)
