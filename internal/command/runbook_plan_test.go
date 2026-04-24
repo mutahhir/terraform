@@ -259,7 +259,6 @@ step "discover" {
 }
 `
 	writeFile(t, td+"/terraform.tfstate", stateSrc)
-	writeFile(t, filepath.Join(runbookDir, "terraform.tfstate"), stateSrc)
 	t.Chdir(runbookDir)
 
 	view, done := testView(t)
@@ -342,7 +341,6 @@ step "discover" {
 }
 `
 	writeFile(t, td+"/terraform.tfstate", stateSrc)
-	writeFile(t, filepath.Join(runbookDir, "terraform.tfstate"), stateSrc)
 	t.Chdir(runbookDir)
 
 	view, done := testView(t)
@@ -450,7 +448,6 @@ step "discover" {
 }
 `
 	writeFile(t, td+"/terraform.tfstate", stateSrc)
-	writeFile(t, filepath.Join(runbookDir, "terraform.tfstate"), stateSrc)
 	t.Chdir(runbookDir)
 
 	view, done := testView(t)

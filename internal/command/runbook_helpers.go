@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/backend/backendrun"
+	backendLocal "github.com/hashicorp/terraform/internal/backend/local"
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/command/workdir"
 	"github.com/hashicorp/terraform/internal/configs"
@@ -43,6 +44,19 @@ type loadedRunbook struct {
 	WorkspaceState    *states.State
 }
 
+// loadRunbook assembles the two different roots that a runbook command needs.
+//
+// The runbook directory is the dependency root for all runbook-owned artifacts
+// such as .tfrun/, .tfrun.lock.hcl, and runbook provider installation.
+//
+// The workspace directory is the backend/state root for all workspace-owned
+// concerns such as backend configuration, cloud configuration, workspace
+// selection, and workspace state lookup for workspace.* references.
+//
+// Runbook commands must never create an independent backend namespace for the
+// runbook directory. Instead, they borrow the enclosing root module's backend
+// configuration and read workspace state through that backend while keeping
+// runbook dependency state isolated under the runbook directory.
 func (c *runbookCommandBase) loadRunbook(rawArgs []string, vars *arguments.Vars) (*loadedRunbook, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	var err error
@@ -85,24 +99,10 @@ func (c *runbookCommandBase) loadRunbook(rawArgs []string, vars *arguments.Vars)
 		return nil, diags.Append(err)
 	}
 
-	b, backendDiags := c.backend(workspaceDir, arguments.ViewHuman)
-	diags = diags.Append(backendDiags)
+	workspaceState, workspaceStateDiags := c.loadRunbookWorkspaceState(workspaceDir, arguments.ViewHuman)
+	diags = diags.Append(workspaceStateDiags)
 	if diags.HasErrors() {
 		return nil, diags
-	}
-	c.ignoreRemoteVersionConflict(b)
-
-	workspaceName, err := c.Workspace()
-	if err != nil {
-		return nil, diags.Append(err)
-	}
-	stateFile, err := getStateFromBackend(b, workspaceName)
-	if err != nil {
-		return nil, diags.Append(err)
-	}
-	var workspaceState *states.State
-	if stateFile != nil {
-		workspaceState = stateFile.State
 	}
 
 	return &loadedRunbook{
@@ -172,6 +172,87 @@ func (c *runbookCommandBase) runbookMeta(runbookDir string) Meta {
 	wd.OverrideDataDir(runbookDataDirPath(runbookDir))
 	meta.WorkingDir = wd
 	return meta
+}
+
+// workspaceMeta returns a Meta scoped to the discovered Terraform workspace
+// root rather than the current runbook directory.
+//
+// Runbooks intentionally do not own backend configuration or workspace state.
+// Any backend or cloud interaction for workspace.* references must therefore be
+// performed through a Meta rooted at the enclosing Terraform configuration.
+func (c *runbookCommandBase) workspaceMeta(workspaceDir string) Meta {
+	meta := c.Meta
+	wd := workdir.NewDir(workspaceDir)
+	if c.WorkingDir != nil {
+		wd.OverrideOriginalWorkingDir(c.WorkingDir.OriginalWorkingDir())
+	}
+	meta.WorkingDir = wd
+	return meta
+}
+
+// loadRunbookWorkspaceState reads the current workspace state by reusing the
+// enclosing Terraform root module's backend configuration.
+//
+// This creates only a transient in-memory backend handle for the workspace
+// root. It does not create a runbook-owned backend, does not redirect backend
+// state into .tfrun/, and does not establish an independent backend namespace
+// for the runbook directory.
+func (c *runbookCommandBase) loadRunbookWorkspaceState(workspaceDir string, viewType arguments.ViewType) (*states.State, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+
+	workspaceMeta := c.workspaceMeta(workspaceDir)
+	b, backendDiags := workspaceMeta.backend(workspaceDir, viewType)
+	diags = diags.Append(backendDiags)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	anchorWorkspaceLocalBackendPaths(b, workspaceDir)
+	workspaceMeta.ignoreRemoteVersionConflict(b)
+
+	workspaceName, err := workspaceMeta.Workspace()
+	if err != nil {
+		return nil, diags.Append(err)
+	}
+	stateFile, err := getStateFromBackend(b, workspaceName)
+	if err != nil {
+		return nil, diags.Append(err)
+	}
+	if stateFile == nil {
+		return nil, diags
+	}
+	return stateFile.State, diags
+}
+
+// anchorWorkspaceLocalBackendPaths preserves root-module local-backend
+// semantics when a runbook command is launched from a subdirectory.
+//
+// The backend instance itself still comes from the workspace root module's
+// backend or cloud configuration. This helper only ensures that local-backend
+// relative paths continue to resolve from workspaceDir rather than being
+// accidentally re-anchored to the runbook directory or process cwd.
+func anchorWorkspaceLocalBackendPaths(b backendrun.OperationsBackend, workspaceDir string) {
+	localBackend, ok := b.(*backendLocal.Local)
+	if !ok {
+		return
+	}
+
+	if localBackend.StatePath == "" {
+		localBackend.StatePath = filepath.Join(workspaceDir, backendLocal.DefaultStateFilename)
+	} else if !filepath.IsAbs(localBackend.StatePath) {
+		localBackend.StatePath = filepath.Join(workspaceDir, localBackend.StatePath)
+	}
+	if localBackend.StateOutPath != "" && !filepath.IsAbs(localBackend.StateOutPath) {
+		localBackend.StateOutPath = filepath.Join(workspaceDir, localBackend.StateOutPath)
+	}
+	if localBackend.StateBackupPath != "" && localBackend.StateBackupPath != "-" && !filepath.IsAbs(localBackend.StateBackupPath) {
+		localBackend.StateBackupPath = filepath.Join(workspaceDir, localBackend.StateBackupPath)
+	}
+	if localBackend.StateWorkspaceDir == "" {
+		localBackend.StateWorkspaceDir = filepath.Join(workspaceDir, backendLocal.DefaultWorkspaceDir)
+	} else if !filepath.IsAbs(localBackend.StateWorkspaceDir) {
+		localBackend.StateWorkspaceDir = filepath.Join(workspaceDir, localBackend.StateWorkspaceDir)
+	}
 }
 
 func (c *runbookCommandBase) runbookLockedDependencies(runbookDir string) (*depsfile.Locks, tfdiags.Diagnostics) {
