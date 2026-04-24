@@ -66,10 +66,10 @@ output "summary" {
 	if !provider.InvokeActionCalled {
 		t.Fatal("expected action invocation during runbook execute")
 	}
-	if !strings.Contains(output.Stdout(), "Terraform will perform the following runbook steps:") {
+	if !strings.Contains(output.Stdout(), "Runbook plan") {
 		t.Fatalf("expected plan output before execute, got: %s", output.Stdout())
 	}
-	if strings.Index(output.Stdout(), "Terraform will perform the following runbook steps:") > strings.Index(output.Stdout(), "step.discover is in progress") {
+	if strings.Index(output.Stdout(), "Runbook plan") > strings.Index(output.Stdout(), "step.discover is in progress") {
 		t.Fatalf("expected plan output to appear before execute events, got: %s", output.Stdout())
 	}
 	if got := provider.InvokeActionRequest.PlannedActionData.GetAttr("target").AsString(); got != "srv-123" {

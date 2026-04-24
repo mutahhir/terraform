@@ -65,7 +65,7 @@ step "discover" {
 	if code != 0 {
 		t.Fatalf("unexpected exit code %d: %s", code, output.All())
 	}
-	if !strings.Contains(output.Stdout(), "Terraform will perform the following runbook steps:") {
+	if !strings.Contains(output.Stdout(), "Runbook plan") {
 		t.Fatalf("expected plan output, got: %s", output.Stdout())
 	}
 	stored, err := runbookplanfile.Read(planPath)

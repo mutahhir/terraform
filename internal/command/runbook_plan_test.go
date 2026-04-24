@@ -282,7 +282,7 @@ step "discover" {
 	if strings.Contains(output.All(), "Missing workspace state object") {
 		t.Fatalf("expected workspace state-backed reference to resolve, got: %s", output.All())
 	}
-	if !strings.Contains(output.Stdout(), `# step.discover will be planned`) {
+	if !strings.Contains(output.Stdout(), `- step.discover (planned)`) {
 		t.Fatalf("expected planned step summary in output, got: %s", output.Stdout())
 	}
 }
@@ -471,10 +471,10 @@ step "discover" {
 	if strings.Contains(output.All(), "Missing workspace state object") {
 		t.Fatalf("expected workspace state-backed resource reference to resolve, got: %s", output.All())
 	}
-	if !strings.Contains(output.Stdout(), `<= workspace resource "workspace.test_resource.selected" attributes=[id]`) {
+	if !strings.Contains(output.Stdout(), `- workspace resource "workspace.test_resource.selected" attributes=[id]`) {
 		t.Fatalf("expected workspace read detail in output, got: %s", output.Stdout())
 	}
-	if !strings.Contains(output.Stdout(), `# step.discover will be planned`) {
+	if !strings.Contains(output.Stdout(), `- step.discover (planned)`) {
 		t.Fatalf("expected planned step summary in output, got: %s", output.Stdout())
 	}
 }
