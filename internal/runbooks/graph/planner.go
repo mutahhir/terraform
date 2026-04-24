@@ -140,8 +140,13 @@ func ExecutePlan(plan *Plan, opts *ExecuteOpts) tfdiags.Diagnostics {
 		if !ok || state == nil || state.runtime == nil {
 			continue
 		}
-		state.runtime.Status = runbookruntime.StepStatusPlanned
-		state.runtime.SkipReason = ""
+		switch state.runtime.Status {
+		case runbookruntime.StepStatusSkipped, runbookruntime.StepStatusFailed:
+			continue
+		default:
+			state.runtime.Status = runbookruntime.StepStatusPlanned
+			state.runtime.SkipReason = ""
+		}
 	}
 	evalCtx.stepsLock.Unlock()
 	diags := walkGraph(plan.Graph, evalCtx, walkOperationExecute)

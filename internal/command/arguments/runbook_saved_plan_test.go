@@ -38,3 +38,30 @@ func TestParseRunbookExecuteRejectsVarsWithSavedPlan(t *testing.T) {
 		t.Fatal("expected diagnostics")
 	}
 }
+
+func TestParseRunbookShowPlanPath(t *testing.T) {
+	args, diags := ParseRunbookShow([]string{"saved.tfrunplan"})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if args.PlanPath != "saved.tfrunplan" {
+		t.Fatalf("wrong plan path %q", args.PlanPath)
+	}
+}
+
+func TestParseRunbookShowRequiresPath(t *testing.T) {
+	_, diags := ParseRunbookShow(nil)
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics")
+	}
+}
+
+func TestParseRunbookShowJSON(t *testing.T) {
+	args, diags := ParseRunbookShow([]string{"-json", "saved.tfrunplan"})
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if args.ViewType != ViewJSON {
+		t.Fatalf("wrong view type %v", args.ViewType)
+	}
+}

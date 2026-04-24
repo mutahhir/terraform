@@ -23,6 +23,9 @@ func Read(path string) (*Plan, error) {
 	if plan.Sources == nil {
 		plan.Sources = map[string][]byte{}
 	}
+	if plan.WorkspaceSources == nil {
+		plan.WorkspaceSources = map[string][]byte{}
+	}
 	if plan.Variables == nil {
 		plan.Variables = map[string]plans.DynamicValue{}
 	}

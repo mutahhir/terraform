@@ -66,6 +66,14 @@ func (c *RunbookPlanCommand) Run(rawArgs []string) int {
 			view.Diagnostics(tfdiags.Diagnostics{}.Append(err))
 			return 1
 		}
+		workspaceStateFile, err := marshalWorkspaceStateFile(loaded.WorkspaceState)
+		if err != nil {
+			view.Diagnostics(tfdiags.Diagnostics{}.Append(err))
+			return 1
+		}
+		saved.WorkspaceSourceDir = loaded.WorkspaceDir
+		saved.WorkspaceSources = workspaceConfigSources(loaded.Config.WorkspaceConfig)
+		saved.WorkspaceStateFile = workspaceStateFile
 		saved.RunbookLockFile = readOptionalFile(runbookDependencyLockPath(loaded.RunbookDir))
 		saved.TerraformLockFile = readOptionalFile(workspaceDependencyLockPath(loaded.WorkspaceDir))
 		if err := runbookplanfile.Write(args.OutPath, saved); err != nil {

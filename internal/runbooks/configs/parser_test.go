@@ -102,6 +102,63 @@ action "http" "child_notify" {}
 	}
 }
 
+func TestLoadWorkspaceReferencesConfigNestedLocalModules(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/workspace/main.tf", `
+module "child" {
+  source = "./child"
+}
+`)
+	writeTestFile(t, fs, "/workspace/child/main.tf", `
+module "grandchild" {
+  source = "./grandchild"
+}
+`)
+	writeTestFile(t, fs, "/workspace/child/grandchild/main.tf", `
+output "grandchild_value" {
+  value = "hello"
+}
+`)
+
+	p := NewRunbookParser(fs)
+	got, diags := p.LoadWorkspaceReferencesConfig("/workspace")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Error())
+	}
+	child := got.Children["child"]
+	if child == nil {
+		t.Fatal("expected child workspace module to be loaded")
+	}
+	grandchild := child.Children["grandchild"]
+	if grandchild == nil || grandchild.Module == nil {
+		t.Fatal("expected grandchild workspace module to be loaded")
+	}
+	if _, exists := grandchild.Module.Outputs["grandchild_value"]; !exists {
+		t.Fatal("expected grandchild workspace output grandchild_value")
+	}
+
+	sources := map[string][]byte{
+		"/workspace/main.tf":                 []byte(`module "child" { source = "./child" }`),
+		"/workspace/child/main.tf":           []byte(`module "grandchild" { source = "./grandchild" }`),
+		"/workspace/child/grandchild/main.tf": []byte(`output "grandchild_value" { value = "hello" }`),
+	}
+	got, diags = p.LoadWorkspaceReferencesConfigSources("/workspace", sources)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected source diagnostics: %s", diags.Error())
+	}
+	child = got.Children["child"]
+	if child == nil {
+		t.Fatal("expected child workspace module to be reconstructed")
+	}
+	grandchild = child.Children["grandchild"]
+	if grandchild == nil || grandchild.Module == nil {
+		t.Fatal("expected grandchild workspace module to be reconstructed")
+	}
+	if _, exists := grandchild.Module.Outputs["grandchild_value"]; !exists {
+		t.Fatal("expected reconstructed grandchild workspace output grandchild_value")
+	}
+}
+
 func TestLoadRunbookConfigDirInvokeActionSyntax(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	writeTestFile(t, fs, "/workspace/main.tf", ``)

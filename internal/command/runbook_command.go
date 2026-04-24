@@ -26,6 +26,7 @@ Usage: terraform [global options] runbook <subcommand> [options]
     init      Prepare a runbook working directory
     plan      Build a speculative runbook plan
     execute   Execute the planned runbook steps
+    show      Show a saved runbook plan
 `)
 }
 

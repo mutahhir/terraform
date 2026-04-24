@@ -11,6 +11,7 @@ import (
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	runbookplanfile "github.com/hashicorp/terraform/internal/runbooks/runbookplanfile"
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
+	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
@@ -62,7 +63,7 @@ func ExportSavedPlan(plan *Plan, sources map[string][]byte, inputValues terrafor
 	return ret, nil
 }
 
-func ImportSavedPlan(config *runbookconfigs.RunbookConfig, saved *runbookplanfile.Plan, providersMap map[terraformaddrs.Provider]providers.Factory) (*Plan, tfdiags.Diagnostics) {
+func ImportSavedPlan(config *runbookconfigs.RunbookConfig, saved *runbookplanfile.Plan, workspaceState *states.State, providersMap map[terraformaddrs.Provider]providers.Factory) (*Plan, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if config == nil {
 		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Missing runbook config", "A saved runbook plan requires configuration."))
@@ -70,7 +71,7 @@ func ImportSavedPlan(config *runbookconfigs.RunbookConfig, saved *runbookplanfil
 	if saved == nil {
 		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Missing runbook saved plan", "A saved runbook plan file is required."))
 	}
-	evalCtx := NewEvalContext(EvalContextOpts{Config: config})
+	evalCtx := NewEvalContext(EvalContextOpts{Config: config, WorkspaceState: workspaceState})
 	for name, raw := range saved.Variables {
 		val, err := raw.Decode(cty.DynamicPseudoType)
 		if err != nil {

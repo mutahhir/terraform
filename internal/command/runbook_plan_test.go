@@ -64,20 +64,29 @@ step "discover" {
 		t.Fatalf("unexpected exit code %d: %s", code, output.Stderr())
 	}
 	stdout := output.Stdout()
-	if !strings.Contains(stdout, "Terraform will perform the following runbook steps:") {
-		t.Fatalf("expected terraform-style plan header, got: %s", stdout)
+	if !strings.Contains(stdout, "Runbook plan") {
+		t.Fatalf("expected runbook plan header, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `# step.discover will be planned`) {
+	if !strings.Contains(stdout, "Steps:") {
+		t.Fatalf("expected steps header, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, `- step.discover (planned)`) {
 		t.Fatalf("expected planned step summary in output, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `<= data "data.test_data.selected"`) {
-		t.Fatalf("expected data read detail in output, got: %s", stdout)
+	if !strings.Contains(stdout, `reads:`) || !strings.Contains(stdout, `- data "data.test_data.selected"`) {
+		t.Fatalf("expected hierarchical reads section in output, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `> execute "action.test_action.notify" with {`) {
-		t.Fatalf("expected execute action detail in output, got: %s", stdout)
+	if !strings.Contains(stdout, `actions:`) || !strings.Contains(stdout, `- action.test_action.notify`) {
+		t.Fatalf("expected hierarchical actions section in output, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, `executions:`) || !strings.Contains(stdout, `- invoke action.test_action.notify`) {
+		t.Fatalf("expected hierarchical executions section in output, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, `outputs:`) || !strings.Contains(stdout, `- result = "srv-123"`) {
+		t.Fatalf("expected outputs section in output, got: %s", stdout)
 	}
 	if !strings.Contains(stdout, `"target" = "srv-123"`) {
-		t.Fatalf("expected execute payload field in output, got: %s", stdout)
+		t.Fatalf("expected action config in output, got: %s", stdout)
 	}
 	if !strings.Contains(stdout, `Plan: 1 to run, 0 to skip.`) {
 		t.Fatalf("expected runbook plan summary in output, got: %s", stdout)

@@ -620,6 +620,9 @@ func (ec *EvalContext) EvaluateExprForInstance(stepName string, instanceKey terr
 		return cty.NilVal, nil
 	}
 	ec.emitWorkspaceReadPlanInfoForExpr(stepName, instanceKey, expr)
+	if diags := validateReservedRunbookSymbolsInExpr(expr); diags.HasErrors() {
+		return cty.DynamicVal, diags
+	}
 	if diags := ec.validateWorkspaceStateReferencesInExpr(expr); diags.HasErrors() {
 		return cty.DynamicVal, diags
 	}
@@ -721,6 +724,29 @@ func (ec *EvalContext) expressionVariablesForInstance(stepName string, instanceK
 		stepGroups[instance.StepName] = append(stepGroups[instance.StepName], stepGroupEntry{instance: instance, state: state})
 	}
 	stepAttrs := map[string]cty.Value{}
+	if ec.config != nil {
+		for name, step := range ec.config.Steps {
+			if step == nil {
+				continue
+			}
+			if step.Count != nil || step.ForEach != nil {
+				stepAttrs[name] = cty.EmptyObjectVal
+				continue
+			}
+			outputs := map[string]cty.Value{}
+			for _, output := range step.Outputs {
+				if output == nil {
+					continue
+				}
+				outputs[output.Name] = cty.DynamicVal
+			}
+			if len(outputs) == 0 {
+				stepAttrs[name] = cty.EmptyObjectVal
+				continue
+			}
+			stepAttrs[name] = cty.ObjectVal(outputs)
+		}
+	}
 	for name, entries := range stepGroups {
 		if len(entries) == 1 && entries[0].instance.InstanceKey == terraformaddrs.NoKey {
 			outputs := map[string]cty.Value{}
@@ -1093,6 +1119,9 @@ func (ec *EvalContext) EvaluateBlockForInstance(stepName string, instanceKey ter
 		return schema.EmptyValue(), nil, nil
 	}
 	ec.emitWorkspaceReadPlanInfoForBody(stepName, instanceKey, body)
+	if diags := validateReservedRunbookSymbolsInBody(body); diags.HasErrors() {
+		return cty.DynamicVal, body, diags
+	}
 
 	funcs := (&lang.Scope{BaseDir: ".", PureOnly: true, ForProvider: true}).Functions()
 	hclCtx := &hcl.EvalContext{

@@ -120,6 +120,24 @@ func (p *RunbookParser) loadRunbookConfigFiles(path string) ([]*RunbookFile, hcl
 }
 
 func (p *RunbookParser) LoadRunbookConfigSources(rootDir string, sources map[string][]byte) (*RunbookConfig, hcl.Diagnostics) {
+	fs, diags := loadSourceMapFS("runbook", sources)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	clone := NewRunbookParser(fs)
+	return clone.LoadRunbookConfigDir(rootDir)
+}
+
+func (p *RunbookParser) LoadWorkspaceReferencesConfigSources(rootModulePath string, sources map[string][]byte) (*configs.Config, hcl.Diagnostics) {
+	fs, diags := loadSourceMapFS("workspace", sources)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	clone := NewRunbookParser(fs)
+	return clone.LoadWorkspaceReferencesConfig(rootModulePath)
+}
+
+func loadSourceMapFS(kind string, sources map[string][]byte) (afero.Fs, hcl.Diagnostics) {
 	fs := afero.NewMemMapFs()
 	paths := make([]string, 0, len(sources))
 	for path := range sources {
@@ -128,14 +146,13 @@ func (p *RunbookParser) LoadRunbookConfigSources(rootDir string, sources map[str
 	sort.Strings(paths)
 	for _, path := range paths {
 		if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return nil, hcl.Diagnostics{{Severity: hcl.DiagError, Summary: "Failed to reconstruct runbook sources", Detail: err.Error()}}
+			return nil, hcl.Diagnostics{{Severity: hcl.DiagError, Summary: fmt.Sprintf("Failed to reconstruct %s sources", kind), Detail: err.Error()}}
 		}
 		if err := afero.WriteFile(fs, path, sources[path], 0o644); err != nil {
-			return nil, hcl.Diagnostics{{Severity: hcl.DiagError, Summary: "Failed to reconstruct runbook sources", Detail: err.Error()}}
+			return nil, hcl.Diagnostics{{Severity: hcl.DiagError, Summary: fmt.Sprintf("Failed to reconstruct %s sources", kind), Detail: err.Error()}}
 		}
 	}
-	clone := NewRunbookParser(fs)
-	return clone.LoadRunbookConfigDir(rootDir)
+	return fs, nil
 }
 
 func (p *RunbookParser) LoadWorkspaceReferencesConfig(rootModulePath string) (*configs.Config, hcl.Diagnostics) {
@@ -147,9 +164,13 @@ func (p *RunbookParser) LoadWorkspaceReferencesConfig(rootModulePath string) (*c
 
 	workspaceCfg, buildDiags := configs.BuildConfig(rootModule, configs.ModuleWalkerFunc(
 		func(req *configs.ModuleRequest) (*configs.Module, *version.Version, hcl.Diagnostics) {
-			// For now, runbooks support only already-present local module sources
-			// relative to the root module directory.
-			sourcePath := filepath.Join(rootModulePath, req.SourceAddr.String())
+			// For now, runbooks support only already-present local module sources.
+			// Local module paths are resolved relative to the calling module.
+			basePath := rootModulePath
+			if req.Parent != nil && req.Parent.Module != nil && req.Parent.Module.SourceDir != "" {
+				basePath = req.Parent.Module.SourceDir
+			}
+			sourcePath := filepath.Join(basePath, req.SourceAddr.String())
 			mod, loadDiags := workspaceParser.LoadConfigDir(sourcePath)
 			return mod, nil, loadDiags
 		},

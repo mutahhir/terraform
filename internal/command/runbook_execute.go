@@ -42,14 +42,15 @@ func (c *RunbookExecuteCommand) Run(rawArgs []string) int {
 	var providerFactories map[terraformaddrs.Provider]providers.Factory
 	var workspaceState *states.State
 	if args.PlanPath != "" {
-		saved, config, factories, loadDiags := c.loadSavedRunbookPlan(args.PlanPath)
+		saved, config, savedWorkspaceState, factories, loadDiags := c.loadSavedRunbookPlan(args.PlanPath)
 		diags = diags.Append(loadDiags)
 		if diags.HasErrors() {
 			view.Diagnostics(diags)
 			return 1
 		}
 		providerFactories = factories
-		plan, diags = runbookgraph.ImportSavedPlan(config, saved, factories)
+		workspaceState = savedWorkspaceState
+		plan, diags = runbookgraph.ImportSavedPlan(config, saved, savedWorkspaceState, factories)
 		if diags.HasErrors() {
 			view.Diagnostics(diags)
 			return 1

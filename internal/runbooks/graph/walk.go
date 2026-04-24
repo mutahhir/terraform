@@ -269,6 +269,11 @@ func markVertexSkipped(ctx *EvalContext, vertex dag.Vertex, graph *terraform.Gra
 	if !ok {
 		return
 	}
+	if step, ok := stepForVertex(ctx, vertex); ok {
+		if step.Status == runbookruntime.StepStatusSkipped || step.Status == runbookruntime.StepStatusFailed {
+			return
+		}
+	}
 	for _, dep := range graph.DownEdges(vertex) {
 		depStep, ok := stepNameForVertex(dep)
 		if ok && depStep != stepName {

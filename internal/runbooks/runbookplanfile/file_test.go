@@ -25,11 +25,14 @@ func TestWriteReadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := &Plan{
-		Version:          FormatVersion,
-		TerraformVersion: "1.0.0",
-		RunbookSourceDir: "/tmp/runbook",
-		Sources:          map[string][]byte{"/tmp/runbook/main.tfrun.hcl": []byte("step \"x\" {}")},
-		Variables:        map[string]plans.DynamicValue{"name": varValue},
+		Version:            FormatVersion,
+		TerraformVersion:   "1.0.0",
+		RunbookSourceDir:   "/tmp/runbook",
+		Sources:            map[string][]byte{"/tmp/runbook/main.tfrun.hcl": []byte("step \"x\" {}")},
+		WorkspaceSourceDir: "/tmp/workspace",
+		WorkspaceSources:   map[string][]byte{"/tmp/workspace/main.tf": []byte("output \"region\" { value = \"us-east-1\" }")},
+		WorkspaceStateFile: []byte("{\"version\":4}"),
+		Variables:          map[string]plans.DynamicValue{"name": varValue},
 		Steps: []*Step{{
 			Name:           "discover",
 			Index:          0,
@@ -54,6 +57,12 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	}
 	if got.RunbookSourceDir != plan.RunbookSourceDir {
 		t.Fatalf("wrong source dir %q", got.RunbookSourceDir)
+	}
+	if got.WorkspaceSourceDir != plan.WorkspaceSourceDir {
+		t.Fatalf("wrong workspace source dir %q", got.WorkspaceSourceDir)
+	}
+	if string(got.WorkspaceStateFile) != string(plan.WorkspaceStateFile) {
+		t.Fatalf("wrong workspace state file %q", string(got.WorkspaceStateFile))
 	}
 	if len(got.Steps) != 1 {
 		t.Fatalf("wrong step count %d", len(got.Steps))

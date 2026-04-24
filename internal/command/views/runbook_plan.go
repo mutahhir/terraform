@@ -29,12 +29,13 @@ type runbookPlan struct {
 }
 
 type runbookPlanStep struct {
-	Name        string                     `json:"name"`
-	Index       int                        `json:"index"`
-	InstanceKey string                     `json:"instance_key,omitempty"`
-	Status      runbookruntime.StepStatus  `json:"status"`
-	SkipReason  string                     `json:"skip_reason,omitempty"`
-	Outputs     map[string]json.RawMessage `json:"outputs,omitempty"`
+	Name         string                     `json:"name"`
+	Index        int                        `json:"index"`
+	InstanceKey  string                     `json:"instance_key,omitempty"`
+	Status       runbookruntime.StepStatus  `json:"status"`
+	SkipReason   string                     `json:"skip_reason,omitempty"`
+	Outputs      map[string]json.RawMessage `json:"outputs,omitempty"`
+	outputValues map[string]string          `json:"-"`
 }
 
 type runbookPlanInfo struct {
@@ -50,25 +51,50 @@ type runbookPlanInfo struct {
 }
 
 func NewRunbookPlan(vt arguments.ViewType, view *View) RunbookPlan {
+	return newRunbookPlan(vt, view, runbookPlanRenderModePlan)
+}
+
+func NewRunbookShow(vt arguments.ViewType, view *View) RunbookPlan {
+	return newRunbookPlan(vt, view, runbookPlanRenderModeShow)
+}
+
+func newRunbookPlan(vt arguments.ViewType, view *View, mode runbookPlanRenderMode) RunbookPlan {
 	switch vt {
 	case arguments.ViewJSON:
-		return &RunbookPlanJSON{view: NewJSONView(view)}
+		if mode == runbookPlanRenderModeShow {
+			return &RunbookShowJSON{view: view}
+		}
+		return &RunbookPlanJSON{view: NewJSONView(view), mode: mode}
 	case arguments.ViewHuman:
-		return &RunbookPlanHuman{view: view}
+		return &RunbookPlanHuman{view: view, mode: mode}
 	default:
 		panic(fmt.Sprintf("unknown view type %v", vt))
 	}
 }
 
+type runbookPlanRenderMode string
+
+const (
+	runbookPlanRenderModePlan runbookPlanRenderMode = "plan"
+	runbookPlanRenderModeShow runbookPlanRenderMode = "show"
+)
+
 type RunbookPlanHuman struct {
 	view *View
 	info []runbookPlanInfo
+	mode runbookPlanRenderMode
 }
 
-func (v *RunbookPlanHuman) UI() runbookgraph.UI                            { return v }
-func (v *RunbookPlanHuman) Hooks() []runbookgraph.Hook                     { return nil }
-func (v *RunbookPlanHuman) Diagnostics(diags tfdiags.Diagnostics)          { v.view.Diagnostics(diags) }
-func (v *RunbookPlanHuman) HelpPrompt()                                    { v.view.HelpPrompt("runbook plan") }
+func (v *RunbookPlanHuman) UI() runbookgraph.UI                   { return v }
+func (v *RunbookPlanHuman) Hooks() []runbookgraph.Hook            { return nil }
+func (v *RunbookPlanHuman) Diagnostics(diags tfdiags.Diagnostics) { v.view.Diagnostics(diags) }
+func (v *RunbookPlanHuman) HelpPrompt() {
+	if v.mode == runbookPlanRenderModeShow {
+		v.view.HelpPrompt("runbook show")
+		return
+	}
+	v.view.HelpPrompt("runbook plan")
+}
 func (v *RunbookPlanHuman) PlannedStep(step *runbookruntime.Step)          {}
 func (v *RunbookPlanHuman) ExecutingStep(step *runbookruntime.Step)        {}
 func (v *RunbookPlanHuman) ExecutedStep(step *runbookruntime.Step)         {}
@@ -97,49 +123,13 @@ func (v *RunbookPlanHuman) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	v.info = append(v.info, entry)
 }
 func (v *RunbookPlanHuman) Plan(plan *runbookgraph.Plan) {
-	viewPlan := buildRunbookPlan(plan, v.info)
-	v.view.streams.Println("Terraform used the selected providers to generate the following runbook")
-	v.view.streams.Println("plan. Runbook operations are indicated with the following symbols:")
-	v.view.streams.Println("  <= read")
-	v.view.streams.Println("  <> list")
-	v.view.streams.Println("  > execute")
-	v.view.streams.Println("")
-	if len(viewPlan.Steps) == 0 {
-		v.view.streams.Println("No changes. The runbook has no planned steps.")
-		return
-	}
-	v.view.streams.Println("Terraform will perform the following runbook steps:")
-	v.view.streams.Println("")
-
-	infoByStep := make(map[string][]runbookPlanInfo)
-	for _, info := range viewPlan.Info {
-		key := fmt.Sprintf("%s[%d]", info.StepName, info.StepIndex)
-		infoByStep[key] = append(infoByStep[key], info)
-	}
-
-	reads, lists, executes := 0, 0, 0
-	for _, step := range viewPlan.Steps {
-		stepInfo := dedupePlanInfo(infoByStep[fmt.Sprintf("%s[%d]", step.Name, step.Index)])
-		v.view.streams.Println(renderRunbookStepPlan(step, stepInfo))
-		for _, info := range stepInfo {
-			switch info.Type {
-			case "data":
-				reads++
-			case "workspace_read":
-				reads++
-			case "list":
-				lists++
-			case "execute":
-				executes++
-			}
-		}
-	}
-	v.view.streams.Println(fmt.Sprintf("Plan: %d to run, %d to skip. Operations: %d to read, %d to list, %d to execute.", countRunnableSteps(viewPlan.Steps), countSkippedSteps(viewPlan.Steps), reads, lists, executes))
+	renderRunbookPlanHuman(v.view, buildRunbookPlan(plan, v.info), v.mode)
 }
 
 type RunbookPlanJSON struct {
 	view *JSONView
 	info []runbookPlanInfo
+	mode runbookPlanRenderMode
 }
 
 func (v *RunbookPlanJSON) UI() runbookgraph.UI                            { return v }
@@ -174,7 +164,105 @@ func (v *RunbookPlanJSON) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	v.info = append(v.info, entry)
 }
 func (v *RunbookPlanJSON) Plan(plan *runbookgraph.Plan) {
-	v.view.log.Info("Runbook plan", "type", "runbook_plan", "plan", buildRunbookPlan(plan, v.info))
+	msg := "Runbook plan"
+	typ := "runbook_plan"
+	if v.mode == runbookPlanRenderModeShow {
+		msg = "Runbook show"
+		typ = "runbook_show"
+	}
+	v.view.log.Info(msg, "type", typ, "plan", buildRunbookPlan(plan, v.info))
+}
+
+func renderRunbookPlanHuman(view *View, viewPlan runbookPlan, mode runbookPlanRenderMode) {
+	if mode == runbookPlanRenderModeShow {
+		view.streams.Println("Saved runbook plan")
+	} else {
+		view.streams.Println("Runbook plan")
+	}
+	view.streams.Println("")
+	if len(viewPlan.Steps) == 0 {
+		if mode == runbookPlanRenderModeShow {
+			view.streams.Println("The saved runbook plan has no planned steps.")
+		} else {
+			view.streams.Println("No changes. The runbook has no planned steps.")
+		}
+		return
+	}
+	view.streams.Println("Steps:")
+	view.streams.Println("")
+
+	infoByStep := make(map[string][]runbookPlanInfo)
+	for _, info := range viewPlan.Info {
+		key := fmt.Sprintf("%s[%d]", info.StepName, info.StepIndex)
+		infoByStep[key] = append(infoByStep[key], info)
+	}
+
+	reads, lists, executes := 0, 0, 0
+	for _, step := range viewPlan.Steps {
+		stepInfo := dedupePlanInfo(infoByStep[fmt.Sprintf("%s[%d]", step.Name, step.Index)])
+		view.streams.Println(renderRunbookStepPlan(step, stepInfo))
+		for _, info := range stepInfo {
+			switch info.Type {
+			case "data", "workspace_read":
+				reads++
+			case "list":
+				lists++
+			case "execute":
+				executes++
+			}
+		}
+	}
+	prefix := "Plan"
+	if mode == runbookPlanRenderModeShow {
+		prefix = "Saved plan"
+	}
+	view.streams.Println(fmt.Sprintf("%s: %d to run, %d to skip. Operations: %d to read, %d to list, %d to execute.", prefix, countRunnableSteps(viewPlan.Steps), countSkippedSteps(viewPlan.Steps), reads, lists, executes))
+}
+
+type RunbookShowJSON struct {
+	view *View
+	info []runbookPlanInfo
+}
+
+func (v *RunbookShowJSON) UI() runbookgraph.UI                            { return nil }
+func (v *RunbookShowJSON) Hooks() []runbookgraph.Hook                     { return nil }
+func (v *RunbookShowJSON) Diagnostics(diags tfdiags.Diagnostics)          { v.view.Diagnostics(diags) }
+func (v *RunbookShowJSON) HelpPrompt()                                    {}
+func (v *RunbookShowJSON) PlannedStep(step *runbookruntime.Step)          {}
+func (v *RunbookShowJSON) ExecutingStep(step *runbookruntime.Step)        {}
+func (v *RunbookShowJSON) ExecutedStep(step *runbookruntime.Step)         {}
+func (v *RunbookShowJSON) ActionEvent(event runbookgraph.ActionExecEvent) {}
+func (v *RunbookShowJSON) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
+	entry := runbookPlanInfo{
+		StepName:  info.StepName,
+		StepIndex: info.StepIndex,
+		Type:      info.Type,
+		Subject:   info.Subject,
+		Status:    info.Status,
+		valueVal:  info.Value,
+	}
+	if info.Value != cty.NilVal {
+		if encoded, err := json.Marshal(tfdiags.CompactValueStr(info.Value)); err == nil {
+			entry.Value = encoded
+		}
+	}
+	if info.Details != cty.NilVal {
+		details := pruneUnsetValue(info.Details)
+		if encoded, err := ctyjson.Marshal(details, details.Type()); err == nil {
+			entry.Details = encoded
+			_ = json.Unmarshal(encoded, &entry.details)
+		}
+	}
+	v.info = append(v.info, entry)
+}
+func (v *RunbookShowJSON) Plan(plan *runbookgraph.Plan) {
+	ret := buildRunbookPlan(plan, v.info)
+	enc, err := json.MarshalIndent(ret, "", "  ")
+	if err != nil {
+		v.view.streams.Eprintf("Failed to marshal runbook show json: %s", err)
+		return
+	}
+	v.view.streams.Println(string(enc))
 }
 
 func buildRunbookPlan(plan *runbookgraph.Plan, info []runbookPlanInfo) runbookPlan {
@@ -219,10 +307,11 @@ func buildRunbookPlan(plan *runbookgraph.Plan, info []runbookPlanInfo) runbookPl
 
 func toRunbookPlanStep(step *runbookruntime.Step) runbookPlanStep {
 	ret := runbookPlanStep{
-		Name:       step.Name,
-		Index:      step.Index,
-		Status:     step.Status,
-		SkipReason: step.SkipReason,
+		Name:         step.Name,
+		Index:        step.Index,
+		Status:       step.Status,
+		SkipReason:   step.SkipReason,
+		outputValues: make(map[string]string),
 	}
 	if step.InstanceKey != nil {
 		ret.InstanceKey = step.InstanceKey.String()
@@ -230,9 +319,11 @@ func toRunbookPlanStep(step *runbookruntime.Step) runbookPlanStep {
 	if step.Outputs != cty.NilVal && step.Outputs.IsKnown() && !step.Outputs.IsNull() && step.Outputs.Type().IsObjectType() {
 		ret.Outputs = make(map[string]json.RawMessage)
 		for name, value := range step.Outputs.AsValueMap() {
-			encoded, err := json.Marshal(tfdiags.CompactValueStr(value))
+			compact := tfdiags.CompactValueStr(value)
+			encoded, err := json.Marshal(compact)
 			if err == nil {
 				ret.Outputs[name] = encoded
+				ret.outputValues[name] = compact
 			}
 		}
 	}
@@ -241,22 +332,102 @@ func toRunbookPlanStep(step *runbookruntime.Step) runbookPlanStep {
 
 func renderRunbookStepPlan(step runbookPlanStep, info []runbookPlanInfo) string {
 	var b strings.Builder
-	stepIndent := 2
-	itemIndent := stepIndent + 4
-	b.WriteString(fmt.Sprintf("%s# %s will be %s", indent(stepIndent), renderStepAddress(step), renderStepOutcome(step)))
+	b.WriteString(fmt.Sprintf("  - %s (%s)", renderStepAddress(step), renderStepOutcome(step)))
 	if step.SkipReason != "" {
-		b.WriteString(fmt.Sprintf(" (%s)", step.SkipReason))
+		b.WriteString(fmt.Sprintf(": %s", step.SkipReason))
 	}
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("%sstep %q {\n", indent(stepIndent), step.Name))
-	for _, item := range sortedPlanInfo(info) {
-		if !shouldRenderPlanInfo(item) {
-			continue
+
+	sections := classifyRunbookStepInfo(info)
+	if len(sections.reads) != 0 {
+		b.WriteString("      reads:\n")
+		for _, item := range sections.reads {
+			b.WriteString(fmt.Sprintf("        - %s\n", renderPlanInfo(item, 0)))
 		}
-		b.WriteString(renderPlanInfoLine(item, itemIndent))
 	}
-	b.WriteString(fmt.Sprintf("%s}\n", indent(stepIndent)))
+	if len(sections.lists) != 0 {
+		b.WriteString("      lists:\n")
+		for _, item := range sections.lists {
+			b.WriteString(fmt.Sprintf("        - %s\n", renderPlanInfo(item, 0)))
+		}
+	}
+	if len(sections.actions) != 0 {
+		b.WriteString("      actions:\n")
+		for _, item := range sections.actions {
+			b.WriteString(fmt.Sprintf("        - %s\n", item.Subject))
+			if item.valueVal != cty.NilVal && item.valueVal.IsKnown() && !item.valueVal.IsNull() {
+				b.WriteString("          config:\n")
+				for _, line := range strings.Split(repl.FormatValue(pruneUnsetValue(item.valueVal), 0), "\n") {
+					b.WriteString(fmt.Sprintf("            %s\n", line))
+				}
+			}
+		}
+	}
+	if len(sections.executions) != 0 {
+		b.WriteString("      executions:\n")
+		for _, item := range sections.executions {
+			b.WriteString(fmt.Sprintf("        - invoke %s\n", item.Subject))
+		}
+	}
+	if len(step.outputValues) != 0 {
+		b.WriteString("      outputs:\n")
+		for _, name := range sortedOutputNames(step.outputValues) {
+			b.WriteString(fmt.Sprintf("        - %s = %s\n", name, step.outputValues[name]))
+		}
+	}
 	return b.String()
+}
+
+type runbookStepSections struct {
+	reads      []runbookPlanInfo
+	lists      []runbookPlanInfo
+	actions    []runbookPlanInfo
+	executions []runbookPlanInfo
+}
+
+func classifyRunbookStepInfo(info []runbookPlanInfo) runbookStepSections {
+	var ret runbookStepSections
+	actionBySubject := map[string]runbookPlanInfo{}
+	for _, item := range sortedPlanInfo(info) {
+		switch item.Type {
+		case "data", "workspace_read":
+			ret.reads = append(ret.reads, item)
+		case "list":
+			ret.lists = append(ret.lists, item)
+		case "action":
+			actionBySubject[item.Subject] = item
+		case "execute":
+			ret.executions = append(ret.executions, item)
+			if existing, ok := actionBySubject[item.Subject]; ok {
+				if existing.valueVal == cty.NilVal && item.valueVal != cty.NilVal {
+					existing.valueVal = item.valueVal
+					actionBySubject[item.Subject] = existing
+				}
+			} else {
+				actionBySubject[item.Subject] = item
+			}
+		}
+	}
+	if len(actionBySubject) != 0 {
+		subjects := make([]string, 0, len(actionBySubject))
+		for subject := range actionBySubject {
+			subjects = append(subjects, subject)
+		}
+		sort.Strings(subjects)
+		for _, subject := range subjects {
+			ret.actions = append(ret.actions, actionBySubject[subject])
+		}
+	}
+	return ret
+}
+
+func sortedOutputNames(outputs map[string]string) []string {
+	ret := make([]string, 0, len(outputs))
+	for name := range outputs {
+		ret = append(ret, name)
+	}
+	sort.Strings(ret)
+	return ret
 }
 
 func renderStepAddress(step runbookPlanStep) string {

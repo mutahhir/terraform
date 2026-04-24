@@ -304,6 +304,10 @@ func initCommands(
 			return command.NewRunbookExecuteCommand(meta), nil
 		},
 
+		"runbook show": func() (cli.Command, error) {
+			return command.NewRunbookShowCommand(meta), nil
+		},
+
 		// "rpcapi" is handled a bit differently because the whole point of
 		// this interface is to bypass the CLI layer so wrapping automation can
 		// get as-direct-as-possible access to Terraform Core functionality,

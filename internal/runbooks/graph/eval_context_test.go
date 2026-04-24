@@ -119,6 +119,37 @@ func TestEvalContextExpressionVariablesExposeStepValues(t *testing.T) {
 	}
 }
 
+func TestEvalContextExpressionVariablesIncludeDeclaredStepsBeforeRuntimeState(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{Steps: map[string]*runbookconfigs.Step{
+		"discover_workspace_context": {
+			Name:    "discover_workspace_context",
+			Outputs: []*configs.Output{{Name: "summary"}},
+		},
+	}}})
+
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `step.discover_workspace_context.summary`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value.IsKnown() {
+		t.Fatalf("expected unknown declared step output, got %#v", value)
+	}
+}
+
+func TestEvalContextEvaluateExprRejectsReservedStepForVariable(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("primary"), "invoke_target", cty.StringVal("lambda-a"))
+	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("primary"), "invocation_output", cty.StringVal("ok-a"))
+
+	_, diags := ctx.EvaluateExpr("", mustParseExpression(t, `one([for step in values(step.smoke_invoke_lambda) : step.invocation_output if step.invoke_target == "lambda-a"])`))
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
+	}
+	if got := diags.Err().Error(); !strings.Contains(got, "Reserved runbook symbol") {
+		t.Fatalf("expected reserved symbol diagnostic, got: %s", got)
+	}
+}
+
 func TestEvalContextExpressionVariablesExposeRepeatedStepsAsObjects(t *testing.T) {
 	ctx := NewEvalContext(EvalContextOpts{})
 	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("primary"), "invoke_target", cty.StringVal("lambda-a"))
@@ -150,7 +181,7 @@ func TestEvalContextExpressionVariablesExposeWholeRepeatedStepTraversal(t *testi
 	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invoke_target", cty.StringVal("lambda-b"))
 	ctx.setStepOutputWithKey("smoke_invoke_lambda", terraformaddrs.StringKey("shadow"), "invocation_output", cty.StringVal("ok-b"))
 
-	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `one([for step in values(step.smoke_invoke_lambda) : step.invocation_output if step.invoke_target == "lambda-a"])`))
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `one([for s in values(step.smoke_invoke_lambda) : s.invocation_output if s.invoke_target == "lambda-a"])`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}

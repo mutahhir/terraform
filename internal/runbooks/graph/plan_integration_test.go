@@ -668,6 +668,50 @@ step "inspect" {
 	}
 }
 
+func TestBuildPlanRejectsReservedStepForVariablesInForExpressions(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)
+	writeIntegrationTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "discover_workspace_context" {
+  output "lambda_name" {
+    value = "lambda-a"
+  }
+}
+
+step "smoke_invoke_lambda" {
+  for_each = toset(["lambda-a", "lambda-b"])
+
+  output "invoke_target" {
+    value = each.value
+  }
+
+  output "invocation_output" {
+    value = format("ok-%s", each.value)
+  }
+}
+
+step "summarize_workflow" {
+  output "primary_invoke_output" {
+    value = one([for step in values(step.smoke_invoke_lambda) : step.invocation_output if step.invoke_target == step.discover_workspace_context.lambda_name])
+  }
+}
+`)
+
+	config := loadIntegrationRunbookConfig(t, fs)
+
+	_, planDiags := BuildPlan(config, &PlannerOpts{})
+	if !planDiags.HasErrors() {
+		t.Fatal("expected plan diagnostics for reserved step symbol")
+	}
+	if got := planDiags.Err().Error(); !strings.Contains(got, "Reserved runbook symbol") {
+		t.Fatalf("expected reserved symbol diagnostic, got: %s", got)
+	}
+}
+
 func TestBuildPlanValidatesPostconditionsForExpressionErrors(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	writeIntegrationTestFile(t, fs, "/workspace/main.tf", ``)

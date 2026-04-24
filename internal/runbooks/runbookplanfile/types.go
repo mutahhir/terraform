@@ -8,15 +8,18 @@ import (
 const FormatVersion = 1
 
 type Plan struct {
-	Version           int                           `json:"version"`
-	TerraformVersion  string                        `json:"terraform_version,omitempty"`
-	RunbookSourceDir  string                        `json:"runbook_source_dir,omitempty"`
-	Sources           map[string][]byte             `json:"sources,omitempty"`
-	RunbookLockFile   []byte                        `json:"runbook_lock_file,omitempty"`
-	TerraformLockFile []byte                        `json:"terraform_lock_file,omitempty"`
-	Variables         map[string]plans.DynamicValue `json:"variables,omitempty"`
-	Steps             []*Step                       `json:"steps,omitempty"`
-	PlanInfo          []*StepPlanInfo               `json:"plan_info,omitempty"`
+	Version            int                           `json:"version"`
+	TerraformVersion   string                        `json:"terraform_version,omitempty"`
+	RunbookSourceDir   string                        `json:"runbook_source_dir,omitempty"`
+	Sources            map[string][]byte             `json:"sources,omitempty"`
+	WorkspaceSourceDir string                        `json:"workspace_source_dir,omitempty"`
+	WorkspaceSources   map[string][]byte             `json:"workspace_sources,omitempty"`
+	WorkspaceStateFile []byte                        `json:"workspace_state_file,omitempty"`
+	RunbookLockFile    []byte                        `json:"runbook_lock_file,omitempty"`
+	TerraformLockFile  []byte                        `json:"terraform_lock_file,omitempty"`
+	Variables          map[string]plans.DynamicValue `json:"variables,omitempty"`
+	Steps              []*Step                       `json:"steps,omitempty"`
+	PlanInfo           []*StepPlanInfo               `json:"plan_info,omitempty"`
 }
 
 type Step struct {
