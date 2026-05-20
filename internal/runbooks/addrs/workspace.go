@@ -50,12 +50,5 @@ type WorkspaceResource struct {
 }
 
 func (r WorkspaceResource) String() string {
-	prefix := r.Module.String()
-	if prefix == "workspace" {
-		return prefix + "." + r.Resource.String()
-	}
-	if r.Resource.Mode == terraformaddrs.DataResourceMode {
-		return prefix + ".data." + r.Resource.Type + "." + r.Resource.Name
-	}
-	return prefix + "." + r.Resource.Type + "." + r.Resource.Name
+	return r.Module.String() + "." + r.Resource.String()
 }
