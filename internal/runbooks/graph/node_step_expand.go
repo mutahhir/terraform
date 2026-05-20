@@ -5,7 +5,6 @@ import (
 	"sort"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/dag"
 	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
@@ -319,14 +318,6 @@ func connectStepReferences(g *terraform.Graph, currentStep string, from dag.Vert
 		}
 		g.Connect(dag.BasicEdge(from, dep))
 	}
-}
-
-func mustTraversalForRefKey(key string) hcl.Traversal {
-	traversal, diags := hclsyntax.ParseTraversalAbs([]byte(key), "", hcl.Pos{Line: 1, Column: 1})
-	if diags.HasErrors() {
-		return nil
-	}
-	return traversal
 }
 
 var (

@@ -2,11 +2,8 @@ package runbookgraph
 
 import (
 	"fmt"
-	"sync"
 
-	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/dag"
-	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -27,37 +24,21 @@ type GraphNodeDynamicExpandable interface {
 	DynamicExpand(*EvalContext) (*terraform.Graph, tfdiags.Diagnostics)
 }
 
+// walkGraph walks the given graph, executing nodes according to the operation.
+// For expandable nodes, it calls DynamicExpand to produce a sub-graph and then
+// walks that sub-graph independently (matching Terraform core's pattern).
+// The parent graph is never mutated during the walk.
 func walkGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
-	var graphMu sync.Mutex
-	return walkGraphVertices(graph, ctx, op, nil, &graphMu)
-}
-
-func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperation, allowed map[dag.Vertex]struct{}, graphMu *sync.Mutex) tfdiags.Diagnostics {
 	if graph == nil {
 		return nil
 	}
-	var visited sync.Map
-	callback := func(vertex dag.Vertex) tfdiags.Diagnostics {
-		if allowed != nil {
-			if _, ok := allowed[vertex]; !ok {
-				return nil
-			}
-		}
+
+	diags := graph.AcyclicGraph.Walk(func(vertex dag.Vertex) tfdiags.Diagnostics {
 		if dag.VertexName(vertex) == "root" {
 			return nil
 		}
-		if _, loaded := visited.LoadOrStore(vertex, struct{}{}); loaded {
-			return nil
-		}
-		if op != walkOperationExecute {
-			graphMu.Lock()
-			rewireExactStepOutputReferences(graph, vertex)
-			graphMu.Unlock()
-		}
+
 		if expandable, ok := vertex.(GraphNodeDynamicExpandable); ok {
-			if op == walkOperationExecute {
-				return nil
-			}
 			if shouldSkipVertex(graph, ctx, vertex) {
 				markVertexSkipped(ctx, vertex, graph)
 				return nil
@@ -66,51 +47,29 @@ func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperatio
 			if expandDiags.HasErrors() {
 				return expandDiags
 			}
-			graphMu.Lock()
-			subsumeExpandedGraph(graph, expanded)
-			for _, expandedVertex := range expanded.Vertices() {
-				if dag.VertexName(expandedVertex) == "root" {
-					continue
-				}
-				if op != walkOperationExecute {
-					rewireExactStepOutputReferences(graph, expandedVertex)
-				}
+			if expanded != nil {
+				// Walk the sub-graph independently — the parent graph remains
+				// unchanged. Results flow back via EvalContext.
+				return walkSubGraph(expanded, ctx, op)
 			}
-			graphMu.Unlock()
-			return walkGraphVertices(graph, ctx, op, vertexSet(expanded.Vertices()), graphMu)
-		}
-		executable, ok := vertex.(GraphNodeExecutable)
-		if !ok {
 			return nil
 		}
-		if shouldSkipVertex(graph, ctx, vertex) {
-			markVertexSkipped(ctx, vertex, graph)
-			return nil
-		}
-		return executable.Execute(ctx, op)
-	}
 
-	diags := graph.AcyclicGraph.Walk(callback)
+		if executable, ok := vertex.(GraphNodeExecutable); ok {
+			if shouldSkipVertex(graph, ctx, vertex) {
+				markVertexSkipped(ctx, vertex, graph)
+				return nil
+			}
+			return executable.Execute(ctx, op)
+		}
+
+		return nil
+	})
 
 	if op == walkOperationPlan {
-		for _, vertex := range graph.TopologicalOrder() {
-			if allowed != nil {
-				if _, ok := allowed[vertex]; !ok {
-					continue
-				}
-			}
-			if dag.VertexName(vertex) == "root" {
-				continue
-			}
-			if _, ok := stepNameForVertex(vertex); !ok {
-				continue
-			}
-			step, ok := stepForVertex(ctx, vertex)
-			if !ok {
-				continue
-			}
+		for _, step := range ctx.StepsInOrder() {
 			if step.Status == runbookruntime.StepStatusPlanned {
-				setStepStatusForVertex(ctx, vertex, runbookruntime.StepStatusCompleted, "")
+				ctx.setStepStatusWithKey(step.Name, step.InstanceKey, runbookruntime.StepStatusCompleted, "")
 			}
 		}
 	}
@@ -118,130 +77,30 @@ func walkGraphVertices(graph *terraform.Graph, ctx *EvalContext, op walkOperatio
 	return diags
 }
 
-func vertexSet(vertices []dag.Vertex) map[dag.Vertex]struct{} {
-	if len(vertices) == 0 {
+// walkSubGraph walks an expanded sub-graph produced by DynamicExpand.
+// Sub-graphs are flat (no nested expansion) — they contain only executable nodes.
+func walkSubGraph(graph *terraform.Graph, ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
+	if graph == nil {
 		return nil
 	}
-	ret := make(map[dag.Vertex]struct{}, len(vertices))
-	for _, vertex := range vertices {
-		ret[vertex] = struct{}{}
-	}
-	return ret
-}
 
-func subsumeExpandedGraph(parent, expanded *terraform.Graph) {
-	if parent == nil || expanded == nil {
-		return
-	}
-	parent.Subsume(&expanded.AcyclicGraph.Graph)
-}
-
-func rewireExactStepOutputReferences(graph *terraform.Graph, vertex dag.Vertex) {
-	if graph == nil || vertex == nil {
-		return
-	}
-	refs := referencesForVertex(vertex)
-	if len(refs) == 0 {
-		return
-	}
-	currentStep, _ := stepNameForVertex(vertex)
-	for _, ref := range refs {
-		stepName := ""
-		var targets []*NodeStepOutput
-		switch r := ref.(type) {
-		case runbookaddrs.StepOutput:
-			stepName = r.Step.StepName
-			if stepName == "" || stepName == currentStep {
-				continue
-			}
-			targets = matchingStepOutputVertices(graph, r)
-		case runbookaddrs.Step:
-			stepName = r.Step.StepName
-			if stepName == "" || stepName == currentStep {
-				continue
-			}
-			targets = allStepOutputVertices(graph, r.Step)
-		default:
-			continue
-		}
-		if len(targets) == 0 {
-			continue
-		}
-		graph.RemoveEdge(dag.BasicEdge(vertex, &NodeExpandStep{StepName: stepName}))
-		for _, target := range targets {
-			graph.Connect(dag.BasicEdge(vertex, target))
-		}
-	}
-}
-
-func referencesForVertex(vertex dag.Vertex) []runbookaddrs.Referenceable {
-	switch node := vertex.(type) {
-	case *NodeExpandStep:
-		if node == nil || node.Config == nil {
+	return graph.AcyclicGraph.Walk(func(vertex dag.Vertex) tfdiags.Diagnostics {
+		if dag.VertexName(vertex) == "root" {
 			return nil
 		}
-		return referencesForStep(node.Config)
-	case *NodeStepAction:
-		return referencesForStepAction(node.Action)
-	case *NodeStepData:
-		return referencesForStepResource(node.Data)
-	case *NodeStepList:
-		return referencesForStepResource(node.List)
-	case *NodeStepLocal:
-		return referencesForStepLocal(node.Local)
-	case *NodeStepExecution:
-		return referencesForStepExecution(node.Execution)
-	case *NodeStepCondition:
-		return referencesForStepCondition(node.Condition)
-	case *NodeStepOutput:
-		return referencesForStepOutput(node.Output)
-	default:
-		return nil
-	}
-}
 
-func matchingStepOutputVertices(graph *terraform.Graph, ref runbookaddrs.StepOutput) []*NodeStepOutput {
-	if graph == nil || ref.Step.StepName == "" {
-		return nil
-	}
-	var ret []*NodeStepOutput
-	for _, vertex := range graph.Vertices() {
-		node, ok := vertex.(*NodeStepOutput)
-		if !ok || node.Step == nil || node.Output == nil {
-			continue
+		executable, ok := vertex.(GraphNodeExecutable)
+		if !ok {
+			return nil
 		}
-		if node.Step.StepName != ref.Step.StepName || node.Output.Name != ref.OutputName {
-			continue
-		}
-		if ref.Step.InstanceKey != nil && ref.Step.InstanceKey != terraformaddrs.NoKey {
-			if node.Step.InstanceKey != ref.Step.InstanceKey {
-				continue
-			}
-		}
-		ret = append(ret, node)
-	}
-	return ret
-}
 
-func allStepOutputVertices(graph *terraform.Graph, step runbookaddrs.StepInstance) []*NodeStepOutput {
-	if graph == nil || step.StepName == "" {
-		return nil
-	}
-	var ret []*NodeStepOutput
-	for _, vertex := range graph.Vertices() {
-		node, ok := vertex.(*NodeStepOutput)
-		if !ok || node.Step == nil || node.Output == nil {
-			continue
+		if shouldSkipVertex(graph, ctx, vertex) {
+			markVertexSkipped(ctx, vertex, graph)
+			return nil
 		}
-		if node.Step.StepName != step.StepName {
-			continue
-		}
-		if step.InstanceKey != nil && step.InstanceKey != terraformaddrs.NoKey && node.Step.InstanceKey != step.InstanceKey {
-			continue
-		}
-		ret = append(ret, node)
-	}
-	return ret
+
+		return executable.Execute(ctx, op)
+	})
 }
 
 func shouldSkipVertex(graph *terraform.Graph, ctx *EvalContext, vertex dag.Vertex) bool {

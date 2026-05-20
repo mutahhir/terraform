@@ -297,7 +297,7 @@ func TestPlanBuilderBuildIncludesStepExpansionNode(t *testing.T) {
 }
 
 func TestCrossStepOutputReferenceTransformerConnectsConsumerOutputToProducerOutput(t *testing.T) {
-	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
+	cfg := &runbookconfigs.RunbookConfig{
 		Variables: map[string]*configs.Variable{
 			"input": {Name: "input"},
 		},
@@ -311,40 +311,39 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerOutputToProducerOutp
 				Outputs: []*configs.Output{{Name: "final", Expr: mustParseExpression(t, `step.producer.result`)}},
 			},
 		},
-	})
+	}
+	graph, diags := NewPlan(cfg)
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
-	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{
-		Variables: map[string]*configs.Variable{
-			"input": {Name: "input", Default: cty.StringVal("ok")},
-		},
-		Steps: map[string]*runbookconfigs.Step{
-			"producer": {
-				Name:    "producer",
-				Outputs: []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `var.input`)}},
-			},
-			"consumer": {
-				Name:    "consumer",
-				Outputs: []*configs.Output{{Name: "final", Expr: mustParseExpression(t, `step.producer.result`)}},
-			},
-		},
-	}})
+
+	// Verify parent graph has step-level ordering (consumer depends on producer)
+	consumerExpand := &NodeExpandStep{StepName: "consumer"}
+	producerExpand := &NodeExpandStep{StepName: "producer"}
+	if !graph.DownEdges(consumerExpand).Include(producerExpand) {
+		t.Fatal("expected consumer expand node to depend on producer expand node")
+	}
+
+	// Verify cross-step output resolution via EvalContext
+	ctx := NewEvalContext(EvalContextOpts{Config: cfg})
 	ctx.SetVariable("input", &terraform.InputValue{Value: cty.StringVal("ok")})
 	walkDiags := walkGraph(graph, ctx, walkOperationPlan)
 	if walkDiags.HasErrors() {
 		t.Fatalf("unexpected walk diagnostics: %s", walkDiags.Err())
 	}
 
-	consumer := &NodeStepOutput{Step: &NodeStepInstance{StepName: "consumer"}, Output: &configs.Output{Name: "final"}}
-	producer := &NodeStepOutput{Step: &NodeStepInstance{StepName: "producer"}, Output: &configs.Output{Name: "result"}}
-	if !graph.DownEdges(consumer).Include(producer) {
-		t.Fatal("expected consumer output to depend on referenced producer output")
+	// Consumer's output should have resolved the producer's output value
+	val, ok := ctx.stepOutputWithKey("consumer", nil, "final")
+	if !ok {
+		t.Fatal("expected consumer output to be set after walk")
+	}
+	if val.AsString() != "ok" {
+		t.Fatalf("expected consumer output to resolve producer value, got %s", val.AsString())
 	}
 }
 
 func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutput(t *testing.T) {
-	graph, diags := NewPlan(&runbookconfigs.RunbookConfig{
+	cfg := &runbookconfigs.RunbookConfig{
 		Steps: map[string]*runbookconfigs.Step{
 			"producer": {
 				Name:    "producer",
@@ -355,31 +354,33 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutpu
 				Locals: []*configs.Local{{Name: "copied", Expr: mustParseExpression(t, `step.producer.result`)}},
 			},
 		},
-	})
+	}
+	graph, diags := NewPlan(cfg)
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
-	ctx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{
-		Steps: map[string]*runbookconfigs.Step{
-			"producer": {
-				Name:    "producer",
-				Outputs: []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `"ok"`)}},
-			},
-			"consumer": {
-				Name:   "consumer",
-				Locals: []*configs.Local{{Name: "copied", Expr: mustParseExpression(t, `step.producer.result`)}},
-			},
-		},
-	}})
+
+	// Verify parent graph has step-level ordering
+	consumerExpand := &NodeExpandStep{StepName: "consumer"}
+	producerExpand := &NodeExpandStep{StepName: "producer"}
+	if !graph.DownEdges(consumerExpand).Include(producerExpand) {
+		t.Fatal("expected consumer expand node to depend on producer expand node")
+	}
+
+	// Verify cross-step local resolution via EvalContext
+	ctx := NewEvalContext(EvalContextOpts{Config: cfg})
 	walkDiags := walkGraph(graph, ctx, walkOperationPlan)
 	if walkDiags.HasErrors() {
 		t.Fatalf("unexpected walk diagnostics: %s", walkDiags.Err())
 	}
 
-	consumer := &NodeStepLocal{Step: &NodeStepInstance{StepName: "consumer"}, Local: &configs.Local{Name: "copied"}}
-	producer := &NodeStepOutput{Step: &NodeStepInstance{StepName: "producer"}, Output: &configs.Output{Name: "result"}}
-	if !graph.DownEdges(consumer).Include(producer) {
-		t.Fatal("expected consumer local to depend on referenced producer output")
+	// Consumer's local should have resolved the producer's output
+	val, ok := ctx.stepLocalWithKey("consumer", nil, "copied")
+	if !ok {
+		t.Fatal("expected consumer local to be set after walk")
+	}
+	if val.AsString() != "ok" {
+		t.Fatalf("expected consumer local to resolve producer value, got %s", val.AsString())
 	}
 }
 
