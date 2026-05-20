@@ -31,8 +31,56 @@ func TestParseRefStepOutput(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected StepOutput, got %T", ref.Subject)
 	}
-	if output.Step.StepName != "deploy" || output.OutputName != "result" {
+	if output.Step.StepName != "deploy" || output.Step.InstanceKey != terraformaddrs.NoKey || output.OutputName != "result" {
 		t.Fatalf("unexpected step output address: %s", output.String())
+	}
+}
+
+func TestParseRefStepOutputCountInstance(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `step.deploy[0].result`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	output, ok := ref.Subject.(StepOutput)
+	if !ok {
+		t.Fatalf("expected StepOutput, got %T", ref.Subject)
+	}
+	if output.Step.StepName != "deploy" || output.Step.InstanceKey != terraformaddrs.IntKey(0) || output.OutputName != "result" {
+		t.Fatalf("unexpected step output address: %s", output.String())
+	}
+}
+
+func TestParseRefStepOutputForEachInstance(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `step.deploy["primary"].result`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	output, ok := ref.Subject.(StepOutput)
+	if !ok {
+		t.Fatalf("expected StepOutput, got %T", ref.Subject)
+	}
+	if output.Step.StepName != "deploy" || output.Step.InstanceKey != terraformaddrs.StringKey("primary") || output.OutputName != "result" {
+		t.Fatalf("unexpected step output address: %s", output.String())
+	}
+}
+
+func TestParseRefStepOutputNestedAttributeTraversal(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `step.deploy.result.foo`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	output, ok := ref.Subject.(StepOutput)
+	if !ok {
+		t.Fatalf("expected StepOutput, got %T", ref.Subject)
+	}
+	if output.Step.StepName != "deploy" || output.Step.InstanceKey != terraformaddrs.NoKey || output.OutputName != "result" {
+		t.Fatalf("unexpected step output address: %s", output.String())
+	}
+	if len(ref.Remaining) != 1 {
+		t.Fatalf("expected nested attribute traversal to remain, got %#v", ref.Remaining)
+	}
+	if remain, ok := ref.Remaining[0].(hcl.TraverseAttr); !ok || remain.Name != "foo" {
+		t.Fatalf("unexpected remaining traversal %#v", ref.Remaining)
 	}
 }
 
@@ -45,8 +93,43 @@ func TestParseRefWholeStep(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Step, got %T", ref.Subject)
 	}
-	if step.Step.StepName != "deploy" {
-		t.Fatalf("unexpected step name: %s", step.String())
+	if step.Step.StepName != "deploy" || step.Step.InstanceKey != terraformaddrs.NoKey {
+		t.Fatalf("unexpected step address: %s", step.String())
+	}
+}
+
+func TestParseRefWholeStepCountInstance(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `step.deploy[0]`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	step, ok := ref.Subject.(Step)
+	if !ok {
+		t.Fatalf("expected Step, got %T", ref.Subject)
+	}
+	if step.Step.StepName != "deploy" || step.Step.InstanceKey != terraformaddrs.IntKey(0) {
+		t.Fatalf("unexpected step address: %s", step.String())
+	}
+}
+
+func TestParseRefWholeStepForEachInstance(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `step.deploy["primary"]`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	step, ok := ref.Subject.(Step)
+	if !ok {
+		t.Fatalf("expected Step, got %T", ref.Subject)
+	}
+	if step.Step.StepName != "deploy" || step.Step.InstanceKey != terraformaddrs.StringKey("primary") {
+		t.Fatalf("unexpected step address: %s", step.String())
+	}
+}
+
+func TestParseRefRejectsInvalidStepInstanceIndex(t *testing.T) {
+	_, diags := ParseRef(mustParseTraversal(t, `step.deploy[1.5].result`))
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
 	}
 }
 

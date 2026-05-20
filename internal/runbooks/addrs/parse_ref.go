@@ -39,18 +39,7 @@ func ParseRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
 		typ, name, rng, remain, diags := parseDoubleAttrRef(traversal)
 		return &Reference{Subject: terraformaddrs.Resource{Mode: terraformaddrs.ListResourceMode, Type: typ, Name: name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
 	case "step":
-		stepName, rng, remain, diags := parseSingleAttrRef(traversal)
-		if diags.HasErrors() {
-			return nil, diags
-		}
-		if len(remain) == 0 {
-			return &Reference{Subject: Step{Step: StepInstance{StepName: stepName, InstanceKey: terraformaddrs.NoKey}}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
-		}
-		firstAttr, ok := remain[0].(hcl.TraverseAttr)
-		if ok {
-			return &Reference{Subject: StepOutput{Step: StepInstance{StepName: stepName, InstanceKey: terraformaddrs.NoKey}, OutputName: firstAttr.Name}, SourceRange: tfdiags.SourceRangeFromHCL(hcl.RangeBetween(traversal[0].SourceRange(), remain[0].SourceRange())), Remaining: remain[1:]}, diags
-		}
-		return &Reference{Subject: Step{Step: StepInstance{StepName: stepName, InstanceKey: terraformaddrs.NoKey}}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
+		return parseStepRef(traversal)
 	default:
 		return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
@@ -110,6 +99,40 @@ func parseDoubleAttrRef(traversal hcl.Traversal) (string, string, hcl.Range, hcl
 		})
 	}
 	return first.Name, second.Name, hcl.RangeBetween(traversal[0].SourceRange(), traversal[2].SourceRange()), traversal[3:], nil
+}
+
+func parseStepRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
+	stepName, rng, remain, diags := parseSingleAttrRef(traversal)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	step := StepInstance{StepName: stepName, InstanceKey: terraformaddrs.NoKey}
+	if len(remain) > 0 {
+		if first, ok := remain[0].(hcl.TraverseIndex); ok {
+			parsed, err := terraformaddrs.ParseInstanceKey(first.Key)
+			if err != nil {
+				return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid index key",
+					Detail:   fmt.Sprintf("Invalid index for step instance: %s.", err),
+					Subject:  first.SourceRange().Ptr(),
+				})
+			}
+			step.InstanceKey = parsed
+			rng = hcl.RangeBetween(traversal[0].SourceRange(), first.SourceRange())
+			remain = remain[1:]
+		}
+	}
+
+	if len(remain) == 0 {
+		return &Reference{Subject: Step{Step: step}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, nil
+	}
+	firstAttr, ok := remain[0].(hcl.TraverseAttr)
+	if ok {
+		return &Reference{Subject: StepOutput{Step: step, OutputName: firstAttr.Name}, SourceRange: tfdiags.SourceRangeFromHCL(hcl.RangeBetween(traversal[0].SourceRange(), remain[0].SourceRange())), Remaining: remain[1:]}, nil
+	}
+	return &Reference{Subject: Step{Step: step}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, nil
 }
 
 func parseWorkspaceRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
