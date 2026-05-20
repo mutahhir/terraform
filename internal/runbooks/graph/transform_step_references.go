@@ -27,6 +27,7 @@ func (t *StepOutputReferenceTransformer) Transform(g *terraform.Graph) error {
 			default:
 				continue
 			}
+			// TODO: We need to catch this situation within a validation pass
 			if stepName == "" {
 				continue
 			}
@@ -40,6 +41,12 @@ func (t *StepOutputReferenceTransformer) Transform(g *terraform.Graph) error {
 	return nil
 }
 
+// referencesForStep returns all the external references that this step's
+// contents need — i.e., the other steps this step depends on. It crawls
+// every expression within the step config (count, for_each, locals, actions,
+// data sources, executions, conditions, outputs) and extracts traversals that
+// resolve to other step addresses. These are used by
+// StepOutputReferenceTransformer to wire dependency edges in the graph.
 func referencesForStep(step *runbookconfigs.Step) []runbookaddrs.Referenceable {
 	if step == nil {
 		return nil

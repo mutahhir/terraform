@@ -24,6 +24,9 @@ func NewPlan(config *runbookconfigs.RunbookConfig) (*terraform.Graph, tfdiags.Di
 }
 
 func (b *PlanBuilder) Build() (*terraform.Graph, tfdiags.Diagnostics) {
+	// RootModuleInstance is required by BasicGraphBuilder's signature but is
+	// unused by runbooks — runbooks have no module hierarchy. The path is
+	// stored on the resulting Graph struct and never read by any runbook code.
 	return (&terraform.BasicGraphBuilder{
 		Steps: b.Steps(),
 		Name:  "RunbookPlanBuilder",
@@ -40,9 +43,8 @@ func (b *PlanBuilder) Steps() []terraform.GraphTransformer {
 		&PlanOutputTransformer{Config: b.Config},
 		&StepOutputReferenceTransformer{},
 		&terraform.RootTransformer{},
+		&terraform.TransitiveReductionTransformer{},
 	}
-
-	steps = append(steps, &terraform.TransitiveReductionTransformer{})
 
 	return steps
 }
