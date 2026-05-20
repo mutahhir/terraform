@@ -172,7 +172,7 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 			actions = append(actions, child)
 		}
 		for _, data := range n.Config.DataSources {
-			child := &NodeStepData{Step: instance, Data: data}
+			child := &NodeStepData{Step: instance, Data: data, RefreshAtApply: isDynamicDataSource(n.Config, data)}
 			g.Add(child)
 			g.Connect(dag.BasicEdge(instance, child))
 			refTargets[terraformaddrs.Resource{Mode: terraformaddrs.DataResourceMode, Type: data.Type, Name: data.Name}.String()] = child
@@ -250,6 +250,13 @@ func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdi
 		}
 		for _, output := range outputs {
 			connectStepReferences(&g, n.StepName, output, referencesForStepOutput(output.Output), refTargets)
+			// Outputs referencing dynamic data sources must wait for the
+			// execution node that refreshes them via read_datasource.
+			if outputReferencesDynamicData(output.Output, n.Config) {
+				for _, execution := range executions {
+					g.Connect(dag.BasicEdge(output, execution))
+				}
+			}
 		}
 		for _, local := range locals {
 			g.Connect(dag.BasicEdge(finalize, local))

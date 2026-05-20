@@ -34,7 +34,7 @@ func buildExpandedStepInstanceGraph(stepName string, cfg *runbookconfigs.Step, e
 		actions = append(actions, child)
 	}
 	for _, data := range cfg.DataSources {
-		child := &NodeStepData{Step: instance, Data: data}
+		child := &NodeStepData{Step: instance, Data: data, RefreshAtApply: isDynamicDataSource(cfg, data)}
 		g.Add(child)
 		g.Connect(dag.BasicEdge(instance, child))
 		refTargets[terraformaddrs.Resource{Mode: terraformaddrs.DataResourceMode, Type: data.Type, Name: data.Name}.String()] = child
@@ -112,6 +112,11 @@ func buildExpandedStepInstanceGraph(stepName string, cfg *runbookconfigs.Step, e
 	}
 	for _, output := range outputs {
 		connectStepReferences(&g, stepName, output, referencesForStepOutput(output.Output), refTargets)
+		if outputReferencesDynamicData(output.Output, cfg) {
+			for _, execution := range executions {
+				g.Connect(dag.BasicEdge(output, execution))
+			}
+		}
 	}
 	for _, local := range locals {
 		g.Connect(dag.BasicEdge(finalize, local))

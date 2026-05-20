@@ -25,6 +25,8 @@ func validateStepDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalCon
 
 	cache := newProviderSchemaCache(config, opts)
 	var diags tfdiags.Diagnostics
+	diags = diags.Append(validateReadDataSourceRefs(config))
+	diags = diags.Append(validateNoDynamicDataInExpansion(config))
 	for _, step := range sortSteps(config.Steps) {
 		diags = diags.Append(validateStepActionDeclarations(config, ctx, cache, step))
 		diags = diags.Append(validateStepDataDeclarations(config, ctx, cache, step))

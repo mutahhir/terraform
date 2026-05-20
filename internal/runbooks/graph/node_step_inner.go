@@ -121,8 +121,9 @@ func (n *NodeStepAction) Execute(ctx *EvalContext, op walkOperation) tfdiags.Dia
 }
 
 type NodeStepData struct {
-	Step *NodeStepInstance
-	Data *configs.Resource
+	Step           *NodeStepInstance
+	Data           *configs.Resource
+	RefreshAtApply bool // true if a read_datasource directive references this data source
 }
 
 func (n *NodeStepData) Hashcode() interface{} {
@@ -187,6 +188,14 @@ func (n *NodeStepData) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagn
 		}),
 	})
 	resp := provider.ReadDataSource(providers.ReadDataSourceRequest{TypeName: n.Data.Type, Config: configVal, ProviderMeta: providerMetaVal})
+	if resp.Diagnostics.HasErrors() && n.RefreshAtApply {
+		// Data source will be refreshed at apply time via read_datasource.
+		// Store DynamicVal as placeholder — plan continues without failure.
+		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+			state.data[n.Data.Addr().String()] = cty.DynamicVal
+		})
+		return nil
+	}
 	diags = diags.Append(resp.Diagnostics)
 	if !diags.HasErrors() {
 		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
@@ -376,33 +385,48 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 		return diags
 	}
 	var diags tfdiags.Diagnostics
-	for _, traversal := range n.Execution.InvokeAction {
-		subject := fmt.Sprintf("execute.%d", n.Index)
-		value := cty.NilVal
-		if ref, refDiags := runbookaddrs.ParseRef(traversal); !refDiags.HasErrors() && ref != nil {
-			subject = ref.Subject.String()
-			if actionAddr, ok := ref.Subject.(terraformaddrs.Action); ok {
-				if plannedConfig, ok := ctx.actionPlannedConfigWithKey(n.Step.StepName, n.Step.InstanceKey, actionAddr.String()); ok {
-					value = plannedConfig
-				}
-			} else if workspaceAction, ok := ref.Subject.(runbookaddrs.WorkspaceAction); ok && op == walkOperationPlan {
-				action := workspaceActionConfig(ctx.WorkspaceConfig(), workspaceAction)
-				if action != nil {
-					providerType := providerTypeForAction(ctx.Config(), action)
-					provider, providerDiags := runbookProvider(ctx, providerType)
-					diags = diags.Append(providerDiags)
-					if !providerDiags.HasErrors() {
-						plannedConfig, configDiags := evaluateActionConfigForInstance(ctx, provider, n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, action)
-						diags = diags.Append(configDiags)
-						if !configDiags.HasErrors() {
-							ctx.setActionPlannedWithKey(n.Step.StepName, n.Step.InstanceKey, workspaceAction.String(), plannedConfig)
-							value = plannedConfig
+	planOps := n.Execution.Operations
+	if len(planOps) == 0 {
+		for _, t := range n.Execution.InvokeAction {
+			planOps = append(planOps, runbookconfigs.ExecuteOperation{Type: runbookconfigs.ExecuteOpInvokeAction, Traversal: t})
+		}
+	}
+	for _, operation := range planOps {
+		switch operation.Type {
+		case runbookconfigs.ExecuteOpInvokeAction:
+			traversal := operation.Traversal
+			subject := fmt.Sprintf("execute.%d", n.Index)
+			value := cty.NilVal
+			if ref, refDiags := runbookaddrs.ParseRef(traversal); !refDiags.HasErrors() && ref != nil {
+				subject = ref.Subject.String()
+				if actionAddr, ok := ref.Subject.(terraformaddrs.Action); ok {
+					if plannedConfig, ok := ctx.actionPlannedConfigWithKey(n.Step.StepName, n.Step.InstanceKey, actionAddr.String()); ok {
+						value = plannedConfig
+					}
+				} else if workspaceAction, ok := ref.Subject.(runbookaddrs.WorkspaceAction); ok && op == walkOperationPlan {
+					action := workspaceActionConfig(ctx.WorkspaceConfig(), workspaceAction)
+					if action != nil {
+						providerType := providerTypeForAction(ctx.Config(), action)
+						provider, providerDiags := runbookProvider(ctx, providerType)
+						diags = diags.Append(providerDiags)
+						if !providerDiags.HasErrors() {
+							plannedConfig, configDiags := evaluateActionConfigForInstance(ctx, provider, n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, action)
+							diags = diags.Append(configDiags)
+							if !configDiags.HasErrors() {
+								ctx.setActionPlannedWithKey(n.Step.StepName, n.Step.InstanceKey, workspaceAction.String(), plannedConfig)
+								value = plannedConfig
+							}
 						}
 					}
 				}
 			}
+			ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "execute", Subject: subject, Status: runbookruntime.StepStatusPlanned, Value: value})
+		case runbookconfigs.ExecuteOpReadDataSource:
+			traversal := operation.Traversal
+			if ref, refDiags := runbookaddrs.ParseRef(traversal); !refDiags.HasErrors() && ref != nil {
+				ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "read_datasource", Subject: ref.Subject.String(), Status: runbookruntime.StepStatusPlanned})
+			}
 		}
-		ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "execute", Subject: subject, Status: runbookruntime.StepStatusPlanned, Value: value})
 	}
 	if diags.HasErrors() {
 		return diags
@@ -410,81 +434,175 @@ func (n *NodeStepExecution) Execute(ctx *EvalContext, op walkOperation) tfdiags.
 	if op != walkOperationExecute {
 		return nil
 	}
+	operations := n.Execution.Operations
+	if len(operations) == 0 {
+		// Backward compatibility: if Operations was not populated, derive from InvokeAction
+		for _, t := range n.Execution.InvokeAction {
+			operations = append(operations, runbookconfigs.ExecuteOperation{Type: runbookconfigs.ExecuteOpInvokeAction, Traversal: t})
+		}
+	}
 	providerCache := map[terraformaddrs.Provider]providers.Interface{}
-	for _, traversal := range n.Execution.InvokeAction {
-		ref, refDiags := runbookaddrs.ParseRef(traversal)
-		diags = diags.Append(refDiags)
-		if refDiags.HasErrors() || ref == nil {
-			continue
+	for _, operation := range operations {
+		switch operation.Type {
+		case runbookconfigs.ExecuteOpInvokeAction:
+			traversal := operation.Traversal
+			diags = diags.Append(n.executeInvokeAction(ctx, traversal, providerCache))
+		case runbookconfigs.ExecuteOpReadDataSource:
+			traversal := operation.Traversal
+			diags = diags.Append(n.executeReadDataSource(ctx, traversal, providerCache))
 		}
-		var actionAddr terraformaddrs.Action
-		var action *configs.Action
-		actionStateKey := ""
-		switch subject := ref.Subject.(type) {
-		case terraformaddrs.Action:
-			actionAddr = subject
-			action = actionConfigForStep(ctx.Config(), n.Step.StepName, actionAddr)
-			actionStateKey = actionAddr.String()
-		case runbookaddrs.WorkspaceAction:
-			actionAddr = subject.Action
-			action = workspaceActionConfig(ctx.WorkspaceConfig(), subject)
-			actionStateKey = subject.String()
-		default:
-			continue
+		if diags.HasErrors() {
+			break
 		}
-		if action == nil {
-			continue
+	}
+	return diags
+}
+
+func (n *NodeStepExecution) executeReadDataSource(ctx *EvalContext, traversal hcl.Traversal, providerCache map[terraformaddrs.Provider]providers.Interface) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	ref, refDiags := runbookaddrs.ParseRef(traversal)
+	diags = diags.Append(refDiags)
+	if refDiags.HasErrors() || ref == nil {
+		return diags
+	}
+	resource, ok := ref.Subject.(terraformaddrs.Resource)
+	if !ok || resource.Mode != terraformaddrs.DataResourceMode {
+		return diags
+	}
+
+	// Find the declared data source config in this step
+	dataConfig := findStepDataSource(ctx.Config(), n.Step.StepName, resource)
+	if dataConfig == nil {
+		return diags
+	}
+
+	// Get provider
+	providerType := providerTypeForResource(ctx.Config(), dataConfig)
+	provider, ok := providerCache[providerType]
+	if !ok {
+		var providerDiags tfdiags.Diagnostics
+		provider, providerDiags = runbookProvider(ctx, providerType)
+		diags = diags.Append(providerDiags)
+		if providerDiags.HasErrors() {
+			return diags
 		}
-		subject := ref.Subject.String()
-		providerType := providerTypeForAction(ctx.Config(), action)
-		provider, ok := providerCache[providerType]
-		if !ok {
-			var providerDiags tfdiags.Diagnostics
-			provider, providerDiags = runbookProvider(ctx, providerType)
-			diags = diags.Append(providerDiags)
-			if providerDiags.HasErrors() {
-				continue
+		providerCache[providerType] = provider
+	}
+
+	// Evaluate config with current eval context
+	schemaResp := provider.GetProviderSchema()
+	resourceSchema := schemaResp.SchemaForResourceAddr(dataConfig.Addr())
+	configVal := cty.EmptyObjectVal
+	providerMetaVal := cty.EmptyObjectVal
+	if schemaResp.ProviderMeta.Body != nil {
+		providerMetaVal = schemaResp.ProviderMeta.Body.EmptyValue()
+	}
+	if resourceSchema.Body != nil {
+		value, _, valueDiags := ctx.EvaluateBlockForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, dataConfig.Config, resourceSchema.Body)
+		diags = diags.Append(valueDiags)
+		if diags.HasErrors() {
+			return diags
+		}
+		configVal = value
+	}
+
+	// Read fresh
+	resp := provider.ReadDataSource(providers.ReadDataSourceRequest{
+		TypeName:     dataConfig.Type,
+		Config:       configVal,
+		ProviderMeta: providerMetaVal,
+	})
+	diags = diags.Append(resp.Diagnostics)
+	if !resp.Diagnostics.HasErrors() {
+		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+			state.data[dataConfig.Addr().String()] = resp.State
+		})
+	}
+	ctx.EmitStepPlanInfo(StepPlanInfo{
+		StepName:  n.Step.StepName,
+		StepIndex: stepRuntimeIndex(n.Step),
+		Type:      "read_datasource",
+		Subject:   dataConfig.Addr().String(),
+		Status:    runbookruntime.StepStatusCompleted,
+	})
+	return diags
+}
+
+func (n *NodeStepExecution) executeInvokeAction(ctx *EvalContext, traversal hcl.Traversal, providerCache map[terraformaddrs.Provider]providers.Interface) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	ref, refDiags := runbookaddrs.ParseRef(traversal)
+	diags = diags.Append(refDiags)
+	if refDiags.HasErrors() || ref == nil {
+		return diags
+	}
+	var actionAddr terraformaddrs.Action
+	var action *configs.Action
+	actionStateKey := ""
+	switch subject := ref.Subject.(type) {
+	case terraformaddrs.Action:
+		actionAddr = subject
+		action = actionConfigForStep(ctx.Config(), n.Step.StepName, actionAddr)
+		actionStateKey = actionAddr.String()
+	case runbookaddrs.WorkspaceAction:
+		actionAddr = subject.Action
+		action = workspaceActionConfig(ctx.WorkspaceConfig(), subject)
+		actionStateKey = subject.String()
+	default:
+		return diags
+	}
+	if action == nil {
+		return diags
+	}
+	subject := ref.Subject.String()
+	providerType := providerTypeForAction(ctx.Config(), action)
+	provider, ok := providerCache[providerType]
+	if !ok {
+		var providerDiags tfdiags.Diagnostics
+		provider, providerDiags = runbookProvider(ctx, providerType)
+		diags = diags.Append(providerDiags)
+		if providerDiags.HasErrors() {
+			return diags
+		}
+		providerCache[providerType] = provider
+	}
+	plannedConfig := cty.EmptyObjectVal
+	if existing, ok := ctx.actionPlannedConfigWithKey(n.Step.StepName, n.Step.InstanceKey, actionStateKey); ok {
+		plannedConfig = existing
+	} else if _, ok := ref.Subject.(runbookaddrs.WorkspaceAction); ok {
+		var configDiags tfdiags.Diagnostics
+		plannedConfig, configDiags = evaluateActionConfigForInstance(ctx, provider, n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, action)
+		diags = diags.Append(configDiags)
+		if configDiags.HasErrors() {
+			return diags
+		}
+		ctx.setActionPlannedWithKey(n.Step.StepName, n.Step.InstanceKey, actionStateKey, plannedConfig)
+	}
+	ctx.EmitActionEvent(ActionExecEvent{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Subject: subject, ActionType: action.Type, Status: "running"})
+	resp := provider.InvokeAction(providers.InvokeActionRequest{ActionType: action.Type, PlannedActionData: plannedConfig})
+	diags = diags.Append(resp.Diagnostics)
+	if resp.Events != nil {
+		for event := range resp.Events {
+			switch e := event.(type) {
+			case providers.InvokeActionEvent_Progress:
+				ctx.EmitActionEvent(ActionExecEvent{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Subject: subject, ActionType: action.Type, Status: "progress", Message: e.Message})
+			case providers.InvokeActionEvent_Completed:
+				ctx.EmitActionEvent(ActionExecEvent{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Subject: subject, ActionType: action.Type, Status: "completed"})
+				diags = diags.Append(e.Diagnostics)
 			}
-			providerCache[providerType] = provider
-		}
-		plannedConfig := cty.EmptyObjectVal
-		if existing, ok := ctx.actionPlannedConfigWithKey(n.Step.StepName, n.Step.InstanceKey, actionStateKey); ok {
-			plannedConfig = existing
-		} else if _, ok := ref.Subject.(runbookaddrs.WorkspaceAction); ok {
-			plannedConfig, refDiags = evaluateActionConfigForInstance(ctx, provider, n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, action)
-			diags = diags.Append(refDiags)
-			if refDiags.HasErrors() {
-				continue
-			}
-			ctx.setActionPlannedWithKey(n.Step.StepName, n.Step.InstanceKey, actionStateKey, plannedConfig)
-		}
-		ctx.EmitActionEvent(ActionExecEvent{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Subject: subject, ActionType: action.Type, Status: "running"})
-		resp := provider.InvokeAction(providers.InvokeActionRequest{ActionType: action.Type, PlannedActionData: plannedConfig})
-		diags = diags.Append(resp.Diagnostics)
-		if resp.Events != nil {
-			for event := range resp.Events {
-				switch e := event.(type) {
-				case providers.InvokeActionEvent_Progress:
-					ctx.EmitActionEvent(ActionExecEvent{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Subject: subject, ActionType: action.Type, Status: "progress", Message: e.Message})
-				case providers.InvokeActionEvent_Completed:
-					ctx.EmitActionEvent(ActionExecEvent{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Subject: subject, ActionType: action.Type, Status: "completed"})
-					diags = diags.Append(e.Diagnostics)
-				}
-				if completed, ok := event.(providers.InvokeActionEvent_Completed); ok {
-					diags = diags.Append(completed.Diagnostics)
-				}
+			if completed, ok := event.(providers.InvokeActionEvent_Completed); ok {
+				diags = diags.Append(completed.Diagnostics)
 			}
 		}
-		if !diags.HasErrors() {
-			ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
-				actionState, ok := state.actions[actionStateKey]
-				if !ok {
-					actionState = &actionEvalState{}
-					state.actions[actionStateKey] = actionState
-				}
-				actionState.invoked = true
-			})
-		}
+	}
+	if !diags.HasErrors() {
+		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+			actionState, ok := state.actions[actionStateKey]
+			if !ok {
+				actionState = &actionEvalState{}
+				state.actions[actionStateKey] = actionState
+			}
+			actionState.invoked = true
+		})
 	}
 	return diags
 }
@@ -727,6 +845,22 @@ func actionConfigForStep(config *runbookconfigs.RunbookConfig, stepName string, 
 	for _, action := range step.Actions {
 		if action != nil && action.Type == addr.Type && action.Name == addr.Name {
 			return action
+		}
+	}
+	return nil
+}
+
+func findStepDataSource(config *runbookconfigs.RunbookConfig, stepName string, addr terraformaddrs.Resource) *configs.Resource {
+	if config == nil {
+		return nil
+	}
+	step, ok := config.Steps[stepName]
+	if !ok || step == nil {
+		return nil
+	}
+	for _, ds := range step.DataSources {
+		if ds != nil && ds.Type == addr.Type && ds.Name == addr.Name {
+			return ds
 		}
 	}
 	return nil

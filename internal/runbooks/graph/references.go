@@ -81,8 +81,13 @@ func referencesForStepExecution(execution *runbookconfigs.Execution) []runbookad
 		return nil
 	}
 
-	refs := make([]runbookaddrs.Referenceable, 0, len(execution.InvokeAction))
+	refs := make([]runbookaddrs.Referenceable, 0, len(execution.InvokeAction)+len(execution.ReadDataSources))
 	for _, traversal := range execution.InvokeAction {
+		if ref, ok := stepReferenceFromTraversal(traversal); ok {
+			refs = append(refs, ref.Subject)
+		}
+	}
+	for _, traversal := range execution.ReadDataSources {
 		if ref, ok := stepReferenceFromTraversal(traversal); ok {
 			refs = append(refs, ref.Subject)
 		}
