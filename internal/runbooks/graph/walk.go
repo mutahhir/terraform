@@ -144,98 +144,30 @@ func markVertexSkipped(ctx *EvalContext, vertex dag.Vertex, graph *terraform.Gra
 }
 
 func stepForVertex(ctx *EvalContext, vertex dag.Vertex) (*runbookruntime.Step, bool) {
-	switch node := vertex.(type) {
-	case *NodeStepInstance:
-		return ctx.stepWithKey(node.StepName, node.InstanceKey)
-	case *NodeStepAction:
-		if node.Step == nil {
+	if belonging, ok := vertex.(StepBelonging); ok {
+		step := belonging.OwningStep()
+		if step == nil {
 			return nil, false
 		}
-		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
-	case *NodeStepData:
-		if node.Step == nil {
-			return nil, false
-		}
-		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
-	case *NodeStepList:
-		if node.Step == nil {
-			return nil, false
-		}
-		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
-	case *NodeStepLocal:
-		if node.Step == nil {
-			return nil, false
-		}
-		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
-	case *NodeStepExecution:
-		if node.Step == nil {
-			return nil, false
-		}
-		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
-	case *NodeStepCondition:
-		if node.Step == nil {
-			return nil, false
-		}
-		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
-	case *NodeStepOutput:
-		if node.Step == nil {
-			return nil, false
-		}
-		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
-	case *NodeStepFinalize:
-		if node.Step == nil {
-			return nil, false
-		}
-		return ctx.stepWithKey(node.Step.StepName, node.Step.InstanceKey)
-	default:
-		stepName, ok := stepNameForVertex(vertex)
-		if !ok {
-			return nil, false
-		}
-		return ctx.Step(stepName)
+		return ctx.stepWithKey(step.StepName, step.InstanceKey)
 	}
+	stepName, ok := stepNameForVertex(vertex)
+	if !ok {
+		return nil, false
+	}
+	return ctx.Step(stepName)
 }
 
 func setStepStatusForVertex(ctx *EvalContext, vertex dag.Vertex, status runbookruntime.StepStatus, reason string) {
-	switch node := vertex.(type) {
-	case *NodeStepInstance:
-		ctx.setStepStatusWithKey(node.StepName, node.InstanceKey, status, reason)
-	case *NodeStepAction:
-		if node.Step != nil {
-			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
+	if belonging, ok := vertex.(StepBelonging); ok {
+		step := belonging.OwningStep()
+		if step != nil {
+			ctx.setStepStatusWithKey(step.StepName, step.InstanceKey, status, reason)
 		}
-	case *NodeStepData:
-		if node.Step != nil {
-			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
-		}
-	case *NodeStepList:
-		if node.Step != nil {
-			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
-		}
-	case *NodeStepLocal:
-		if node.Step != nil {
-			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
-		}
-	case *NodeStepExecution:
-		if node.Step != nil {
-			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
-		}
-	case *NodeStepCondition:
-		if node.Step != nil {
-			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
-		}
-	case *NodeStepOutput:
-		if node.Step != nil {
-			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
-		}
-	case *NodeStepFinalize:
-		if node.Step != nil {
-			ctx.setStepStatusWithKey(node.Step.StepName, node.Step.InstanceKey, status, reason)
-		}
-	default:
-		if stepName, ok := stepNameForVertex(vertex); ok {
-			ctx.SetStepStatus(stepName, status, reason)
-		}
+		return
+	}
+	if stepName, ok := stepNameForVertex(vertex); ok {
+		ctx.SetStepStatus(stepName, status, reason)
 	}
 }
 
@@ -252,29 +184,22 @@ func hasDependencyStateForVertex(ctx *EvalContext, vertex dag.Vertex, statuses .
 	return false
 }
 
+// StepBelonging is implemented by graph nodes that belong to a specific step
+// instance. It replaces exhaustive type switches for vertex resolution.
+type StepBelonging interface {
+	OwningStep() *NodeStepInstance
+}
+
 func stepNameForVertex(vertex dag.Vertex) (string, bool) {
-	switch node := vertex.(type) {
-	case *NodeExpandStep:
-		return node.StepName, true
-	case *NodeStepInstance:
-		return node.StepName, true
-	case *NodeStepAction:
-		return node.Step.StepName, node.Step != nil
-	case *NodeStepData:
-		return node.Step.StepName, node.Step != nil
-	case *NodeStepList:
-		return node.Step.StepName, node.Step != nil
-	case *NodeStepLocal:
-		return node.Step.StepName, node.Step != nil
-	case *NodeStepExecution:
-		return node.Step.StepName, node.Step != nil
-	case *NodeStepCondition:
-		return node.Step.StepName, node.Step != nil
-	case *NodeStepOutput:
-		return node.Step.StepName, node.Step != nil
-	case *NodeStepFinalize:
-		return node.Step.StepName, node.Step != nil
-	default:
+	if belonging, ok := vertex.(StepBelonging); ok {
+		step := belonging.OwningStep()
+		if step != nil {
+			return step.StepName, true
+		}
 		return "", false
 	}
+	if expand, ok := vertex.(*NodeExpandStep); ok {
+		return expand.StepName, true
+	}
+	return "", false
 }

@@ -49,3 +49,8 @@ func (n *NodeStepInstance) Execute(ctx *EvalContext, op walkOperation) tfdiags.D
 	}
 	return nil
 }
+
+// OwningStep implements StepBelonging.
+func (n *NodeStepInstance) OwningStep() *NodeStepInstance {
+	return n
+}

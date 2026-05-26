@@ -923,3 +923,26 @@ func workspaceActionConfig(config *configs.Config, addr runbookaddrs.WorkspaceAc
 	}
 	return target.Module.Actions[addr.Action.String()]
 }
+
+// OwningStep implements StepBelonging for all inner step nodes.
+func (n *NodeStepAction) OwningStep() *NodeStepInstance    { return n.Step }
+func (n *NodeStepData) OwningStep() *NodeStepInstance      { return n.Step }
+func (n *NodeStepList) OwningStep() *NodeStepInstance      { return n.Step }
+func (n *NodeStepLocal) OwningStep() *NodeStepInstance     { return n.Step }
+func (n *NodeStepExecution) OwningStep() *NodeStepInstance { return n.Step }
+func (n *NodeStepCondition) OwningStep() *NodeStepInstance { return n.Step }
+func (n *NodeStepOutput) OwningStep() *NodeStepInstance    { return n.Step }
+func (n *NodeStepFinalize) OwningStep() *NodeStepInstance  { return n.Step }
+
+// Compile-time interface checks for StepBelonging
+var (
+	_ StepBelonging = (*NodeStepAction)(nil)
+	_ StepBelonging = (*NodeStepData)(nil)
+	_ StepBelonging = (*NodeStepList)(nil)
+	_ StepBelonging = (*NodeStepLocal)(nil)
+	_ StepBelonging = (*NodeStepExecution)(nil)
+	_ StepBelonging = (*NodeStepCondition)(nil)
+	_ StepBelonging = (*NodeStepOutput)(nil)
+	_ StepBelonging = (*NodeStepFinalize)(nil)
+	_ StepBelonging = (*NodeStepInstance)(nil)
+)
