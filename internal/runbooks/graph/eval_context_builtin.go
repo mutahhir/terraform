@@ -4,6 +4,7 @@
 package runbookgraph
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -29,8 +30,9 @@ import (
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
-// EvalContext tracks the values that are available while evaluating a runbook.
+// BuiltinEvalContext tracks the values that are available while evaluating a runbook.
 type BuiltinEvalContext struct {
+	stopCtx           context.Context
 	config            *runbookconfigs.RunbookConfig
 	workspaceState    *states.State
 	ui                UI
@@ -52,6 +54,7 @@ type BuiltinEvalContext struct {
 }
 
 type EvalContextOpts struct {
+	StopCtx        context.Context
 	Config         *runbookconfigs.RunbookConfig
 	WorkspaceState *states.State
 	UI             UI
@@ -59,7 +62,12 @@ type EvalContextOpts struct {
 }
 
 func NewEvalContext(opts EvalContextOpts) *BuiltinEvalContext {
+	stopCtx := opts.StopCtx
+	if stopCtx == nil {
+		stopCtx = context.Background()
+	}
 	return &BuiltinEvalContext{
+		stopCtx:           stopCtx,
 		config:            opts.Config,
 		workspaceState:    opts.WorkspaceState,
 		ui:                opts.UI,
@@ -108,6 +116,10 @@ func parseStepStateKey(key string) runbookaddrs.StepInstance {
 
 func defaultStepStateKey(name string) string {
 	return stepStateKey(name, terraformaddrs.NoKey)
+}
+
+func (ec *BuiltinEvalContext) StopCtx() context.Context {
+	return ec.stopCtx
 }
 
 func (ec *BuiltinEvalContext) UI() UI {

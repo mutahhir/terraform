@@ -38,6 +38,15 @@ func walkGraph(graph *terraform.Graph, ctx EvalContext, op walkOperation) tfdiag
 			return nil
 		}
 
+		// Check for cancellation before processing each vertex
+		if err := ctx.StopCtx().Err(); err != nil {
+			return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
+				tfdiags.Error,
+				"Runbook execution cancelled",
+				"The runbook execution was cancelled.",
+			))
+		}
+
 		if expandable, ok := vertex.(GraphNodeDynamicExpandable); ok {
 			if shouldSkipVertex(graph, ctx, vertex) {
 				markVertexSkipped(ctx, vertex, graph)

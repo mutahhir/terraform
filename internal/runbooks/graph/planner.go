@@ -1,6 +1,8 @@
 package runbookgraph
 
 import (
+	"context"
+
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/providers"
 	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
@@ -14,6 +16,7 @@ import (
 )
 
 type PlannerOpts struct {
+	StopCtx        context.Context
 	InputValues    terraform.InputValues
 	Providers      map[terraformaddrs.Provider]providers.Factory
 	WorkspaceState *states.State
@@ -78,7 +81,7 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 	}
 
 	validateOpts := &ValidateOpts{}
-	evalCtx := NewEvalContext(EvalContextOpts{Config: config, WorkspaceState: optsWorkspaceState(opts), UI: optsUI(opts), Hooks: optsHooks(opts)})
+	evalCtx := NewEvalContext(EvalContextOpts{StopCtx: optsStopCtx(opts), Config: config, WorkspaceState: optsWorkspaceState(opts), UI: optsUI(opts), Hooks: optsHooks(opts)})
 	if opts != nil {
 		for name, value := range opts.InputValues {
 			evalCtx.SetVariable(name, value)
@@ -177,4 +180,11 @@ func optsWorkspaceState(opts *PlannerOpts) *states.State {
 		return nil
 	}
 	return opts.WorkspaceState
+}
+
+func optsStopCtx(opts *PlannerOpts) context.Context {
+	if opts == nil || opts.StopCtx == nil {
+		return nil
+	}
+	return opts.StopCtx
 }

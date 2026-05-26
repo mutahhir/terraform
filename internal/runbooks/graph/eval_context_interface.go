@@ -4,6 +4,8 @@
 package runbookgraph
 
 import (
+	"context"
+
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 
@@ -27,6 +29,12 @@ import (
 // implementations, matching the pattern established by Terraform core's
 // EvalContext interface in internal/terraform/eval_context.go.
 type EvalContext interface {
+	// --- Context ---
+
+	// StopCtx returns a context that is cancelled when execution should stop.
+	// Nodes should check this for graceful cancellation.
+	StopCtx() context.Context
+
 	// --- Configuration ---
 
 	// Config returns the runbook configuration.
