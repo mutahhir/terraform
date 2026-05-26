@@ -45,7 +45,12 @@ func (p *RunbookParser) LoadHCLFile(path string) (hcl.Body, hcl.Diagnostics) {
 
 	var file *hcl.File
 	var diags hcl.Diagnostics
-	file, diags = p.p.ParseHCL(src, path)
+	switch {
+	case strings.HasSuffix(path, ".json"):
+		file, diags = p.p.ParseJSON(src, path)
+	default:
+		file, diags = p.p.ParseHCL(src, path)
+	}
 
 	// If the returned file or body is nil, then we'll return a non-nil empty
 	// body so we'll meet our contract that nil means an error reading the file.
