@@ -17,7 +17,7 @@ import (
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
-// StepEvalContext is the interface through which graph nodes interact with
+// EvalContext is the interface through which graph nodes interact with
 // evaluation state during the runbook graph walk. It covers configuration
 // access, expression evaluation, provider lookup, step state management,
 // and event emission.
@@ -26,7 +26,7 @@ import (
 // enables isolated testing of individual graph nodes with mock
 // implementations, matching the pattern established by Terraform core's
 // EvalContext interface in internal/terraform/eval_context.go.
-type StepEvalContext interface {
+type EvalContext interface {
 	// --- Configuration ---
 
 	// Config returns the runbook configuration.
@@ -115,5 +115,5 @@ type StepEvalContext interface {
 	EmitActionEvent(event ActionExecEvent)
 }
 
-// Compile-time check that the concrete EvalContext satisfies StepEvalContext.
-var _ StepEvalContext = (*EvalContext)(nil)
+// Compile-time check that the concrete EvalContext satisfies EvalContext.
+var _ EvalContext = (*BuiltinEvalContext)(nil)

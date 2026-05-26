@@ -18,7 +18,7 @@ import (
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
-func validateStepDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalContext, opts *ValidateOpts) tfdiags.Diagnostics {
+func validateStepDeclarations(config *runbookconfigs.RunbookConfig, ctx *BuiltinEvalContext, opts *ValidateOpts) tfdiags.Diagnostics {
 	if config == nil {
 		return nil
 	}
@@ -47,7 +47,7 @@ func validateStepDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalCon
 	return diags
 }
 
-func validateStepActionDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalContext, cache *providerSchemaCache, step *runbookconfigs.Step) tfdiags.Diagnostics {
+func validateStepActionDeclarations(config *runbookconfigs.RunbookConfig, ctx *BuiltinEvalContext, cache *providerSchemaCache, step *runbookconfigs.Step) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	for _, action := range step.Actions {
 		diags = diags.Append(validateWorkspaceReferencesInBody(config, cache, action.Config))
@@ -90,7 +90,7 @@ func validateStepActionDeclarations(config *runbookconfigs.RunbookConfig, ctx *E
 	return diags
 }
 
-func validateStepDataDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalContext, cache *providerSchemaCache, step *runbookconfigs.Step) tfdiags.Diagnostics {
+func validateStepDataDeclarations(config *runbookconfigs.RunbookConfig, ctx *BuiltinEvalContext, cache *providerSchemaCache, step *runbookconfigs.Step) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	for _, data := range step.DataSources {
 		diags = diags.Append(validateWorkspaceReferencesInBody(config, cache, data.Config))
@@ -133,7 +133,7 @@ func validateStepDataDeclarations(config *runbookconfigs.RunbookConfig, ctx *Eva
 	return diags
 }
 
-func validateStepListDeclarations(config *runbookconfigs.RunbookConfig, ctx *EvalContext, cache *providerSchemaCache, step *runbookconfigs.Step) tfdiags.Diagnostics {
+func validateStepListDeclarations(config *runbookconfigs.RunbookConfig, ctx *BuiltinEvalContext, cache *providerSchemaCache, step *runbookconfigs.Step) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	for _, list := range step.ListResources {
 		diags = diags.Append(validateWorkspaceReferencesInBody(config, cache, list.Config))
@@ -494,7 +494,7 @@ func providerTypeForLocalName(config *runbookconfigs.RunbookConfig, localName st
 	return terraformaddrs.ImpliedProviderForUnqualifiedType(localName)
 }
 
-func evaluateExpr(ctx *EvalContext, expr hcl.Expression) (cty.Value, tfdiags.Diagnostics) {
+func evaluateExpr(ctx *BuiltinEvalContext, expr hcl.Expression) (cty.Value, tfdiags.Diagnostics) {
 	if expr == nil {
 		return cty.NilVal, nil
 	}

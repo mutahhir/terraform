@@ -40,7 +40,7 @@ func isEmptyObjectValue(value cty.Value) bool {
 	return len(value.Type().AttributeTypes()) == 0
 }
 
-func evaluateActionConfigForInstance(ctx StepEvalContext, provider providers.Interface, stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, action *configs.Action) (cty.Value, tfdiags.Diagnostics) {
+func evaluateActionConfigForInstance(ctx EvalContext, provider providers.Interface, stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, action *configs.Action) (cty.Value, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if action == nil {
 		return cty.EmptyObjectVal, nil
@@ -94,7 +94,7 @@ func (n *NodeStepAction) Name() string {
 	return fmt.Sprintf("step.%s%s.action.%s.%s", stepName, n.Step.InstanceKey.String(), n.Action.Type, n.Action.Name)
 }
 
-func (n *NodeStepAction) Execute(ctx StepEvalContext, op walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepAction) Execute(ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
@@ -149,7 +149,7 @@ func (n *NodeStepData) Name() string {
 	return fmt.Sprintf("step.%s%s.data.%s.%s", stepName, n.Step.InstanceKey.String(), n.Data.Type, n.Data.Name)
 }
 
-func (n *NodeStepData) Execute(ctx StepEvalContext, op walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepData) Execute(ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
@@ -233,7 +233,7 @@ func (n *NodeStepList) Name() string {
 	return fmt.Sprintf("step.%s%s.list.%s.%s", stepName, n.Step.InstanceKey.String(), n.List.Type, n.List.Name)
 }
 
-func (n *NodeStepList) Execute(ctx StepEvalContext, op walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepList) Execute(ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
@@ -336,7 +336,7 @@ func (n *NodeStepLocal) Name() string {
 	return fmt.Sprintf("step.%s%s.local.%s", stepName, n.Step.InstanceKey.String(), n.Local.Name)
 }
 
-func (n *NodeStepLocal) Execute(ctx StepEvalContext, _ walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepLocal) Execute(ctx EvalContext, _ walkOperation) tfdiags.Diagnostics {
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
@@ -380,7 +380,7 @@ func (n *NodeStepExecution) Name() string {
 	return fmt.Sprintf("step.%s%s.execute.%d", stepName, n.Step.InstanceKey.String(), n.Index)
 }
 
-func (n *NodeStepExecution) Execute(ctx StepEvalContext, op walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepExecution) Execute(ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
@@ -458,7 +458,7 @@ func (n *NodeStepExecution) Execute(ctx StepEvalContext, op walkOperation) tfdia
 	return diags
 }
 
-func (n *NodeStepExecution) executeReadDataSource(ctx StepEvalContext, traversal hcl.Traversal, providerCache map[terraformaddrs.Provider]providers.Interface) tfdiags.Diagnostics {
+func (n *NodeStepExecution) executeReadDataSource(ctx EvalContext, traversal hcl.Traversal, providerCache map[terraformaddrs.Provider]providers.Interface) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	ref, refDiags := runbookaddrs.ParseRef(traversal)
 	diags = diags.Append(refDiags)
@@ -528,7 +528,7 @@ func (n *NodeStepExecution) executeReadDataSource(ctx StepEvalContext, traversal
 	return diags
 }
 
-func (n *NodeStepExecution) executeInvokeAction(ctx StepEvalContext, traversal hcl.Traversal, providerCache map[terraformaddrs.Provider]providers.Interface) tfdiags.Diagnostics {
+func (n *NodeStepExecution) executeInvokeAction(ctx EvalContext, traversal hcl.Traversal, providerCache map[terraformaddrs.Provider]providers.Interface) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 	ref, refDiags := runbookaddrs.ParseRef(traversal)
 	diags = diags.Append(refDiags)
@@ -635,7 +635,7 @@ func (n *NodeStepCondition) Name() string {
 	return fmt.Sprintf("step.%s%s.%s.%s", stepName, n.Step.InstanceKey.String(), n.Condition.Kind, n.Condition.DeclRange.String())
 }
 
-func (n *NodeStepCondition) Execute(ctx StepEvalContext, op walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepCondition) Execute(ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
@@ -699,7 +699,7 @@ func (n *NodeStepFinalize) Name() string {
 	return fmt.Sprintf("step.%s%s (finalize)", stepName, n.Step.InstanceKey.String())
 }
 
-func (n *NodeStepFinalize) Execute(ctx StepEvalContext, op walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepFinalize) Execute(ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
@@ -741,7 +741,7 @@ func (n *NodeStepOutput) Name() string {
 	return fmt.Sprintf("step.%s%s.%s", stepName, n.Step.InstanceKey.String(), n.Output.Name)
 }
 
-func (n *NodeStepOutput) Execute(ctx StepEvalContext, _ walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepOutput) Execute(ctx EvalContext, _ walkOperation) tfdiags.Diagnostics {
 	if diags := requireStepInstance(n.Step); diags.HasErrors() {
 		return diags
 	}
@@ -754,14 +754,14 @@ func (n *NodeStepOutput) Execute(ctx StepEvalContext, _ walkOperation) tfdiags.D
 	return nil
 }
 
-func runbookProvider(ctx StepEvalContext, providerType terraformaddrs.Provider) (providers.Interface, tfdiags.Diagnostics) {
+func runbookProvider(ctx EvalContext, providerType terraformaddrs.Provider) (providers.Interface, tfdiags.Diagnostics) {
 	return runbookProviderForConfig(ctx, terraformaddrs.AbsProviderConfig{
 		Module:   terraformaddrs.RootModule,
 		Provider: providerType,
 	})
 }
 
-func runbookProviderForConfig(ctx StepEvalContext, addr terraformaddrs.AbsProviderConfig) (providers.Interface, tfdiags.Diagnostics) {
+func runbookProviderForConfig(ctx EvalContext, addr terraformaddrs.AbsProviderConfig) (providers.Interface, tfdiags.Diagnostics) {
 	provider, ok := ctx.ProviderForConfig(addr)
 	if !ok {
 		// Fallback: try without alias in case the provider was registered by type only
@@ -782,7 +782,7 @@ func runbookProviderForConfig(ctx StepEvalContext, addr terraformaddrs.AbsProvid
 	return provider, nil
 }
 
-func runbookProviderConfigValue(ctx StepEvalContext, providerType terraformaddrs.Provider) (cty.Value, tfdiags.Diagnostics) {
+func runbookProviderConfigValue(ctx EvalContext, providerType terraformaddrs.Provider) (cty.Value, tfdiags.Diagnostics) {
 	config := ctx.Config()
 	providerConfig := providerConfigForType(config, providerType)
 	if providerConfig == nil {
@@ -797,7 +797,7 @@ func runbookProviderConfigValue(ctx StepEvalContext, providerType terraformaddrs
 	return runbookProviderConfigValueForAddr(ctx, addr)
 }
 
-func runbookProviderConfigValueForAddr(ctx StepEvalContext, addr terraformaddrs.AbsProviderConfig) (cty.Value, tfdiags.Diagnostics) {
+func runbookProviderConfigValueForAddr(ctx EvalContext, addr terraformaddrs.AbsProviderConfig) (cty.Value, tfdiags.Diagnostics) {
 	config := ctx.Config()
 	providerConfig := providerConfigForAddr(config, addr)
 	if providerConfig == nil {
@@ -824,7 +824,7 @@ func runbookProviderConfigValueForAddr(ctx StepEvalContext, addr terraformaddrs.
 	return unmarkedConfigVal, nil
 }
 
-func providerSchemaForExecution(ctx StepEvalContext, providerType terraformaddrs.Provider) (providers.ProviderSchema, tfdiags.Diagnostics) {
+func providerSchemaForExecution(ctx EvalContext, providerType terraformaddrs.Provider) (providers.ProviderSchema, tfdiags.Diagnostics) {
 	provider, ok := ctx.Provider(providerType)
 	if !ok {
 		return providers.ProviderSchema{}, missingProviderDiagnostic(providerType, nil)

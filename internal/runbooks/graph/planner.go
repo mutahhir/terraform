@@ -28,7 +28,7 @@ type Plan struct {
 	Graph    *terraform.Graph
 	Steps    []*runtime.Step
 	PlanInfo []StepPlanInfo
-	evalCtx  *EvalContext
+	evalCtx  *BuiltinEvalContext
 }
 
 func (p *Plan) StepsRuntime() map[string]*runtime.Step {

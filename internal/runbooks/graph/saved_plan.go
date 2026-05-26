@@ -215,7 +215,7 @@ func exportStepState(state *stepEvalState) (*runbookplanfile.Step, error) {
 	return ret, nil
 }
 
-func importStepState(evalCtx *EvalContext, config *runbookconfigs.RunbookConfig, saved *runbookplanfile.Step) error {
+func importStepState(evalCtx *BuiltinEvalContext, config *runbookconfigs.RunbookConfig, saved *runbookplanfile.Step) error {
 	instanceKey, err := importInstanceKey(saved.InstanceKey)
 	if err != nil {
 		return err

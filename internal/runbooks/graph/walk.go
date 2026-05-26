@@ -17,18 +17,18 @@ const (
 )
 
 type GraphNodeExecutable interface {
-	Execute(StepEvalContext, walkOperation) tfdiags.Diagnostics
+	Execute(EvalContext, walkOperation) tfdiags.Diagnostics
 }
 
 type GraphNodeDynamicExpandable interface {
-	DynamicExpand(StepEvalContext) (*terraform.Graph, tfdiags.Diagnostics)
+	DynamicExpand(EvalContext) (*terraform.Graph, tfdiags.Diagnostics)
 }
 
 // walkGraph walks the given graph, executing nodes according to the operation.
 // For expandable nodes, it calls DynamicExpand to produce a sub-graph and then
 // walks that sub-graph independently (matching Terraform core's pattern).
 // The parent graph is never mutated during the walk.
-func walkGraph(graph *terraform.Graph, ctx StepEvalContext, op walkOperation) tfdiags.Diagnostics {
+func walkGraph(graph *terraform.Graph, ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	if graph == nil {
 		return nil
 	}
@@ -79,7 +79,7 @@ func walkGraph(graph *terraform.Graph, ctx StepEvalContext, op walkOperation) tf
 
 // walkSubGraph walks an expanded sub-graph produced by DynamicExpand.
 // Sub-graphs are flat (no nested expansion) — they contain only executable nodes.
-func walkSubGraph(graph *terraform.Graph, ctx StepEvalContext, op walkOperation) tfdiags.Diagnostics {
+func walkSubGraph(graph *terraform.Graph, ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	if graph == nil {
 		return nil
 	}
@@ -103,7 +103,7 @@ func walkSubGraph(graph *terraform.Graph, ctx StepEvalContext, op walkOperation)
 	})
 }
 
-func shouldSkipVertex(graph *terraform.Graph, ctx StepEvalContext, vertex dag.Vertex) bool {
+func shouldSkipVertex(graph *terraform.Graph, ctx EvalContext, vertex dag.Vertex) bool {
 	stepName, ok := stepNameForVertex(vertex)
 	if !ok {
 		return false
@@ -123,7 +123,7 @@ func shouldSkipVertex(graph *terraform.Graph, ctx StepEvalContext, vertex dag.Ve
 	return false
 }
 
-func markVertexSkipped(ctx StepEvalContext, vertex dag.Vertex, graph *terraform.Graph) {
+func markVertexSkipped(ctx EvalContext, vertex dag.Vertex, graph *terraform.Graph) {
 	stepName, ok := stepNameForVertex(vertex)
 	if !ok {
 		return
@@ -143,7 +143,7 @@ func markVertexSkipped(ctx StepEvalContext, vertex dag.Vertex, graph *terraform.
 	setStepStatusForVertex(ctx, vertex, runbookruntime.StepStatusSkipped, "step did not execute")
 }
 
-func stepForVertex(ctx StepEvalContext, vertex dag.Vertex) (*runbookruntime.Step, bool) {
+func stepForVertex(ctx EvalContext, vertex dag.Vertex) (*runbookruntime.Step, bool) {
 	if belonging, ok := vertex.(StepBelonging); ok {
 		step := belonging.OwningStep()
 		if step == nil {
@@ -158,7 +158,7 @@ func stepForVertex(ctx StepEvalContext, vertex dag.Vertex) (*runbookruntime.Step
 	return ctx.Step(stepName)
 }
 
-func setStepStatusForVertex(ctx StepEvalContext, vertex dag.Vertex, status runbookruntime.StepStatus, reason string) {
+func setStepStatusForVertex(ctx EvalContext, vertex dag.Vertex, status runbookruntime.StepStatus, reason string) {
 	if belonging, ok := vertex.(StepBelonging); ok {
 		step := belonging.OwningStep()
 		if step != nil {
@@ -171,7 +171,7 @@ func setStepStatusForVertex(ctx StepEvalContext, vertex dag.Vertex, status runbo
 	}
 }
 
-func hasDependencyStateForVertex(ctx StepEvalContext, vertex dag.Vertex, statuses ...runbookruntime.StepStatus) bool {
+func hasDependencyStateForVertex(ctx EvalContext, vertex dag.Vertex, statuses ...runbookruntime.StepStatus) bool {
 	step, ok := stepForVertex(ctx, vertex)
 	if !ok {
 		return false

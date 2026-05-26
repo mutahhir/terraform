@@ -153,11 +153,11 @@ func buildRunbookProviderConfig(ctx ProviderValidationContext, addr terraformadd
 var _ lang.Data = providerEvalData{}
 
 type providerEvalData struct {
-	ctx *EvalContext
+	ctx *BuiltinEvalContext
 }
 
 type providerEvalDataForInstance struct {
-	ctx            *EvalContext
+	ctx            *BuiltinEvalContext
 	stepName       string
 	instanceKey    terraformaddrs.InstanceKey
 	repetitionData *terraform.InstanceKeyEvalData
