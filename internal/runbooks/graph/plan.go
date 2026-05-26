@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/hashicorp/terraform/internal/addrs"
+	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/dag"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
@@ -30,7 +30,7 @@ func (b *PlanBuilder) Build() (*terraform.Graph, tfdiags.Diagnostics) {
 	return (&terraform.BasicGraphBuilder{
 		Steps: b.Steps(),
 		Name:  "RunbookPlanBuilder",
-	}).Build(addrs.RootModuleInstance)
+	}).Build(terraformaddrs.RootModuleInstance)
 }
 
 func (b *PlanBuilder) Steps() []terraform.GraphTransformer {

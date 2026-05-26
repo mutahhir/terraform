@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/hashicorp/terraform/internal/addrs"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/plans"
 	"github.com/hashicorp/terraform/internal/providers"
@@ -384,7 +383,7 @@ func (b *savedPlanGraphBuilder) Build() (*terraform.Graph, tfdiags.Diagnostics) 
 			&terraform.TransitiveReductionTransformer{},
 		},
 		Name: "RunbookSavedPlanBuilder",
-	}).Build(addrs.RootModuleInstance)
+	}).Build(terraformaddrs.RootModuleInstance)
 }
 
 type SavedPlanStepTransformer struct {

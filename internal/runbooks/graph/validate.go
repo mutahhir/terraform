@@ -6,7 +6,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 
-	"github.com/hashicorp/terraform/internal/addrs"
+	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/lang"
@@ -17,11 +17,11 @@ import (
 )
 
 type ValidateOpts struct {
-	Providers map[addrs.Provider]providers.Factory
+	Providers map[terraformaddrs.Provider]providers.Factory
 }
 
 type ProviderValidationContext interface {
-	ProviderInput(addrs.AbsProviderConfig) map[string]cty.Value
+	ProviderInput(terraformaddrs.AbsProviderConfig) map[string]cty.Value
 	EvaluateBlock(hcl.Body, *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics)
 }
 
@@ -71,8 +71,8 @@ func validateProviderConfig(config *runbookconfigs.RunbookConfig, ctx ProviderVa
 		})
 	}
 
-	addr := addrs.AbsProviderConfig{
-		Module:   addrs.RootModule,
+	addr := terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
 		Provider: providerType,
 		Alias:    providerConfig.Alias,
 	}
@@ -110,23 +110,23 @@ func validateProviderConfig(config *runbookconfigs.RunbookConfig, ctx ProviderVa
 	return diags
 }
 
-func providerTypeForConfig(config *runbookconfigs.RunbookConfig, providerConfig *configs.Provider) addrs.Provider {
+func providerTypeForConfig(config *runbookconfigs.RunbookConfig, providerConfig *configs.Provider) terraformaddrs.Provider {
 	if config != nil && config.ProviderRequirements != nil {
 		if req, ok := config.ProviderRequirements.RequiredProviders[providerConfig.Name]; ok {
 			return req.Type
 		}
 	}
-	return addrs.ImpliedProviderForUnqualifiedType(providerConfig.Name)
+	return terraformaddrs.ImpliedProviderForUnqualifiedType(providerConfig.Name)
 }
 
-func providerFactory(providerType addrs.Provider, opts *ValidateOpts) providers.Factory {
+func providerFactory(providerType terraformaddrs.Provider, opts *ValidateOpts) providers.Factory {
 	if opts == nil || opts.Providers == nil {
 		return nil
 	}
 	return opts.Providers[providerType]
 }
 
-func buildRunbookProviderConfig(ctx ProviderValidationContext, addr addrs.AbsProviderConfig, config *configs.Provider) hcl.Body {
+func buildRunbookProviderConfig(ctx ProviderValidationContext, addr terraformaddrs.AbsProviderConfig, config *configs.Provider) hcl.Body {
 	var configBody hcl.Body
 	if config != nil {
 		configBody = config.Config
@@ -159,35 +159,35 @@ type providerEvalData struct {
 type providerEvalDataForInstance struct {
 	ctx            *EvalContext
 	stepName       string
-	instanceKey    addrs.InstanceKey
+	instanceKey    terraformaddrs.InstanceKey
 	repetitionData *terraform.InstanceKeyEvalData
 }
 
-func (providerEvalData) StaticValidateReferences(refs []*addrs.Reference, self addrs.Referenceable, source addrs.Referenceable) tfdiags.Diagnostics {
+func (providerEvalData) StaticValidateReferences(refs []*terraformaddrs.Reference, self terraformaddrs.Referenceable, source terraformaddrs.Referenceable) tfdiags.Diagnostics {
 	return nil
 }
-func (providerEvalData) GetCountAttr(addrs.CountAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetCountAttr(terraformaddrs.CountAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.NilVal, nil
 }
-func (providerEvalData) GetForEachAttr(addrs.ForEachAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetForEachAttr(terraformaddrs.ForEachAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.NilVal, nil
 }
-func (providerEvalData) GetResource(addrs.Resource, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetResource(terraformaddrs.Resource, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
-func (providerEvalData) GetLocalValue(addrs.LocalValue, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetLocalValue(terraformaddrs.LocalValue, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
-func (providerEvalData) GetModule(addrs.ModuleCall, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetModule(terraformaddrs.ModuleCall, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
-func (providerEvalData) GetPathAttr(addrs.PathAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetPathAttr(terraformaddrs.PathAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
-func (providerEvalData) GetTerraformAttr(addrs.TerraformAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetTerraformAttr(terraformaddrs.TerraformAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
-func (d providerEvalData) GetInputVariable(addr addrs.InputVariable, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (d providerEvalData) GetInputVariable(addr terraformaddrs.InputVariable, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	if d.ctx != nil {
 		if value, ok := d.ctx.GetVariable(addr.Name); ok && value != nil && value.Value != cty.NilVal {
 			return value.Value, nil
@@ -205,30 +205,30 @@ func (d providerEvalData) GetInputVariable(addr addrs.InputVariable, rng tfdiags
 	}
 	return cty.DynamicVal, nil
 }
-func (providerEvalData) GetOutput(addrs.OutputValue, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetOutput(terraformaddrs.OutputValue, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
-func (providerEvalData) GetCheckBlock(addrs.Check, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetCheckBlock(terraformaddrs.Check, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
-func (providerEvalData) GetRunBlock(addrs.Run, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalData) GetRunBlock(terraformaddrs.Run, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
 
 var _ lang.Data = providerEvalDataForInstance{}
 
-func (providerEvalDataForInstance) StaticValidateReferences(refs []*addrs.Reference, self addrs.Referenceable, source addrs.Referenceable) tfdiags.Diagnostics {
+func (providerEvalDataForInstance) StaticValidateReferences(refs []*terraformaddrs.Reference, self terraformaddrs.Referenceable, source terraformaddrs.Referenceable) tfdiags.Diagnostics {
 	return nil
 }
 
-func (d providerEvalDataForInstance) GetCountAttr(addr addrs.CountAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (d providerEvalDataForInstance) GetCountAttr(addr terraformaddrs.CountAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	if d.repetitionData != nil && addr.Name == "index" && d.repetitionData.CountIndex != cty.NilVal {
 		return d.repetitionData.CountIndex, nil
 	}
 	return cty.NilVal, nil
 }
 
-func (d providerEvalDataForInstance) GetForEachAttr(addr addrs.ForEachAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (d providerEvalDataForInstance) GetForEachAttr(addr terraformaddrs.ForEachAttr, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	if d.repetitionData == nil {
 		return cty.NilVal, nil
 	}
@@ -245,16 +245,16 @@ func (d providerEvalDataForInstance) GetForEachAttr(addr addrs.ForEachAttr, rng 
 	return cty.NilVal, nil
 }
 
-func (d providerEvalDataForInstance) GetResource(addr addrs.Resource, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (d providerEvalDataForInstance) GetResource(addr terraformaddrs.Resource, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	if d.ctx == nil {
 		return cty.DynamicVal, nil
 	}
 	switch addr.Mode {
-	case addrs.DataResourceMode:
+	case terraformaddrs.DataResourceMode:
 		if value, ok := d.ctx.stepDataWithKey(d.stepName, d.instanceKey, addr); ok {
 			return value, nil
 		}
-	case addrs.ListResourceMode:
+	case terraformaddrs.ListResourceMode:
 		if value, ok := d.ctx.stepListWithKey(d.stepName, d.instanceKey, addr); ok {
 			return value, nil
 		}
@@ -262,7 +262,7 @@ func (d providerEvalDataForInstance) GetResource(addr addrs.Resource, rng tfdiag
 	return cty.DynamicVal, nil
 }
 
-func (d providerEvalDataForInstance) GetLocalValue(addr addrs.LocalValue, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (d providerEvalDataForInstance) GetLocalValue(addr terraformaddrs.LocalValue, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	if d.ctx != nil {
 		if value, ok := d.ctx.stepLocalWithKey(d.stepName, d.instanceKey, addr.Name); ok {
 			return value, nil
@@ -271,30 +271,30 @@ func (d providerEvalDataForInstance) GetLocalValue(addr addrs.LocalValue, rng tf
 	return cty.DynamicVal, nil
 }
 
-func (d providerEvalDataForInstance) GetModule(addrs.ModuleCall, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (d providerEvalDataForInstance) GetModule(terraformaddrs.ModuleCall, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
 
-func (providerEvalDataForInstance) GetPathAttr(addrs.PathAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalDataForInstance) GetPathAttr(terraformaddrs.PathAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
 
-func (providerEvalDataForInstance) GetTerraformAttr(addrs.TerraformAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalDataForInstance) GetTerraformAttr(terraformaddrs.TerraformAttr, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
 
-func (d providerEvalDataForInstance) GetInputVariable(addr addrs.InputVariable, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (d providerEvalDataForInstance) GetInputVariable(addr terraformaddrs.InputVariable, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return providerEvalData{ctx: d.ctx}.GetInputVariable(addr, rng)
 }
 
-func (d providerEvalDataForInstance) GetOutput(addr addrs.OutputValue, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (d providerEvalDataForInstance) GetOutput(addr terraformaddrs.OutputValue, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
 
-func (providerEvalDataForInstance) GetCheckBlock(addrs.Check, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalDataForInstance) GetCheckBlock(terraformaddrs.Check, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }
 
-func (providerEvalDataForInstance) GetRunBlock(addrs.Run, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+func (providerEvalDataForInstance) GetRunBlock(terraformaddrs.Run, tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
 	return cty.DynamicVal, nil
 }

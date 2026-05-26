@@ -13,7 +13,6 @@ import (
 	"github.com/hashicorp/hcl/v2/ext/dynblock"
 	"github.com/hashicorp/hcl/v2/hcldec"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/hashicorp/terraform/internal/addrs"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
@@ -79,7 +78,7 @@ func NewEvalContext(opts EvalContextOpts) *EvalContext {
 	}
 }
 
-func stepStateKey(name string, instanceKey addrs.InstanceKey) string {
+func stepStateKey(name string, instanceKey terraformaddrs.InstanceKey) string {
 	return runbookaddrs.StepInstance{StepName: name, InstanceKey: instanceKey}.String()
 }
 
@@ -108,7 +107,7 @@ func parseStepStateKey(key string) runbookaddrs.StepInstance {
 }
 
 func defaultStepStateKey(name string) string {
-	return stepStateKey(name, addrs.NoKey)
+	return stepStateKey(name, terraformaddrs.NoKey)
 }
 
 func (ec *EvalContext) UI() UI {
@@ -241,22 +240,22 @@ func (ec *EvalContext) GetVariable(name string) (*terraform.InputValue, bool) {
 	return value, ok
 }
 
-func (ec *EvalContext) ProviderInput(addrs.AbsProviderConfig) map[string]cty.Value {
+func (ec *EvalContext) ProviderInput(terraformaddrs.AbsProviderConfig) map[string]cty.Value {
 	return nil
 }
 
 // SetProvider registers a provider instance keyed by its type with no alias.
 // This is the common case when a runbook has a single configuration per provider.
-func (ec *EvalContext) SetProvider(providerType addrs.Provider, provider providers.Interface) {
-	ec.SetProviderForConfig(addrs.AbsProviderConfig{
-		Module:   addrs.RootModule,
+func (ec *EvalContext) SetProvider(providerType terraformaddrs.Provider, provider providers.Interface) {
+	ec.SetProviderForConfig(terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
 		Provider: providerType,
 	}, provider)
 }
 
 // SetProviderForConfig registers a provider instance for a specific provider
 // configuration address, supporting aliased providers.
-func (ec *EvalContext) SetProviderForConfig(addr addrs.AbsProviderConfig, provider providers.Interface) {
+func (ec *EvalContext) SetProviderForConfig(addr terraformaddrs.AbsProviderConfig, provider providers.Interface) {
 	ec.providersLock.Lock()
 	defer ec.providersLock.Unlock()
 
@@ -265,9 +264,9 @@ func (ec *EvalContext) SetProviderForConfig(addr addrs.AbsProviderConfig, provid
 
 // Provider looks up a provider by type, returning the default (no-alias)
 // configuration. For aliased providers, use ProviderForConfig.
-func (ec *EvalContext) Provider(providerType addrs.Provider) (providers.Interface, bool) {
-	return ec.ProviderForConfig(addrs.AbsProviderConfig{
-		Module:   addrs.RootModule,
+func (ec *EvalContext) Provider(providerType terraformaddrs.Provider) (providers.Interface, bool) {
+	return ec.ProviderForConfig(terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
 		Provider: providerType,
 	})
 }
@@ -276,7 +275,7 @@ func (ec *EvalContext) Provider(providerType addrs.Provider) (providers.Interfac
 // including alias. If the exact address is not found and the requested alias
 // is empty, it falls back to searching for any configuration of that provider
 // type (backward compatibility for callers that don't track aliases).
-func (ec *EvalContext) ProviderForConfig(addr addrs.AbsProviderConfig) (providers.Interface, bool) {
+func (ec *EvalContext) ProviderForConfig(addr terraformaddrs.AbsProviderConfig) (providers.Interface, bool) {
 	ec.providersLock.RLock()
 	defer ec.providersLock.RUnlock()
 
@@ -299,16 +298,16 @@ func (ec *EvalContext) ProviderForConfig(addr addrs.AbsProviderConfig) (provider
 }
 
 func (ec *EvalContext) EnsureStep(name string, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
-	return ec.ensureStepWithKey(name, addrs.NoKey, config, existing)
+	return ec.ensureStepWithKey(name, terraformaddrs.NoKey, config, existing)
 }
 
-func (ec *EvalContext) ensureStepWithKey(name string, instanceKey addrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
+func (ec *EvalContext) ensureStepWithKey(name string, instanceKey terraformaddrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 	return ec.ensureStepRuntimeLocked(name, instanceKey, config, existing)
 }
 
-func (ec *EvalContext) ensurePlannedStepWithKey(name string, instanceKey addrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
+func (ec *EvalContext) ensurePlannedStepWithKey(name string, instanceKey terraformaddrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 	step := ec.ensureStepRuntimeLocked(name, instanceKey, config, existing)
@@ -318,7 +317,7 @@ func (ec *EvalContext) ensurePlannedStepWithKey(name string, instanceKey addrs.I
 	return step
 }
 
-func (ec *EvalContext) ensureRunningStepWithKey(name string, instanceKey addrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
+func (ec *EvalContext) ensureRunningStepWithKey(name string, instanceKey terraformaddrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 	step := ec.ensureStepRuntimeLocked(name, instanceKey, config, existing)
@@ -328,7 +327,7 @@ func (ec *EvalContext) ensureRunningStepWithKey(name string, instanceKey addrs.I
 	return step
 }
 
-func (ec *EvalContext) ensureStepRuntimeLocked(name string, instanceKey addrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
+func (ec *EvalContext) ensureStepRuntimeLocked(name string, instanceKey terraformaddrs.InstanceKey, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
 	key := stepStateKey(name, instanceKey)
 	state := ec.ensureStepStateLocked(key)
 	if state.runtime == nil {
@@ -379,10 +378,10 @@ func (ec *EvalContext) ensureStepRuntimeLocked(name string, instanceKey addrs.In
 }
 
 func (ec *EvalContext) Step(name string) (*runbookruntime.Step, bool) {
-	return ec.stepWithKey(name, addrs.NoKey)
+	return ec.stepWithKey(name, terraformaddrs.NoKey)
 }
 
-func (ec *EvalContext) stepWithKey(name string, instanceKey addrs.InstanceKey) (*runbookruntime.Step, bool) {
+func (ec *EvalContext) stepWithKey(name string, instanceKey terraformaddrs.InstanceKey) (*runbookruntime.Step, bool) {
 	ec.stepsLock.RLock()
 	defer ec.stepsLock.RUnlock()
 
@@ -408,10 +407,10 @@ func (ec *EvalContext) StepsInOrder() []*runbookruntime.Step {
 }
 
 func (ec *EvalContext) SetStepStatus(name string, status runbookruntime.StepStatus, reason string) {
-	ec.setStepStatusWithKey(name, addrs.NoKey, status, reason)
+	ec.setStepStatusWithKey(name, terraformaddrs.NoKey, status, reason)
 }
 
-func (ec *EvalContext) setStepStatusWithKey(name string, instanceKey addrs.InstanceKey, status runbookruntime.StepStatus, reason string) {
+func (ec *EvalContext) setStepStatusWithKey(name string, instanceKey terraformaddrs.InstanceKey, status runbookruntime.StepStatus, reason string) {
 	var snapshot *runbookruntime.Step
 	ec.stepsLock.Lock()
 
@@ -434,10 +433,10 @@ func (ec *EvalContext) setStepStatusWithKey(name string, instanceKey addrs.Insta
 }
 
 func (ec *EvalContext) SetStepOutput(stepName, outputName string, value cty.Value) {
-	ec.setStepOutputWithKey(stepName, addrs.NoKey, outputName, value)
+	ec.setStepOutputWithKey(stepName, terraformaddrs.NoKey, outputName, value)
 }
 
-func (ec *EvalContext) setStepOutputWithKey(stepName string, instanceKey addrs.InstanceKey, outputName string, value cty.Value) {
+func (ec *EvalContext) setStepOutputWithKey(stepName string, instanceKey terraformaddrs.InstanceKey, outputName string, value cty.Value) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
@@ -451,10 +450,10 @@ func (ec *EvalContext) setStepOutputWithKey(stepName string, instanceKey addrs.I
 }
 
 func (ec *EvalContext) StepOutput(stepName, outputName string) (cty.Value, bool) {
-	return ec.stepOutputWithKey(stepName, addrs.NoKey, outputName)
+	return ec.stepOutputWithKey(stepName, terraformaddrs.NoKey, outputName)
 }
 
-func (ec *EvalContext) stepOutputWithKey(stepName string, instanceKey addrs.InstanceKey, outputName string) (cty.Value, bool) {
+func (ec *EvalContext) stepOutputWithKey(stepName string, instanceKey terraformaddrs.InstanceKey, outputName string) (cty.Value, bool) {
 	ec.stepsLock.RLock()
 	defer ec.stepsLock.RUnlock()
 
@@ -467,25 +466,25 @@ func (ec *EvalContext) stepOutputWithKey(stepName string, instanceKey addrs.Inst
 }
 
 func (ec *EvalContext) SetStepLocal(stepName, localName string, value cty.Value) {
-	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
+	ec.setStepValueWithKey(stepName, terraformaddrs.NoKey, func(state *stepEvalState) {
 		state.locals[localName] = value
 	})
 }
 
-func (ec *EvalContext) SetStepData(stepName string, addr addrs.Resource, value cty.Value) {
-	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
+func (ec *EvalContext) SetStepData(stepName string, addr terraformaddrs.Resource, value cty.Value) {
+	ec.setStepValueWithKey(stepName, terraformaddrs.NoKey, func(state *stepEvalState) {
 		state.data[addr.String()] = value
 	})
 }
 
-func (ec *EvalContext) SetStepList(stepName string, addr addrs.Resource, value cty.Value) {
-	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
+func (ec *EvalContext) SetStepList(stepName string, addr terraformaddrs.Resource, value cty.Value) {
+	ec.setStepValueWithKey(stepName, terraformaddrs.NoKey, func(state *stepEvalState) {
 		state.lists[addr.String()] = value
 	})
 }
 
-func (ec *EvalContext) MarkActionPlanned(stepName string, addr addrs.Action) {
-	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
+func (ec *EvalContext) MarkActionPlanned(stepName string, addr terraformaddrs.Action) {
+	ec.setStepValueWithKey(stepName, terraformaddrs.NoKey, func(state *stepEvalState) {
 		actionState, ok := state.actions[addr.String()]
 		if !ok {
 			actionState = &actionEvalState{}
@@ -495,7 +494,7 @@ func (ec *EvalContext) MarkActionPlanned(stepName string, addr addrs.Action) {
 	})
 }
 
-func (ec *EvalContext) setActionPlannedWithKey(stepName string, instanceKey addrs.InstanceKey, actionKey string, config cty.Value) {
+func (ec *EvalContext) setActionPlannedWithKey(stepName string, instanceKey terraformaddrs.InstanceKey, actionKey string, config cty.Value) {
 	ec.setStepValueWithKey(stepName, instanceKey, func(state *stepEvalState) {
 		actionState, ok := state.actions[actionKey]
 		if !ok {
@@ -507,7 +506,7 @@ func (ec *EvalContext) setActionPlannedWithKey(stepName string, instanceKey addr
 	})
 }
 
-func (ec *EvalContext) actionPlannedConfigWithKey(stepName string, instanceKey addrs.InstanceKey, actionKey string) (cty.Value, bool) {
+func (ec *EvalContext) actionPlannedConfigWithKey(stepName string, instanceKey terraformaddrs.InstanceKey, actionKey string) (cty.Value, bool) {
 	ec.stepsLock.RLock()
 	defer ec.stepsLock.RUnlock()
 	state, ok := ec.steps[stepStateKey(stepName, instanceKey)]
@@ -521,8 +520,8 @@ func (ec *EvalContext) actionPlannedConfigWithKey(stepName string, instanceKey a
 	return actionState.plannedConfig, true
 }
 
-func (ec *EvalContext) MarkActionInvoked(stepName string, addr addrs.Action) {
-	ec.setStepValueWithKey(stepName, addrs.NoKey, func(state *stepEvalState) {
+func (ec *EvalContext) MarkActionInvoked(stepName string, addr terraformaddrs.Action) {
+	ec.setStepValueWithKey(stepName, terraformaddrs.NoKey, func(state *stepEvalState) {
 		actionState, ok := state.actions[addr.String()]
 		if !ok {
 			actionState = &actionEvalState{}
@@ -545,7 +544,7 @@ func (ec *EvalContext) HasDependencyState(name string, statuses ...runbookruntim
 	return false
 }
 
-func (ec *EvalContext) stepHasStatusWithKey(name string, instanceKey addrs.InstanceKey, statuses ...runbookruntime.StepStatus) bool {
+func (ec *EvalContext) stepHasStatusWithKey(name string, instanceKey terraformaddrs.InstanceKey, statuses ...runbookruntime.StepStatus) bool {
 	ec.stepsLock.RLock()
 	defer ec.stepsLock.RUnlock()
 	state, ok := ec.steps[stepStateKey(name, instanceKey)]
@@ -561,10 +560,10 @@ func (ec *EvalContext) stepHasStatusWithKey(name string, instanceKey addrs.Insta
 }
 
 func (ec *EvalContext) setStepValue(stepName string, apply func(state *stepEvalState)) {
-	ec.setStepValueWithKey(stepName, addrs.NoKey, apply)
+	ec.setStepValueWithKey(stepName, terraformaddrs.NoKey, apply)
 }
 
-func (ec *EvalContext) setStepValueWithKey(stepName string, instanceKey addrs.InstanceKey, apply func(state *stepEvalState)) {
+func (ec *EvalContext) setStepValueWithKey(stepName string, instanceKey terraformaddrs.InstanceKey, apply func(state *stepEvalState)) {
 	ec.stepsLock.Lock()
 	defer ec.stepsLock.Unlock()
 
@@ -602,10 +601,10 @@ func setObjectAttr(current cty.Value, name string, value cty.Value) cty.Value {
 }
 
 func (ec *EvalContext) StepLocal(stepName, localName string) (cty.Value, bool) {
-	return ec.stepLocalWithKey(stepName, addrs.NoKey, localName)
+	return ec.stepLocalWithKey(stepName, terraformaddrs.NoKey, localName)
 }
 
-func (ec *EvalContext) stepLocalWithKey(stepName string, instanceKey addrs.InstanceKey, localName string) (cty.Value, bool) {
+func (ec *EvalContext) stepLocalWithKey(stepName string, instanceKey terraformaddrs.InstanceKey, localName string) (cty.Value, bool) {
 	ec.stepsLock.RLock()
 	defer ec.stepsLock.RUnlock()
 
@@ -617,11 +616,11 @@ func (ec *EvalContext) stepLocalWithKey(stepName string, instanceKey addrs.Insta
 	return value, ok
 }
 
-func (ec *EvalContext) StepData(stepName string, addr addrs.Resource) (cty.Value, bool) {
-	return ec.stepDataWithKey(stepName, addrs.NoKey, addr)
+func (ec *EvalContext) StepData(stepName string, addr terraformaddrs.Resource) (cty.Value, bool) {
+	return ec.stepDataWithKey(stepName, terraformaddrs.NoKey, addr)
 }
 
-func (ec *EvalContext) stepDataWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Resource) (cty.Value, bool) {
+func (ec *EvalContext) stepDataWithKey(stepName string, instanceKey terraformaddrs.InstanceKey, addr terraformaddrs.Resource) (cty.Value, bool) {
 	ec.stepsLock.RLock()
 	defer ec.stepsLock.RUnlock()
 
@@ -633,11 +632,11 @@ func (ec *EvalContext) stepDataWithKey(stepName string, instanceKey addrs.Instan
 	return value, ok
 }
 
-func (ec *EvalContext) StepList(stepName string, addr addrs.Resource) (cty.Value, bool) {
-	return ec.stepListWithKey(stepName, addrs.NoKey, addr)
+func (ec *EvalContext) StepList(stepName string, addr terraformaddrs.Resource) (cty.Value, bool) {
+	return ec.stepListWithKey(stepName, terraformaddrs.NoKey, addr)
 }
 
-func (ec *EvalContext) stepListWithKey(stepName string, instanceKey addrs.InstanceKey, addr addrs.Resource) (cty.Value, bool) {
+func (ec *EvalContext) stepListWithKey(stepName string, instanceKey terraformaddrs.InstanceKey, addr terraformaddrs.Resource) (cty.Value, bool) {
 	ec.stepsLock.RLock()
 	defer ec.stepsLock.RUnlock()
 
@@ -1126,7 +1125,7 @@ func nestedResourceValues(src map[string]cty.Value) cty.Value {
 		if diags.HasErrors() || ref == nil {
 			continue
 		}
-		resource, ok := ref.Subject.(addrs.Resource)
+		resource, ok := ref.Subject.(terraformaddrs.Resource)
 		if !ok {
 			continue
 		}
