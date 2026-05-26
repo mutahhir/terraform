@@ -118,9 +118,9 @@ func (ec *BuiltinEvalContext) Hooks() []Hook {
 	return ec.hooks
 }
 
-func (ec *BuiltinEvalContext) EmitPlannedStep(step *runbookruntime.Step) {
+func (ec *BuiltinEvalContext) EmitPlannedStep(step *runbookruntime.Step) (HookAction, error) {
 	if step == nil {
-		return
+		return HookActionContinue, nil
 	}
 	ec.emitLock.Lock()
 	defer ec.emitLock.Unlock()
@@ -129,13 +129,20 @@ func (ec *BuiltinEvalContext) EmitPlannedStep(step *runbookruntime.Step) {
 		ec.ui.PlannedStep(snapshot)
 	}
 	for _, hook := range ec.hooks {
-		hook.PlannedStep(snapshot)
+		action, err := hook.PlannedStep(snapshot)
+		if err != nil {
+			return HookActionHalt, err
+		}
+		if action == HookActionHalt {
+			return HookActionHalt, nil
+		}
 	}
+	return HookActionContinue, nil
 }
 
-func (ec *BuiltinEvalContext) EmitExecutingStep(step *runbookruntime.Step) {
+func (ec *BuiltinEvalContext) EmitExecutingStep(step *runbookruntime.Step) (HookAction, error) {
 	if step == nil {
-		return
+		return HookActionContinue, nil
 	}
 	ec.emitLock.Lock()
 	defer ec.emitLock.Unlock()
@@ -144,13 +151,20 @@ func (ec *BuiltinEvalContext) EmitExecutingStep(step *runbookruntime.Step) {
 		ec.ui.ExecutingStep(snapshot)
 	}
 	for _, hook := range ec.hooks {
-		hook.ExecutingStep(snapshot)
+		action, err := hook.ExecutingStep(snapshot)
+		if err != nil {
+			return HookActionHalt, err
+		}
+		if action == HookActionHalt {
+			return HookActionHalt, nil
+		}
 	}
+	return HookActionContinue, nil
 }
 
-func (ec *BuiltinEvalContext) EmitExecutedStep(step *runbookruntime.Step) {
+func (ec *BuiltinEvalContext) EmitExecutedStep(step *runbookruntime.Step) (HookAction, error) {
 	if step == nil {
-		return
+		return HookActionContinue, nil
 	}
 	ec.emitLock.Lock()
 	defer ec.emitLock.Unlock()
@@ -159,22 +173,36 @@ func (ec *BuiltinEvalContext) EmitExecutedStep(step *runbookruntime.Step) {
 		ec.ui.ExecutedStep(snapshot)
 	}
 	for _, hook := range ec.hooks {
-		hook.ExecutedStep(snapshot)
+		action, err := hook.ExecutedStep(snapshot)
+		if err != nil {
+			return HookActionHalt, err
+		}
+		if action == HookActionHalt {
+			return HookActionHalt, nil
+		}
 	}
+	return HookActionContinue, nil
 }
 
-func (ec *BuiltinEvalContext) EmitActionEvent(event ActionExecEvent) {
+func (ec *BuiltinEvalContext) EmitActionEvent(event ActionExecEvent) (HookAction, error) {
 	ec.emitLock.Lock()
 	defer ec.emitLock.Unlock()
 	if ec.ui != nil {
 		ec.ui.ActionEvent(event)
 	}
 	for _, hook := range ec.hooks {
-		hook.ActionEvent(event)
+		action, err := hook.ActionEvent(event)
+		if err != nil {
+			return HookActionHalt, err
+		}
+		if action == HookActionHalt {
+			return HookActionHalt, nil
+		}
 	}
+	return HookActionContinue, nil
 }
 
-func (ec *BuiltinEvalContext) EmitStepPlanInfo(info StepPlanInfo) {
+func (ec *BuiltinEvalContext) EmitStepPlanInfo(info StepPlanInfo) (HookAction, error) {
 	ec.emitLock.Lock()
 	defer ec.emitLock.Unlock()
 	ec.planInfo = append(ec.planInfo, info)
@@ -182,8 +210,15 @@ func (ec *BuiltinEvalContext) EmitStepPlanInfo(info StepPlanInfo) {
 		ec.ui.PlannedStepInfo(info)
 	}
 	for _, hook := range ec.hooks {
-		hook.PlannedStepInfo(info)
+		action, err := hook.PlannedStepInfo(info)
+		if err != nil {
+			return HookActionHalt, err
+		}
+		if action == HookActionHalt {
+			return HookActionHalt, nil
+		}
 	}
+	return HookActionContinue, nil
 }
 
 func (ec *BuiltinEvalContext) PlanInfo() []StepPlanInfo {

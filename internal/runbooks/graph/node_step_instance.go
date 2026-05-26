@@ -40,10 +40,19 @@ func (n *NodeStepInstance) Execute(ctx EvalContext, op walkOperation) tfdiags.Di
 	switch op {
 	case walkOperationPlan:
 		step = ctx.ensurePlannedStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
-		ctx.EmitPlannedStep(step)
+		if action, err := ctx.EmitPlannedStep(step); err != nil {
+			return tfdiags.Diagnostics{}.Append(err)
+		} else if action == HookActionHalt {
+			return nil
+		}
 	case walkOperationExecute:
 		step = ctx.ensureRunningStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
-		ctx.EmitExecutingStep(step)
+		if action, err := ctx.EmitExecutingStep(step); err != nil {
+			return tfdiags.Diagnostics{}.Append(err)
+		} else if action == HookActionHalt {
+			ctx.setStepStatusWithKey(n.StepName, n.InstanceKey, runtime.StepStatusSkipped, "halted by hook")
+			return nil
+		}
 	default:
 		step = ctx.ensureStepWithKey(n.StepName, n.InstanceKey, n.Config, n.Runtime)
 	}

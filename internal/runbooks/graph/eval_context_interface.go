@@ -100,19 +100,19 @@ type EvalContext interface {
 	// --- Events ---
 
 	// EmitPlannedStep notifies UI and hooks that a step has been planned.
-	EmitPlannedStep(step *runbookruntime.Step)
+	EmitPlannedStep(step *runbookruntime.Step) (HookAction, error)
 
 	// EmitExecutingStep notifies that a step is now executing.
-	EmitExecutingStep(step *runbookruntime.Step)
+	EmitExecutingStep(step *runbookruntime.Step) (HookAction, error)
 
 	// EmitExecutedStep notifies that a step has finished executing.
-	EmitExecutedStep(step *runbookruntime.Step)
+	EmitExecutedStep(step *runbookruntime.Step) (HookAction, error)
 
 	// EmitStepPlanInfo emits plan-time metadata about a step operation.
-	EmitStepPlanInfo(info StepPlanInfo)
+	EmitStepPlanInfo(info StepPlanInfo) (HookAction, error)
 
 	// EmitActionEvent emits an action execution event.
-	EmitActionEvent(event ActionExecEvent)
+	EmitActionEvent(event ActionExecEvent) (HookAction, error)
 }
 
 // Compile-time check that the concrete EvalContext satisfies EvalContext.
