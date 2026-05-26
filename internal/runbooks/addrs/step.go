@@ -1,5 +1,4 @@
 package addrs
-
 type Step struct {
 	Step StepInstance
 }

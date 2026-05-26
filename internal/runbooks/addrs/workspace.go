@@ -52,3 +52,4 @@ type WorkspaceResource struct {
 func (r WorkspaceResource) String() string {
 	return r.Module.String() + "." + r.Resource.String()
 }
+

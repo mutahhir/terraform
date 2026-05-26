@@ -10,3 +10,4 @@ type StepOutput struct {
 func (s StepOutput) String() string {
 	return fmt.Sprintf("step.%s.%s", s.Step.String(), s.OutputName)
 }
+
