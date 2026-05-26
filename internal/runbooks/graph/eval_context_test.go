@@ -9,6 +9,7 @@ import (
 
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
+	"github.com/hashicorp/terraform/internal/providers"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
@@ -361,4 +362,113 @@ func TestEvalContextEvaluateExprForInstanceExposesRepetitionData(t *testing.T) {
 	if !value.RawEquals(cty.NumberIntVal(2)) {
 		t.Fatalf("wrong count.index value %#v", value)
 	}
+}
+
+func TestEvalContextProviderAliasLookup(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+
+	providerType := terraformaddrs.Provider{
+		Hostname:  "registry.terraform.io",
+		Namespace: "hashicorp",
+		Type:      "aws",
+	}
+
+	// Simulate two "aws" providers with different aliases
+	defaultProvider := &mockProviderForTest{name: "default"}
+	aliasedProvider := &mockProviderForTest{name: "us_east"}
+
+	ctx.SetProvider(providerType, defaultProvider)
+	ctx.SetProviderForConfig(terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
+		Provider: providerType,
+		Alias:    "us_east",
+	}, aliasedProvider)
+
+	// Lookup default (no alias) should return the default provider
+	got, ok := ctx.Provider(providerType)
+	if !ok {
+		t.Fatal("expected to find default provider")
+	}
+	if got.(*mockProviderForTest).name != "default" {
+		t.Fatalf("expected default provider, got %q", got.(*mockProviderForTest).name)
+	}
+
+	// Lookup with alias should return the aliased provider
+	got, ok = ctx.ProviderForConfig(terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
+		Provider: providerType,
+		Alias:    "us_east",
+	})
+	if !ok {
+		t.Fatal("expected to find aliased provider")
+	}
+	if got.(*mockProviderForTest).name != "us_east" {
+		t.Fatalf("expected aliased provider 'us_east', got %q", got.(*mockProviderForTest).name)
+	}
+
+	// Lookup with non-existent alias should return not found
+	_, ok = ctx.ProviderForConfig(terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
+		Provider: providerType,
+		Alias:    "nonexistent",
+	})
+	if ok {
+		t.Fatal("expected not to find provider with nonexistent alias")
+	}
+}
+
+func TestEvalContextProviderAliasDoesNotOverwrite(t *testing.T) {
+	ctx := NewEvalContext(EvalContextOpts{})
+
+	providerType := terraformaddrs.Provider{
+		Hostname:  "registry.terraform.io",
+		Namespace: "hashicorp",
+		Type:      "aws",
+	}
+
+	provider1 := &mockProviderForTest{name: "first"}
+	provider2 := &mockProviderForTest{name: "second"}
+
+	// Register two providers of the same type with different aliases
+	ctx.SetProviderForConfig(terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
+		Provider: providerType,
+		Alias:    "region_a",
+	}, provider1)
+	ctx.SetProviderForConfig(terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
+		Provider: providerType,
+		Alias:    "region_b",
+	}, provider2)
+
+	// Both should still be accessible
+	got1, ok := ctx.ProviderForConfig(terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
+		Provider: providerType,
+		Alias:    "region_a",
+	})
+	if !ok {
+		t.Fatal("expected to find region_a provider")
+	}
+	if got1.(*mockProviderForTest).name != "first" {
+		t.Fatalf("expected 'first', got %q", got1.(*mockProviderForTest).name)
+	}
+
+	got2, ok := ctx.ProviderForConfig(terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
+		Provider: providerType,
+		Alias:    "region_b",
+	})
+	if !ok {
+		t.Fatal("expected to find region_b provider")
+	}
+	if got2.(*mockProviderForTest).name != "second" {
+		t.Fatalf("expected 'second', got %q", got2.(*mockProviderForTest).name)
+	}
+}
+
+// mockProviderForTest is a minimal mock for testing provider lookup
+type mockProviderForTest struct {
+	providers.Interface
+	name string
 }

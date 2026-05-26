@@ -44,7 +44,7 @@ type EvalContext struct {
 	variables     terraform.InputValues
 	variablesLock sync.RWMutex
 
-	providers     map[addrs.Provider]providers.Interface
+	providers     map[string]providers.Interface // keyed by AbsProviderConfig.String()
 	providersLock sync.RWMutex
 
 	steps     map[string]*stepEvalState
@@ -71,7 +71,7 @@ func NewEvalContext(opts EvalContextOpts) *EvalContext {
 		planInfo:          make([]StepPlanInfo, 0),
 		variables:         make(terraform.InputValues),
 		variablesLock:     sync.RWMutex{},
-		providers:         make(map[addrs.Provider]providers.Interface),
+		providers:         make(map[string]providers.Interface),
 		providersLock:     sync.RWMutex{},
 		steps:             make(map[string]*stepEvalState),
 		stepOrder:         make([]string, 0),
@@ -245,19 +245,57 @@ func (ec *EvalContext) ProviderInput(addrs.AbsProviderConfig) map[string]cty.Val
 	return nil
 }
 
+// SetProvider registers a provider instance keyed by its type with no alias.
+// This is the common case when a runbook has a single configuration per provider.
 func (ec *EvalContext) SetProvider(providerType addrs.Provider, provider providers.Interface) {
+	ec.SetProviderForConfig(addrs.AbsProviderConfig{
+		Module:   addrs.RootModule,
+		Provider: providerType,
+	}, provider)
+}
+
+// SetProviderForConfig registers a provider instance for a specific provider
+// configuration address, supporting aliased providers.
+func (ec *EvalContext) SetProviderForConfig(addr addrs.AbsProviderConfig, provider providers.Interface) {
 	ec.providersLock.Lock()
 	defer ec.providersLock.Unlock()
 
-	ec.providers[providerType] = provider
+	ec.providers[addr.String()] = provider
 }
 
+// Provider looks up a provider by type, returning the default (no-alias)
+// configuration. For aliased providers, use ProviderForConfig.
 func (ec *EvalContext) Provider(providerType addrs.Provider) (providers.Interface, bool) {
+	return ec.ProviderForConfig(addrs.AbsProviderConfig{
+		Module:   addrs.RootModule,
+		Provider: providerType,
+	})
+}
+
+// ProviderForConfig looks up a provider by its full configuration address,
+// including alias. If the exact address is not found and the requested alias
+// is empty, it falls back to searching for any configuration of that provider
+// type (backward compatibility for callers that don't track aliases).
+func (ec *EvalContext) ProviderForConfig(addr addrs.AbsProviderConfig) (providers.Interface, bool) {
 	ec.providersLock.RLock()
 	defer ec.providersLock.RUnlock()
 
-	provider, ok := ec.providers[providerType]
-	return provider, ok
+	// Exact match first
+	if provider, ok := ec.providers[addr.String()]; ok {
+		return provider, true
+	}
+
+	// Fallback: if no alias was requested, try to find any provider of this type
+	// by checking the default key format (provider type with no alias)
+	if addr.Alias == "" {
+		for key, provider := range ec.providers {
+			if strings.Contains(key, addr.Provider.String()) {
+				return provider, true
+			}
+		}
+	}
+
+	return nil, false
 }
 
 func (ec *EvalContext) EnsureStep(name string, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {

@@ -755,18 +755,31 @@ func (n *NodeStepOutput) Execute(ctx *EvalContext, _ walkOperation) tfdiags.Diag
 }
 
 func runbookProvider(ctx *EvalContext, providerType terraformaddrs.Provider) (providers.Interface, tfdiags.Diagnostics) {
-	if provider, ok := ctx.Provider(providerType); ok {
-		configVal, diags := runbookProviderConfigValue(ctx, providerType)
-		if diags.HasErrors() {
-			return nil, diags
-		}
-		resp := provider.ConfigureProvider(providers.ConfigureProviderRequest{Config: configVal})
-		if resp.Diagnostics.HasErrors() {
-			return nil, resp.Diagnostics
-		}
-		return provider, nil
+	return runbookProviderForConfig(ctx, terraformaddrs.AbsProviderConfig{
+		Module:   terraformaddrs.RootModule,
+		Provider: providerType,
+	})
+}
+
+func runbookProviderForConfig(ctx *EvalContext, addr terraformaddrs.AbsProviderConfig) (providers.Interface, tfdiags.Diagnostics) {
+	provider, ok := ctx.ProviderForConfig(addr)
+	if !ok {
+		// Fallback: try without alias in case the provider was registered by type only
+		provider, ok = ctx.Provider(addr.Provider)
 	}
-	return nil, missingProviderDiagnostic(providerType, nil)
+	if !ok {
+		return nil, missingProviderDiagnostic(addr.Provider, nil)
+	}
+
+	configVal, diags := runbookProviderConfigValueForAddr(ctx, addr)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	resp := provider.ConfigureProvider(providers.ConfigureProviderRequest{Config: configVal})
+	if resp.Diagnostics.HasErrors() {
+		return nil, resp.Diagnostics
+	}
+	return provider, nil
 }
 
 func runbookProviderConfigValue(ctx *EvalContext, providerType terraformaddrs.Provider) (cty.Value, tfdiags.Diagnostics) {
@@ -781,9 +794,19 @@ func runbookProviderConfigValue(ctx *EvalContext, providerType terraformaddrs.Pr
 		Provider: providerType,
 		Alias:    providerConfig.Alias,
 	}
+	return runbookProviderConfigValueForAddr(ctx, addr)
+}
+
+func runbookProviderConfigValueForAddr(ctx *EvalContext, addr terraformaddrs.AbsProviderConfig) (cty.Value, tfdiags.Diagnostics) {
+	config := ctx.Config()
+	providerConfig := providerConfigForAddr(config, addr)
+	if providerConfig == nil {
+		return cty.EmptyObjectVal, nil
+	}
+
 	configBody := buildRunbookProviderConfig(ctx, addr, providerConfig)
 
-	schemaResp, diags := providerSchemaForExecution(ctx, providerType)
+	schemaResp, diags := providerSchemaForExecution(ctx, addr.Provider)
 	if diags.HasErrors() {
 		return cty.NilVal, diags
 	}
@@ -819,6 +842,23 @@ func providerConfigForType(config *runbookconfigs.RunbookConfig, providerType te
 	}
 	for _, providerConfig := range config.ProviderConfigs {
 		if providerConfig != nil && providerTypeForConfig(config, providerConfig) == providerType && providerConfig.Alias == "" {
+			return providerConfig
+		}
+	}
+	return nil
+}
+
+// providerConfigForAddr looks up a provider configuration by its full address
+// (type + alias). If the alias is empty, it falls back to providerConfigForType.
+func providerConfigForAddr(config *runbookconfigs.RunbookConfig, addr terraformaddrs.AbsProviderConfig) *configs.Provider {
+	if config == nil {
+		return nil
+	}
+	if addr.Alias == "" {
+		return providerConfigForType(config, addr.Provider)
+	}
+	for _, providerConfig := range config.ProviderConfigs {
+		if providerConfig != nil && providerTypeForConfig(config, providerConfig) == addr.Provider && providerConfig.Alias == addr.Alias {
 			return providerConfig
 		}
 	}
