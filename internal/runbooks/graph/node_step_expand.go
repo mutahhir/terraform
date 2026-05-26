@@ -61,7 +61,7 @@ func applyRepetitionData(step *runtime.Step, repetitionData *terraform.InstanceK
 	step.RepetitionData = &copy
 }
 
-func evalRunbookForEach(expr hcl.Expression, ctx *EvalContext, stepName string) (map[string]cty.Value, tfdiags.Diagnostics) {
+func evalRunbookForEach(expr hcl.Expression, ctx StepEvalContext, stepName string) (map[string]cty.Value, tfdiags.Diagnostics) {
 	value, diags := ctx.EvaluateExpr(stepName, expr)
 	if diags.HasErrors() {
 		return nil, diags
@@ -80,7 +80,7 @@ func evalRunbookForEach(expr hcl.Expression, ctx *EvalContext, stepName string) 
 	return value.AsValueMap(), nil
 }
 
-func evalRunbookCount(expr hcl.Expression, ctx *EvalContext, stepName string) (int, tfdiags.Diagnostics) {
+func evalRunbookCount(expr hcl.Expression, ctx StepEvalContext, stepName string) (int, tfdiags.Diagnostics) {
 	value, diags := ctx.EvaluateExpr(stepName, expr)
 	if diags.HasErrors() {
 		return 0, diags
@@ -97,7 +97,7 @@ func evalRunbookCount(expr hcl.Expression, ctx *EvalContext, stepName string) (i
 	return int(count), diags
 }
 
-func (n *NodeExpandStep) expandInstances(ctx *EvalContext) ([]expandedStepInstance, tfdiags.Diagnostics) {
+func (n *NodeExpandStep) expandInstances(ctx StepEvalContext) ([]expandedStepInstance, tfdiags.Diagnostics) {
 	if n.Config == nil {
 		runtimeStep := cloneRuntimeStep(n.Runtime, nil, n.StepName, terraformaddrs.NoKey, 0)
 		applyRepetitionData(runtimeStep, nil)
@@ -143,7 +143,7 @@ func (n *NodeExpandStep) expandInstances(ctx *EvalContext) ([]expandedStepInstan
 	return []expandedStepInstance{{key: terraformaddrs.NoKey, runtime: runtimeStep}}, nil
 }
 
-func (n *NodeExpandStep) DynamicExpand(ctx *EvalContext) (*terraform.Graph, tfdiags.Diagnostics) {
+func (n *NodeExpandStep) DynamicExpand(ctx StepEvalContext) (*terraform.Graph, tfdiags.Diagnostics) {
 	var g terraform.Graph
 	instances, diags := n.expandInstances(ctx)
 	if diags.HasErrors() {

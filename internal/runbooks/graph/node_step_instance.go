@@ -35,7 +35,7 @@ func (n *NodeStepInstance) Name() string {
 	return fmt.Sprintf("step.%s%s", n.StepName, n.InstanceKey.String())
 }
 
-func (n *NodeStepInstance) Execute(ctx *EvalContext, op walkOperation) tfdiags.Diagnostics {
+func (n *NodeStepInstance) Execute(ctx StepEvalContext, op walkOperation) tfdiags.Diagnostics {
 	var step *runtime.Step
 	switch op {
 	case walkOperationPlan:
