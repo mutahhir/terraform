@@ -406,7 +406,7 @@ func (n *NodeStepExecution) Execute(ctx EvalContext, op walkOperation) tfdiags.D
 				} else if workspaceAction, ok := ref.Subject.(runbookaddrs.WorkspaceAction); ok && op == walkOperationPlan {
 					action := workspaceActionConfig(ctx.WorkspaceConfig(), workspaceAction)
 					if action != nil {
-						providerType := providerTypeForAction(ctx.Config(), action)
+						providerType := providerTypeForWorkspaceAction(ctx.WorkspaceConfig(), workspaceAction, action)
 						provider, providerDiags := runbookProvider(ctx, providerType)
 						diags = diags.Append(providerDiags)
 						if !providerDiags.HasErrors() {
@@ -554,7 +554,12 @@ func (n *NodeStepExecution) executeInvokeAction(ctx EvalContext, traversal hcl.T
 		return diags
 	}
 	subject := ref.Subject.String()
-	providerType := providerTypeForAction(ctx.Config(), action)
+	var providerType terraformaddrs.Provider
+	if workspaceAction, ok := ref.Subject.(runbookaddrs.WorkspaceAction); ok {
+		providerType = providerTypeForWorkspaceAction(ctx.WorkspaceConfig(), workspaceAction, action)
+	} else {
+		providerType = providerTypeForAction(ctx.Config(), action)
+	}
 	provider, ok := providerCache[providerType]
 	if !ok {
 		var providerDiags tfdiags.Diagnostics
@@ -946,3 +951,33 @@ var (
 	_ StepBelonging = (*NodeStepFinalize)(nil)
 	_ StepBelonging = (*NodeStepInstance)(nil)
 )
+
+// providerTypeForWorkspaceAction resolves the provider type for an action
+// defined in the workspace configuration, using the workspace's own
+// required_providers rather than the runbook's. This prevents the runbook's
+// provider version from silently winning over the workspace's version.
+func providerTypeForWorkspaceAction(workspaceConfig *configs.Config, addr runbookaddrs.WorkspaceAction, action *configs.Action) terraformaddrs.Provider {
+	if action != nil && action.Provider != (terraformaddrs.Provider{}) {
+		return action.Provider
+	}
+	if action == nil || workspaceConfig == nil {
+		return terraformaddrs.Provider{}
+	}
+	// Navigate to the module that declares this action
+	target := workspaceConfig
+	for _, call := range addr.Module.Calls {
+		child, ok := target.Children[call.Name]
+		if !ok || child == nil {
+			break
+		}
+		target = child
+	}
+	if target.Module != nil && target.Module.ProviderRequirements != nil {
+		localName := action.ProviderConfigAddr().LocalName
+		if req, ok := target.Module.ProviderRequirements.RequiredProviders[localName]; ok {
+			return req.Type
+		}
+	}
+	// Fallback: implied type from the local name
+	return terraformaddrs.ImpliedProviderForUnqualifiedType(action.ProviderConfigAddr().LocalName)
+}
