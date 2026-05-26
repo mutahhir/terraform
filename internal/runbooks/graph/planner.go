@@ -97,6 +97,7 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 	}
 	diags = diags.Append(ValidateWithContext(config, evalCtx, validateOpts))
 	diags = diags.Append(validateStepDeclarations(config, evalCtx, validateOpts))
+	diags = diags.Append(validateStepReferences(config))
 	if diags.HasErrors() {
 		return nil, diags
 	}
