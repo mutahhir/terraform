@@ -2,6 +2,8 @@ package runbookgraph
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	terraformaddrs "github.com/hashicorp/terraform/internal/addrs"
@@ -426,6 +428,34 @@ func (n *NodeStepExecution) Execute(ctx EvalContext, op walkOperation) tfdiags.D
 			if ref, refDiags := runbookaddrs.ParseRef(traversal); !refDiags.HasErrors() && ref != nil {
 				ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "read_datasource", Subject: ref.Subject.String(), Status: runbookruntime.StepStatusPlanned})
 			}
+		case runbookconfigs.ExecuteOpWait:
+			wait := operation.Wait
+			if wait != nil {
+				details := map[string]cty.Value{
+					"mode": cty.StringVal(string(wait.Mode)),
+				}
+				if wait.Mode == runbookconfigs.WaitModeDuration {
+					details["duration"] = cty.StringVal(wait.Duration.String())
+				} else {
+					if wait.Timeout > 0 {
+						details["timeout"] = cty.StringVal(wait.Timeout.String())
+					}
+					if wait.MaxAttempts > 0 {
+						details["max_attempts"] = cty.NumberIntVal(int64(wait.MaxAttempts))
+					}
+					interval := wait.Interval
+					if interval == 0 {
+						interval = 10 * time.Second
+					}
+					details["interval"] = cty.StringVal(interval.String())
+				}
+				ctx.EmitStepPlanInfo(StepPlanInfo{
+					StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
+					Type: "wait", Subject: "wait." + wait.Name,
+					Status:  runbookruntime.StepStatusPlanned,
+					Details: cty.ObjectVal(details),
+				})
+			}
 		}
 	}
 	if diags.HasErrors() {
@@ -450,6 +480,8 @@ func (n *NodeStepExecution) Execute(ctx EvalContext, op walkOperation) tfdiags.D
 		case runbookconfigs.ExecuteOpReadDataSource:
 			traversal := operation.Traversal
 			diags = diags.Append(n.executeReadDataSource(ctx, traversal, providerCache))
+		case runbookconfigs.ExecuteOpWait:
+			diags = diags.Append(n.executeWait(ctx, operation.Wait, providerCache))
 		}
 		if diags.HasErrors() {
 			break
@@ -481,7 +513,7 @@ func (n *NodeStepExecution) executeReadDataSource(ctx EvalContext, traversal hcl
 	provider, ok := providerCache[providerType]
 	if !ok {
 		var providerDiags tfdiags.Diagnostics
-		provider, providerDiags = runbookProvider(ctx, providerType)
+		provider, providerDiags = runbookProviderFresh(ctx, providerType)
 		diags = diags.Append(providerDiags)
 		if providerDiags.HasErrors() {
 			return diags
@@ -563,7 +595,7 @@ func (n *NodeStepExecution) executeInvokeAction(ctx EvalContext, traversal hcl.T
 	provider, ok := providerCache[providerType]
 	if !ok {
 		var providerDiags tfdiags.Diagnostics
-		provider, providerDiags = runbookProvider(ctx, providerType)
+		provider, providerDiags = runbookProviderFresh(ctx, providerType)
 		diags = diags.Append(providerDiags)
 		if providerDiags.HasErrors() {
 			return diags
@@ -612,6 +644,137 @@ func (n *NodeStepExecution) executeInvokeAction(ctx EvalContext, traversal hcl.T
 	return diags
 }
 
+func (n *NodeStepExecution) executeWait(ctx EvalContext, wait *runbookconfigs.Wait, providerCache map[terraformaddrs.Provider]providers.Interface) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+	if wait == nil {
+		return nil
+	}
+	startTime := time.Now()
+	subject := "wait." + wait.Name
+
+	// Blind wait (duration mode)
+	if wait.Mode == runbookconfigs.WaitModeDuration {
+		ctx.EmitActionEvent(ActionExecEvent{
+			StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
+			Subject: subject, ActionType: "wait", Status: "waiting",
+			Message: fmt.Sprintf("sleeping %s", wait.Duration),
+		})
+		select {
+		case <-time.After(wait.Duration):
+		case <-ctx.StopCtx().Done():
+			return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
+				tfdiags.Error, "Wait cancelled", "The wait operation was cancelled.",
+			))
+		}
+		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+			if state.waits == nil {
+				state.waits = map[string]*waitEvalState{}
+			}
+			state.waits[wait.Name] = &waitEvalState{
+				Satisfied: true, Attempts: 0, Elapsed: wait.Duration,
+			}
+		})
+		ctx.EmitActionEvent(ActionExecEvent{
+			StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
+			Subject: subject, ActionType: "wait", Status: "completed",
+			Message: fmt.Sprintf("slept %s", wait.Duration),
+		})
+		return nil
+	}
+
+	// Polling wait
+	interval := wait.Interval
+	if interval == 0 {
+		interval = 10 * time.Second
+	}
+	var deadline time.Time
+	if wait.Timeout > 0 {
+		deadline = startTime.Add(wait.Timeout)
+	}
+	attempt := 0
+
+	for {
+		attempt++
+
+		// Read the data source
+		readDiags := n.executeReadDataSource(ctx, wait.DataSource, providerCache)
+		if readDiags.HasErrors() {
+			diags = diags.Append(readDiags)
+			break
+		}
+
+		// Evaluate condition
+		condVal, condDiags := ctx.EvaluateExprForInstance(
+			n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData,
+			wait.Condition,
+		)
+		if condDiags.HasErrors() {
+			diags = diags.Append(condDiags)
+			break
+		}
+
+		if condVal.IsKnown() && !condVal.IsNull() && condVal.True() {
+			// Satisfied
+			elapsed := time.Since(startTime)
+			ctx.EmitActionEvent(ActionExecEvent{
+				StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
+				Subject: subject, ActionType: "wait", Status: "satisfied",
+				Message: fmt.Sprintf("satisfied after %d attempts (%s)", attempt, elapsed.Truncate(time.Second)),
+			})
+			ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+				if state.waits == nil {
+					state.waits = map[string]*waitEvalState{}
+				}
+				state.waits[wait.Name] = &waitEvalState{
+					Satisfied: true, Attempts: attempt, Elapsed: elapsed,
+				}
+			})
+			return nil
+		}
+
+		// Progress
+		ctx.EmitActionEvent(ActionExecEvent{
+			StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
+			Subject: subject, ActionType: "wait", Status: "progress",
+			Message: fmt.Sprintf("attempt %d — not satisfied", attempt),
+		})
+
+		// Check limits before sleeping
+		if wait.MaxAttempts > 0 && attempt >= wait.MaxAttempts {
+			break
+		}
+		if !deadline.IsZero() && time.Now().Add(interval).After(deadline) {
+			break
+		}
+
+		// Sleep
+		select {
+		case <-time.After(interval):
+		case <-ctx.StopCtx().Done():
+			return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
+				tfdiags.Error, "Wait cancelled", "The wait operation was cancelled.",
+			))
+		}
+	}
+
+	// Timed out / exhausted
+	elapsed := time.Since(startTime)
+	ctx.EmitActionEvent(ActionExecEvent{
+		StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
+		Subject: subject, ActionType: "wait", Status: "timed_out",
+		Message: fmt.Sprintf("timed out after %d attempts (%s)", attempt, elapsed.Truncate(time.Second)),
+	})
+	ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+		if state.waits == nil {
+			state.waits = map[string]*waitEvalState{}
+		}
+		state.waits[wait.Name] = &waitEvalState{
+			Satisfied: false, TimedOut: true, Attempts: attempt, Elapsed: elapsed,
+		}
+	})
+	return diags
+}
+
 type NodeStepCondition struct {
 	Step      *NodeStepInstance
 	Condition *runbookconfigs.Condition
@@ -647,10 +810,24 @@ func (n *NodeStepCondition) Execute(ctx EvalContext, op walkOperation) tfdiags.D
 	ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: string(n.Condition.Kind), Subject: n.Condition.DeclRange.String(), Status: runbookruntime.StepStatusPlanned})
 	value, diags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Condition.Condition)
 	if diags.HasErrors() {
+		// If evaluation fails because references are not yet available at plan
+		// time (e.g., depends on execute-time read_datasource), defer rather
+		// than fail. This only applies during the plan walk.
+		if op == walkOperationPlan && containsUnknownDiag(diags) {
+			ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: string(n.Condition.Kind) + "_deferred", Subject: n.Condition.DeclRange.String(), Status: runbookruntime.StepStatusPlanned})
+			return nil
+		}
 		ctx.setStepStatusWithKey(n.Step.StepName, n.Step.InstanceKey, runbookruntime.StepStatusFailed, "condition evaluation failed")
 		return diags
 	}
 	if op == walkOperationPlan && n.Condition.Kind == runbookconfigs.PostconditionCondition {
+		return diags
+	}
+	// During plan walk, if the condition value is unknown (depends on
+	// execute-time data), defer evaluation to the execute walk instead of
+	// failing. The plan output will show this as "(evaluated at execute time)".
+	if op == walkOperationPlan && !value.IsKnown() {
+		ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: string(n.Condition.Kind) + "_deferred", Subject: n.Condition.DeclRange.String(), Status: runbookruntime.StepStatusPlanned})
 		return diags
 	}
 	if !value.IsKnown() || value.IsNull() || value.False() {
@@ -764,6 +941,28 @@ func runbookProvider(ctx EvalContext, providerType terraformaddrs.Provider) (pro
 		Module:   terraformaddrs.RootModule,
 		Provider: providerType,
 	})
+}
+
+// runbookProviderFresh creates a new provider instance from the factory,
+// configures it, and returns it. This is used during execution to ensure
+// parallel steps get independent provider instances and don't serialize
+// on a shared gRPC connection.
+func runbookProviderFresh(ctx EvalContext, providerType terraformaddrs.Provider) (providers.Interface, tfdiags.Diagnostics) {
+	provider, err := ctx.NewProviderInstance(providerType)
+	if err != nil {
+		// Fall back to shared instance if no factory available
+		return runbookProvider(ctx, providerType)
+	}
+
+	configVal, diags := runbookProviderConfigValue(ctx, providerType)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	resp := provider.ConfigureProvider(providers.ConfigureProviderRequest{Config: configVal})
+	if resp.Diagnostics.HasErrors() {
+		return nil, resp.Diagnostics
+	}
+	return provider, nil
 }
 
 func runbookProviderForConfig(ctx EvalContext, addr terraformaddrs.AbsProviderConfig) (providers.Interface, tfdiags.Diagnostics) {
@@ -980,4 +1179,28 @@ func providerTypeForWorkspaceAction(workspaceConfig *configs.Config, addr runboo
 	}
 	// Fallback: implied type from the local name
 	return terraformaddrs.ImpliedProviderForUnqualifiedType(action.ProviderConfigAddr().LocalName)
+}
+
+// containsUnknownDiag returns true if the diagnostics contain errors that
+// indicate the expression references values that are not yet known (e.g.,
+// execute-time data sources). This is used to distinguish "can't evaluate
+// yet" from "genuine evaluation error" during the plan walk.
+func containsUnknownDiag(diags tfdiags.Diagnostics) bool {
+	for _, diag := range diags {
+		if diag.Severity() != tfdiags.Error {
+			continue
+		}
+		desc := diag.Description()
+		// These are common indicators that an expression failed because
+		// a referenced value isn't available yet.
+		if strings.Contains(desc.Summary, "Unknown") ||
+			strings.Contains(desc.Summary, "unknown") ||
+			strings.Contains(desc.Detail, "not yet known") ||
+			strings.Contains(desc.Detail, "unknown value") ||
+			strings.Contains(desc.Summary, "Invalid reference") ||
+			strings.Contains(desc.Detail, "not available") {
+			return true
+		}
+	}
+	return false
 }

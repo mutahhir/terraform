@@ -648,11 +648,11 @@ step "summary" {
 	if !strings.Contains(output.Stdout(), "Saved runbook plan") {
 		t.Fatalf("expected saved-plan header, got: %s", output.Stdout())
 	}
-	if !strings.Contains(output.Stdout(), "Steps:") {
-		t.Fatalf("expected steps header, got: %s", output.Stdout())
+	if !strings.Contains(output.Stdout(), "Step details:") {
+		t.Fatalf("expected step details section, got: %s", output.Stdout())
 	}
-	if !strings.Contains(output.Stdout(), `reads:`) || !strings.Contains(output.Stdout(), `- data "data.test_data.selected"`) {
-		t.Fatalf("expected hierarchical saved plan details, got: %s", output.Stdout())
+	if !strings.Contains(output.Stdout(), `<= read  data.test_data.selected`) {
+		t.Fatalf("expected read operation in saved plan details, got: %s", output.Stdout())
 	}
 	if strings.Contains(output.All(), "Invalid runbook") {
 		t.Fatalf("expected show to read the saved plan instead of disk, got: %s", output.All())

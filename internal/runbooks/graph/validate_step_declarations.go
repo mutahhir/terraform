@@ -31,6 +31,7 @@ func validateStepDeclarations(config *runbookconfigs.RunbookConfig, ctx *Builtin
 		diags = diags.Append(validateStepActionDeclarations(config, ctx, cache, step))
 		diags = diags.Append(validateStepDataDeclarations(config, ctx, cache, step))
 		diags = diags.Append(validateStepListDeclarations(config, ctx, cache, step))
+		diags = diags.Append(validateStepWaitDeclarations(step))
 		for _, local := range step.Locals {
 			diags = diags.Append(validateWorkspaceReferencesInExpr(config, cache, local.Expr))
 		}
@@ -509,4 +510,59 @@ func evaluateExpr(ctx *BuiltinEvalContext, expr hcl.Expression) (cty.Value, tfdi
 
 	value, hclDiags := expr.Value(hclCtx)
 	return value, diags.Append(hclDiags)
+}
+
+// validateStepWaitDeclarations checks that wait operations within a step's
+// execute blocks reference valid data sources declared in the same step.
+func validateStepWaitDeclarations(step *runbookconfigs.Step) tfdiags.Diagnostics {
+	if step == nil {
+		return nil
+	}
+
+	// Collect data source names declared in this step
+	declaredData := make(map[string]bool)
+	for _, data := range step.DataSources {
+		declaredData[fmt.Sprintf("data.%s.%s", data.Type, data.Name)] = true
+	}
+
+	var diags tfdiags.Diagnostics
+	for _, exec := range step.Executions {
+		for _, op := range exec.Operations {
+			if op.Type != runbookconfigs.ExecuteOpWait || op.Wait == nil {
+				continue
+			}
+			wait := op.Wait
+
+			// Validate datasource references a data block in this step
+			if wait.Mode == runbookconfigs.WaitModePolling && wait.DataSource != nil {
+				dsRef := wait.DataSource.RootName()
+				if dsRef == "data" && len(wait.DataSource) >= 3 {
+					// Build the full data reference: data.<type>.<name>
+					typePart := ""
+					namePart := ""
+					if attr, ok := wait.DataSource[1].(hcl.TraverseAttr); ok {
+						typePart = attr.Name
+					}
+					if attr, ok := wait.DataSource[2].(hcl.TraverseAttr); ok {
+						namePart = attr.Name
+					}
+					fullRef := fmt.Sprintf("data.%s.%s", typePart, namePart)
+					if typePart != "" && namePart != "" && !declaredData[fullRef] {
+						diags = diags.Append(tfdiags.Sourceless(
+							tfdiags.Error,
+							"Wait datasource not found in step",
+							fmt.Sprintf("The wait %q references %s, but this data source is not declared in step %q.", wait.Name, fullRef, step.Name),
+						))
+					}
+				} else if dsRef != "data" {
+					diags = diags.Append(tfdiags.Sourceless(
+						tfdiags.Error,
+						"Invalid wait datasource reference",
+						fmt.Sprintf("The wait %q datasource must reference a data source (e.g. data.type.name), got root %q.", wait.Name, dsRef),
+					))
+				}
+			}
+		}
+	}
+	return diags
 }

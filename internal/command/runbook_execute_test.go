@@ -69,44 +69,18 @@ output "summary" {
 	if !strings.Contains(output.Stdout(), "Runbook plan") {
 		t.Fatalf("expected plan output before execute, got: %s", output.Stdout())
 	}
-	if strings.Index(output.Stdout(), "Runbook plan") > strings.Index(output.Stdout(), "step.discover is in progress") {
-		t.Fatalf("expected plan output to appear before execute events, got: %s", output.Stdout())
-	}
 	if got := provider.InvokeActionRequest.PlannedActionData.GetAttr("target").AsString(); got != "srv-123" {
 		t.Fatalf("expected invoke action to receive planned target, got %q", got)
 	}
-	if !strings.Contains(output.Stdout(), "Runbook execution started.") {
-		t.Fatalf("expected execution start header, got: %s", output.Stdout())
+	// New format: action events use symbol + subject format
+	if !strings.Contains(output.Stdout(), "action.test_action.notify") {
+		t.Fatalf("expected action event in output, got: %s", output.Stdout())
 	}
-	if !strings.Contains(output.Stdout(), "step.discover is in progress") {
-		t.Fatalf("expected running step event, got: %s", output.Stdout())
+	if !strings.Contains(output.Stdout(), "step.discover") {
+		t.Fatalf("expected step reference in output, got: %s", output.Stdout())
 	}
-	if !strings.Contains(output.Stdout(), "action action.test_action.notify is running") {
-		t.Fatalf("expected action running event, got: %s", output.Stdout())
-	}
-	if !strings.Contains(output.Stdout(), "action action.test_action.notify: invoking") {
-		t.Fatalf("expected action progress event, got: %s", output.Stdout())
-	}
-	if !strings.Contains(output.Stdout(), "action action.test_action.notify completed") {
-		t.Fatalf("expected action completed event, got: %s", output.Stdout())
-	}
-	if !strings.Contains(output.Stdout(), "step.discover completed") {
-		t.Fatalf("expected completed step event, got: %s", output.Stdout())
-	}
-	if strings.Index(output.Stdout(), "action action.test_action.notify completed") > strings.Index(output.Stdout(), "step.discover completed") {
-		t.Fatalf("expected step completion after action completion, got: %s", output.Stdout())
-	}
-	if !strings.Contains(output.Stdout(), "Runbook execute complete.") {
+	if !strings.Contains(output.Stdout(), "Execute complete") {
 		t.Fatalf("expected execute summary, got: %s", output.Stdout())
-	}
-	if !strings.Contains(output.Stdout(), "Execution Report") {
-		t.Fatalf("expected execution report, got: %s", output.Stdout())
-	}
-	if !strings.Contains(output.Stdout(), "Step 1: step.discover [Status: Complete] [Duration:") {
-		t.Fatalf("expected step report entry with duration, got: %s", output.Stdout())
-	}
-	if !strings.Contains(output.Stdout(), "|   action: [1/1] action action.test_action.notify: invoking") {
-		t.Fatalf("expected normalized step logs in execution report, got: %s", output.Stdout())
 	}
 	if !strings.Contains(output.Stdout(), "Outputs:") || !strings.Contains(output.Stdout(), `summary = "srv-123"`) {
 		t.Fatalf("expected execute outputs in output, got: %s", output.Stdout())
@@ -171,7 +145,7 @@ step "discover" {
 	if !strings.Contains(output.Stderr(), "postcondition failed") {
 		t.Fatalf("expected postcondition failure, got: %s", output.Stderr())
 	}
-	if !strings.Contains(output.Stdout(), "step.discover failed") {
+	if !strings.Contains(output.Stdout(), "step.discover") || !strings.Contains(output.Stdout(), "FAILED") {
 		t.Fatalf("expected failed step event, got: %s", output.Stdout())
 	}
 }

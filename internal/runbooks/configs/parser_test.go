@@ -456,3 +456,267 @@ func writeTestFile(t *testing.T, fs afero.Fs, path, src string) {
 		t.Fatalf("write %s: %s", path, err)
 	}
 }
+
+func TestStepDependsOnParsesStepReferences(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "build" {
+  action "http" "trigger" {}
+  execute {
+    invoke_action {
+      action = action.http.trigger
+    }
+  }
+}
+
+step "verify" {
+  depends_on = [step.build]
+
+  action "http" "check" {}
+  execute {
+    invoke_action {
+      action = action.http.check
+    }
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	got, diags := p.LoadRunbookConfigDir("/runbook")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected errors: %s", diags.Error())
+	}
+	verify := got.Steps["verify"]
+	if verify == nil {
+		t.Fatal("expected verify step")
+	}
+	if len(verify.DependsOn) != 1 {
+		t.Fatalf("expected 1 depends_on entry, got %d", len(verify.DependsOn))
+	}
+	if verify.DependsOn[0].RootName() != "step" {
+		t.Fatalf("expected depends_on root to be 'step', got %q", verify.DependsOn[0].RootName())
+	}
+}
+
+func TestStepDependsOnRejectsNonStepReferences(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "build" {
+  action "http" "trigger" {}
+  execute {
+    invoke_action {
+      action = action.http.trigger
+    }
+  }
+}
+
+step "verify" {
+  depends_on = [var.something]
+
+  action "http" "check" {}
+  execute {
+    invoke_action {
+      action = action.http.check
+    }
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	_, diags := p.LoadRunbookConfigDir("/runbook")
+	if !diags.HasErrors() {
+		t.Fatal("expected error for non-step depends_on reference")
+	}
+	found := false
+	for _, d := range diags {
+		if d.Summary == "Invalid depends_on reference" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'Invalid depends_on reference' diagnostic, got: %s", diags.Error())
+	}
+}
+
+func TestStepWaitBlindModeParsesCorrectly(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "deploy" {
+  action "http" "trigger" {}
+
+  execute {
+    invoke_action {
+      action = action.http.trigger
+    }
+
+    wait "warmup" {
+      duration = "30s"
+    }
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	got, diags := p.LoadRunbookConfigDir("/runbook")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected errors: %s", diags.Error())
+	}
+	step := got.Steps["deploy"]
+	if step == nil {
+		t.Fatal("expected deploy step")
+	}
+	if len(step.Executions) != 1 {
+		t.Fatalf("expected 1 execution, got %d", len(step.Executions))
+	}
+	exec := step.Executions[0]
+	if len(exec.Operations) != 2 {
+		t.Fatalf("expected 2 operations, got %d", len(exec.Operations))
+	}
+	waitOp := exec.Operations[1]
+	if waitOp.Type != ExecuteOpWait {
+		t.Fatalf("expected wait operation, got %s", waitOp.Type)
+	}
+	if waitOp.Wait.Name != "warmup" {
+		t.Fatalf("expected wait name 'warmup', got %q", waitOp.Wait.Name)
+	}
+	if waitOp.Wait.Mode != WaitModeDuration {
+		t.Fatalf("expected duration mode, got %s", waitOp.Wait.Mode)
+	}
+	if waitOp.Wait.Duration.Seconds() != 30 {
+		t.Fatalf("expected 30s duration, got %s", waitOp.Wait.Duration)
+	}
+}
+
+func TestStepWaitPollingModeParsesCorrectly(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "check" {
+  data "http" "status" {}
+
+  execute {
+    wait "ready" {
+      datasource   = data.http.status
+      condition    = data.http.status.body != ""
+      timeout      = "5m"
+      interval     = "15s"
+      max_attempts = 20
+    }
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	got, diags := p.LoadRunbookConfigDir("/runbook")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected errors: %s", diags.Error())
+	}
+	step := got.Steps["check"]
+	if step == nil {
+		t.Fatal("expected check step")
+	}
+	exec := step.Executions[0]
+	waitOp := exec.Operations[0]
+	if waitOp.Wait.Mode != WaitModePolling {
+		t.Fatalf("expected polling mode, got %s", waitOp.Wait.Mode)
+	}
+	if waitOp.Wait.Timeout.Minutes() != 5 {
+		t.Fatalf("expected 5m timeout, got %s", waitOp.Wait.Timeout)
+	}
+	if waitOp.Wait.Interval.Seconds() != 15 {
+		t.Fatalf("expected 15s interval, got %s", waitOp.Wait.Interval)
+	}
+	if waitOp.Wait.MaxAttempts != 20 {
+		t.Fatalf("expected 20 max_attempts, got %d", waitOp.Wait.MaxAttempts)
+	}
+}
+
+func TestStepWaitRejectsMixedModes(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "bad" {
+  data "http" "status" {}
+
+  execute {
+    wait "conflict" {
+      duration   = "30s"
+      datasource = data.http.status
+      condition  = true
+      timeout    = "5m"
+    }
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	_, diags := p.LoadRunbookConfigDir("/runbook")
+	if !diags.HasErrors() {
+		t.Fatal("expected error for mixed duration and polling attributes")
+	}
+	found := false
+	for _, d := range diags {
+		if d.Summary == "Cannot combine duration with polling attributes" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected mixed-mode diagnostic, got: %s", diags.Error())
+	}
+}
+
+func TestStepWaitRejectsMissingLimits(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+step "bad" {
+  data "http" "status" {}
+
+  execute {
+    wait "nolimit" {
+      datasource = data.http.status
+      condition  = true
+    }
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	_, diags := p.LoadRunbookConfigDir("/runbook")
+	if !diags.HasErrors() {
+		t.Fatal("expected error for missing timeout/max_attempts")
+	}
+	found := false
+	for _, d := range diags {
+		if d.Summary == "Missing polling limit" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing-limit diagnostic, got: %s", diags.Error())
+	}
+}

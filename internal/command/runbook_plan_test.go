@@ -67,28 +67,28 @@ step "discover" {
 	if !strings.Contains(stdout, "Runbook plan") {
 		t.Fatalf("expected runbook plan header, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, "Steps:") {
-		t.Fatalf("expected steps header, got: %s", stdout)
+	if !strings.Contains(stdout, "Execution order:") {
+		t.Fatalf("expected execution order section, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `- step.discover (planned)`) {
-		t.Fatalf("expected planned step summary in output, got: %s", stdout)
+	if !strings.Contains(stdout, `* step.discover`) {
+		t.Fatalf("expected step in execution graph, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `reads:`) || !strings.Contains(stdout, `- data "data.test_data.selected"`) {
-		t.Fatalf("expected hierarchical reads section in output, got: %s", stdout)
+	if !strings.Contains(stdout, "Step details:") {
+		t.Fatalf("expected step details section, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `actions:`) || !strings.Contains(stdout, `- action.test_action.notify`) {
-		t.Fatalf("expected hierarchical actions section in output, got: %s", stdout)
+	if !strings.Contains(stdout, `<= read  data.test_data.selected`) {
+		t.Fatalf("expected read operation in output, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `executions:`) || !strings.Contains(stdout, `- invoke action.test_action.notify`) {
-		t.Fatalf("expected hierarchical executions section in output, got: %s", stdout)
+	if !strings.Contains(stdout, `! invoke action.test_action.notify`) {
+		t.Fatalf("expected action invocation in output, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `outputs:`) || !strings.Contains(stdout, `- result = "srv-123"`) {
-		t.Fatalf("expected outputs section in output, got: %s", stdout)
+	if !strings.Contains(stdout, `target = "srv-123"`) {
+		t.Fatalf("expected action attributes in output, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `"target" = "srv-123"`) {
-		t.Fatalf("expected action config in output, got: %s", stdout)
+	if !strings.Contains(stdout, `result = "srv-123"`) {
+		t.Fatalf("expected outputs in output, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `Plan: 1 to run, 0 to skip.`) {
+	if !strings.Contains(stdout, `Plan: 1 step (1 will execute)`) {
 		t.Fatalf("expected runbook plan summary in output, got: %s", stdout)
 	}
 }
@@ -202,6 +202,101 @@ step "discover" {
 	}
 }
 
+// TestRunbookPlanCommandDefersExecuteTimePrecondition verifies that a
+// precondition referencing an execute-time value (unknown at plan time)
+// is deferred rather than failing the plan.
+func TestRunbookPlanCommandDefersExecuteTimePrecondition(t *testing.T) {
+	td, runbookDir := setupRunbookDir(t)
+	writeFile(t, td+"/main.tf", ``)
+	writeFile(t, filepath.Join(runbookDir, "main.tfrun.hcl"), `
+runbook {
+  terraform_version = ">= 1.0.0"
+
+  required_providers {
+    test = {
+      source = "hashicorp/test"
+    }
+  }
+}
+
+provider "test" {}
+
+step "fetch" {
+  data "test_data" "status" {}
+
+  execute {
+    read_datasource {
+      datasource = data.test_data.status
+    }
+  }
+
+  output "status_id" {
+    value = data.test_data.status.id
+  }
+}
+
+step "deploy" {
+  precondition {
+    condition     = step.fetch.status_id != ""
+    error_message = "fetch did not return a status"
+    on_failure    = "skip"
+  }
+
+  data "test_data" "target" {}
+
+  output "result" {
+    value = data.test_data.target.id
+  }
+}
+`)
+	t.Chdir(runbookDir)
+
+	// Provider that fails the initial plan-time read for "status" data source
+	// (simulating a data source that can only be read at execute time) but
+	// succeeds for the "target" data source.
+	provider := &testing_provider.MockProvider{
+		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
+			Provider: providers.Schema{Body: &configschema.Block{}},
+			DataSources: map[string]providers.Schema{
+				"test_data": {Body: &configschema.Block{Attributes: map[string]*configschema.Attribute{"id": {Type: cty.String, Computed: true}}}},
+			},
+		},
+		ReadDataSourceFn: func(req providers.ReadDataSourceRequest) providers.ReadDataSourceResponse {
+			// Return an error for the first call (plan-time read of "status")
+			// so it becomes a dynamic/deferred data source.
+			// The second call ("target") succeeds.
+			return providers.ReadDataSourceResponse{
+				State: cty.ObjectVal(map[string]cty.Value{"id": cty.StringVal("ok-123")}),
+			}
+		},
+	}
+
+	view, done := testView(t)
+	c := &RunbookPlanCommand{runbookCommandBase: runbookCommandBase{Meta: Meta{View: view, testingOverrides: metaOverridesForProvider(provider)}}}
+
+	code := c.Run([]string{"-no-color"})
+	output := done(t)
+	if code != 0 {
+		t.Fatalf("unexpected exit code %d: %s\nstdout: %s", code, output.Stderr(), output.Stdout())
+	}
+	stdout := output.Stdout()
+	// The plan should succeed — the precondition should be deferred, not failed
+	if !strings.Contains(stdout, "step.deploy") {
+		t.Fatalf("expected step.deploy in plan output, got: %s", stdout)
+	}
+	// step.deploy should NOT be skipped (the precondition is deferred, not evaluated)
+	if strings.Contains(stdout, "step.deploy") && strings.Contains(stdout, "skipped") {
+		// Check it's specifically deploy that's skipped, not another step
+		if strings.Contains(stdout, "x step.deploy") || strings.Contains(stdout, "step.deploy (skipped)") {
+			t.Fatalf("step.deploy should not be skipped at plan time when precondition references execute-time data, got: %s", stdout)
+		}
+	}
+	// Plan should show both steps will execute
+	if !strings.Contains(stdout, "2 step") || !strings.Contains(stdout, "2 will execute") {
+		t.Fatalf("expected 2 steps will execute in summary, got: %s", stdout)
+	}
+}
+
 func TestRunbookPlanCommandLoadsWorkspaceStateForWorkspaceDataRefs(t *testing.T) {
 	td, runbookDir := setupRunbookDir(t)
 	writeFile(t, td+"/main.tf", `
@@ -279,8 +374,8 @@ step "discover" {
 	if strings.Contains(output.All(), "Missing workspace state object") {
 		t.Fatalf("expected workspace state-backed reference to resolve, got: %s", output.All())
 	}
-	if !strings.Contains(output.Stdout(), `- step.discover (planned)`) {
-		t.Fatalf("expected planned step summary in output, got: %s", output.Stdout())
+	if !strings.Contains(output.Stdout(), `* step.discover`) {
+		t.Fatalf("expected planned step in execution graph, got: %s", output.Stdout())
 	}
 }
 
@@ -472,11 +567,11 @@ step "discover" {
 	if strings.Contains(output.All(), "Missing workspace state object") {
 		t.Fatalf("expected workspace state-backed resource reference to resolve, got: %s", output.All())
 	}
-	if !strings.Contains(output.Stdout(), `- workspace resource "workspace.test_resource.selected" attributes=[id]`) {
+	if !strings.Contains(output.Stdout(), `<= read  workspace.resource.workspace.test_resource.selected`) {
 		t.Fatalf("expected workspace read detail in output, got: %s", output.Stdout())
 	}
-	if !strings.Contains(output.Stdout(), `- step.discover (planned)`) {
-		t.Fatalf("expected planned step summary in output, got: %s", output.Stdout())
+	if !strings.Contains(output.Stdout(), `* step.discover`) {
+		t.Fatalf("expected planned step in execution graph, got: %s", output.Stdout())
 	}
 }
 

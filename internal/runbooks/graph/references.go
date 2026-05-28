@@ -92,6 +92,18 @@ func referencesForStepExecution(execution *runbookconfigs.Execution) []runbookad
 			refs = append(refs, ref.Subject)
 		}
 	}
+	// Extract references from wait operations
+	for _, op := range execution.Operations {
+		if op.Type != runbookconfigs.ExecuteOpWait || op.Wait == nil {
+			continue
+		}
+		if op.Wait.DataSource != nil {
+			if ref, ok := stepReferenceFromTraversal(op.Wait.DataSource); ok {
+				refs = append(refs, ref.Subject)
+			}
+		}
+		refs = append(refs, referencesInExpr(op.Wait.Condition)...)
+	}
 	return refs
 }
 

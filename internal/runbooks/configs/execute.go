@@ -10,12 +10,14 @@ type ExecuteOperationType string
 const (
 	ExecuteOpInvokeAction   ExecuteOperationType = "invoke_action"
 	ExecuteOpReadDataSource ExecuteOperationType = "read_datasource"
+	ExecuteOpWait           ExecuteOperationType = "wait"
 )
 
 // ExecuteOperation represents a single ordered operation within an execute block.
 type ExecuteOperation struct {
 	Type      ExecuteOperationType
 	Traversal hcl.Traversal
+	Wait      *Wait // non-nil when Type == ExecuteOpWait
 }
 
 // Execution represents an execute block within a step.
@@ -42,12 +44,13 @@ func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Empty execute block",
-			Detail:   "An execute block must contain at least one invoke_action or read_datasource block.",
+			Detail:   "An execute block must contain at least one invoke_action, read_datasource, or wait block.",
 			Subject:  block.DefRange.Ptr(),
 		})
 		return nil, diags
 	}
 
+	waitNames := make(map[string]hcl.Range)
 	for _, innerBlock := range content.Blocks {
 		switch innerBlock.Type {
 		case "invoke_action":
@@ -91,6 +94,27 @@ func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 				Type:      ExecuteOpReadDataSource,
 				Traversal: traversal,
 			})
+
+		case "wait":
+			wait, waitDiags := decodeWaitBlock(innerBlock)
+			diags = append(diags, waitDiags...)
+			if wait == nil {
+				continue
+			}
+			if rng, exists := waitNames[wait.Name]; exists {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate wait name",
+					Detail:   "This execute block already has a wait named \"" + wait.Name + "\" defined at " + rng.String() + ".",
+					Subject:  innerBlock.DefRange.Ptr(),
+				})
+				continue
+			}
+			waitNames[wait.Name] = wait.DeclRange
+			exec.Operations = append(exec.Operations, ExecuteOperation{
+				Type: ExecuteOpWait,
+				Wait: wait,
+			})
 		}
 	}
 
@@ -104,6 +128,10 @@ var executeSchema = &hcl.BodySchema{
 		},
 		{
 			Type: "read_datasource",
+		},
+		{
+			Type:       "wait",
+			LabelNames: []string{"name"},
 		},
 	},
 }

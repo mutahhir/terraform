@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/dynblock"
@@ -45,8 +46,9 @@ type BuiltinEvalContext struct {
 	variables     terraform.InputValues
 	variablesLock sync.RWMutex
 
-	providers     map[string]providers.Interface // keyed by AbsProviderConfig.String()
-	providersLock sync.RWMutex
+	providers          map[string]providers.Interface // keyed by AbsProviderConfig.String()
+	providersLock      sync.RWMutex
+	providerFactories  map[terraformaddrs.Provider]providers.Factory
 
 	steps     map[string]*stepEvalState
 	stepOrder []string
@@ -249,12 +251,20 @@ type stepEvalState struct {
 	lists   map[string]cty.Value
 	actions map[string]*actionEvalState
 	outputs map[string]cty.Value
+	waits   map[string]*waitEvalState
 }
 
 type actionEvalState struct {
 	planned       bool
 	invoked       bool
 	plannedConfig cty.Value
+}
+
+type waitEvalState struct {
+	Satisfied bool
+	TimedOut  bool
+	Attempts  int
+	Elapsed   time.Duration
 }
 
 func (ec *BuiltinEvalContext) Config() *runbookconfigs.RunbookConfig {
@@ -342,6 +352,26 @@ func (ec *BuiltinEvalContext) ProviderForConfig(addr terraformaddrs.AbsProviderC
 	}
 
 	return nil, false
+}
+
+// SetProviderFactories stores provider factories for creating fresh instances
+// during parallel execution.
+func (ec *BuiltinEvalContext) SetProviderFactories(factories map[terraformaddrs.Provider]providers.Factory) {
+	ec.providerFactories = factories
+}
+
+// NewProviderInstance creates a fresh provider instance from the factory.
+// This is used during execution to avoid sharing a single provider instance
+// across parallel steps.
+func (ec *BuiltinEvalContext) NewProviderInstance(providerType terraformaddrs.Provider) (providers.Interface, error) {
+	if ec.providerFactories == nil {
+		return nil, fmt.Errorf("no provider factory registered for %s", providerType.ForDisplay())
+	}
+	factory, ok := ec.providerFactories[providerType]
+	if !ok {
+		return nil, fmt.Errorf("no provider factory registered for %s", providerType.ForDisplay())
+	}
+	return factory()
 }
 
 func (ec *BuiltinEvalContext) EnsureStep(name string, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
@@ -769,10 +799,16 @@ func (ec *BuiltinEvalContext) expressionVariablesForInstance(stepName string, in
 		} else {
 			variables["list"] = cty.EmptyObjectVal
 		}
+		if len(state.waits) > 0 {
+			variables["wait"] = waitVariables(state.waits)
+		} else {
+			variables["wait"] = waitVariablesFromConfig(ec.config, stepName)
+		}
 	} else {
 		variables["local"] = cty.EmptyObjectVal
 		variables["data"] = cty.EmptyObjectVal
 		variables["list"] = cty.EmptyObjectVal
+		variables["wait"] = waitVariablesFromConfig(ec.config, stepName)
 	}
 
 	if repetitionData != nil {
@@ -1193,6 +1229,52 @@ func nestedResourceValues(src map[string]cty.Value) cty.Value {
 
 func (ec *BuiltinEvalContext) EvaluateBlock(body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {
 	return ec.EvaluateBlockForInstance("", terraformaddrs.NoKey, nil, body, schema)
+}
+
+func waitVariables(waits map[string]*waitEvalState) cty.Value {
+	if len(waits) == 0 {
+		return cty.EmptyObjectVal
+	}
+	attrs := make(map[string]cty.Value, len(waits))
+	for name, ws := range waits {
+		attrs[name] = cty.ObjectVal(map[string]cty.Value{
+			"satisfied": cty.BoolVal(ws.Satisfied),
+			"timed_out": cty.BoolVal(ws.TimedOut),
+			"attempts":  cty.NumberIntVal(int64(ws.Attempts)),
+			"elapsed":   cty.StringVal(ws.Elapsed.String()),
+		})
+	}
+	return cty.ObjectVal(attrs)
+}
+
+// waitVariablesFromConfig returns unknown-valued wait attributes for all waits
+// declared in the step config. Used at plan time before waits have executed.
+func waitVariablesFromConfig(config *runbookconfigs.RunbookConfig, stepName string) cty.Value {
+	if config == nil {
+		return cty.EmptyObjectVal
+	}
+	step, ok := config.Steps[stepName]
+	if !ok || step == nil {
+		return cty.EmptyObjectVal
+	}
+	attrs := map[string]cty.Value{}
+	for _, exec := range step.Executions {
+		for _, op := range exec.Operations {
+			if op.Type != runbookconfigs.ExecuteOpWait || op.Wait == nil {
+				continue
+			}
+			attrs[op.Wait.Name] = cty.ObjectVal(map[string]cty.Value{
+				"satisfied": cty.UnknownVal(cty.Bool),
+				"timed_out": cty.UnknownVal(cty.Bool),
+				"attempts":  cty.UnknownVal(cty.Number),
+				"elapsed":   cty.UnknownVal(cty.String),
+			})
+		}
+	}
+	if len(attrs) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return cty.ObjectVal(attrs)
 }
 
 func (ec *BuiltinEvalContext) EvaluateBlockForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {

@@ -5,6 +5,7 @@ package runbookgraph
 
 import (
 	"testing"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -507,4 +508,92 @@ func mustParseBody(t *testing.T, src string) hcl.Body {
 		t.Fatalf("parse body %q: %s", src, diags.Error())
 	}
 	return file.Body
+}
+
+func TestStepDependsOnCreatesEdge(t *testing.T) {
+	cfg := &runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"build": {
+				Name: "build",
+			},
+			"verify": {
+				Name:      "verify",
+				DependsOn: []hcl.Traversal{mustParseTraversal(t, "step.build")},
+			},
+		},
+	}
+	graph, diags := NewPlan(cfg)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+
+	// Verify that "verify" depends on "build" in the graph
+	var verifyNode, buildNode *NodeExpandStep
+	for _, v := range graph.Vertices() {
+		if n, ok := v.(*NodeExpandStep); ok {
+			switch n.StepName {
+			case "verify":
+				verifyNode = n
+			case "build":
+				buildNode = n
+			}
+		}
+	}
+	if verifyNode == nil || buildNode == nil {
+		t.Fatal("expected both verify and build nodes in graph")
+	}
+	if !graph.DownEdges(verifyNode).Include(buildNode) {
+		t.Fatal("expected verify node to depend on build node via depends_on")
+	}
+}
+
+func TestExecuteWaitBlindModeSetsState(t *testing.T) {
+	cfg := &runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"deploy": {
+				Name: "deploy",
+				Executions: []*runbookconfigs.Execution{
+					{
+						Operations: []runbookconfigs.ExecuteOperation{
+							{
+								Type: runbookconfigs.ExecuteOpWait,
+								Wait: &runbookconfigs.Wait{
+									Name:     "warmup",
+									Mode:     runbookconfigs.WaitModeDuration,
+									Duration: 1 * time.Second,
+								},
+							},
+						},
+					},
+				},
+				Outputs: []*configs.Output{
+					{Name: "done", Expr: mustParseExpression(t, `wait.warmup.satisfied`)},
+				},
+			},
+		},
+	}
+
+	graph, diags := NewPlan(cfg)
+	if diags.HasErrors() {
+		t.Fatalf("plan build failed: %s", diags.Err())
+	}
+
+	ctx := NewEvalContext(EvalContextOpts{Config: cfg})
+	planDiags := walkGraph(graph, ctx, walkOperationPlan)
+	if planDiags.HasErrors() {
+		t.Fatalf("plan walk failed: %s", planDiags.Err())
+	}
+
+	execDiags := walkGraph(graph, ctx, walkOperationExecute)
+	if execDiags.HasErrors() {
+		t.Fatalf("execute walk failed: %s", execDiags.Err())
+	}
+
+	val, ok := ctx.stepOutputWithKey("deploy", nil, "done")
+	if !ok {
+		t.Fatal("expected 'done' output to be set")
+	}
+	if !val.True() {
+		t.Fatalf("expected wait.warmup.satisfied to be true, got %s", val.GoString())
+	}
 }

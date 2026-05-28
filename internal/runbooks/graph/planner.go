@@ -27,11 +27,12 @@ type PlannerOpts struct {
 type ExecuteOpts = PlannerOpts
 
 type Plan struct {
-	Config   *runbookconfigs.RunbookConfig
-	Graph    *terraform.Graph
-	Steps    []*runtime.Step
-	PlanInfo []StepPlanInfo
-	evalCtx  *BuiltinEvalContext
+	Config          *runbookconfigs.RunbookConfig
+	Graph           *terraform.Graph
+	Steps           []*runtime.Step
+	PlanInfo        []StepPlanInfo
+	ExecutionLayers []ExecutionLayer
+	evalCtx         *BuiltinEvalContext
 }
 
 func (p *Plan) StepsRuntime() map[string]*runtime.Step {
@@ -94,6 +95,7 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 			}
 			evalCtx.SetProvider(providerType, provider)
 		}
+		evalCtx.SetProviderFactories(opts.Providers)
 	}
 	if opts != nil {
 		validateOpts.Providers = opts.Providers
@@ -120,7 +122,11 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 		return nil, diags
 	}
 
-	return &Plan{Config: config, Graph: graph, Steps: evalCtx.StepsInOrder(), PlanInfo: evalCtx.PlanInfo(), evalCtx: evalCtx}, diags
+	plan := &Plan{Config: config, Graph: graph, Steps: evalCtx.StepsInOrder(), PlanInfo: evalCtx.PlanInfo(), evalCtx: evalCtx}
+	plan.ExecutionLayers = ComputeExecutionLayers(graph)
+	// Annotate layers with skip status from evaluated steps
+	annotateLayersWithStatus(plan)
+	return plan, diags
 }
 
 func ExecutePlan(plan *Plan, opts *ExecuteOpts) tfdiags.Diagnostics {

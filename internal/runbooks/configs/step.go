@@ -18,6 +18,7 @@ type Step struct {
 	Postconditions []*Condition
 	Locals         []*configs.Local
 	Outputs        []*configs.Output
+	DependsOn      []hcl.Traversal
 
 	DeclRange hcl.Range
 }
@@ -58,6 +59,12 @@ func decodeStepBlock(stepBlock *hcl.Block) (*Step, hcl.Diagnostics) {
 				Subject:  &attr.NameRange,
 			})
 		}
+	}
+
+	if attr, exists := content.Attributes["depends_on"]; exists {
+		deps, depsDiags := decodeDependsOn(attr)
+		diags = append(diags, depsDiags...)
+		step.DependsOn = append(step.DependsOn, deps...)
 	}
 
 	listBlockTypes := make(map[string]map[string]hcl.Range)
@@ -197,7 +204,7 @@ func decodeStepBlock(stepBlock *hcl.Block) (*Step, hcl.Diagnostics) {
 }
 
 var stepBlockSchema = &hcl.BodySchema{
-	Attributes: []hcl.AttributeSchema{{Name: "count"}, {Name: "for_each"}},
+	Attributes: []hcl.AttributeSchema{{Name: "count"}, {Name: "for_each"}, {Name: "depends_on"}},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "locals"},
 		{Type: "action", LabelNames: []string{"type", "name"}},
@@ -208,4 +215,52 @@ var stepBlockSchema = &hcl.BodySchema{
 		{Type: "precondition"},
 		{Type: "postcondition"},
 	},
+}
+
+// decodeDependsOn parses a depends_on attribute for a step block.
+// Only step references (step.<name>) are allowed.
+func decodeDependsOn(attr *hcl.Attribute) ([]hcl.Traversal, hcl.Diagnostics) {
+	var ret []hcl.Traversal
+	exprs, diags := hcl.ExprList(attr.Expr)
+
+	for _, expr := range exprs {
+		traversal, travDiags := hcl.AbsTraversalForExpr(expr)
+		diags = append(diags, travDiags...)
+		if len(traversal) == 0 {
+			continue
+		}
+
+		if traversal.RootName() != "step" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid depends_on reference",
+				Detail:   "A step's depends_on may only reference other steps (e.g. step.build).",
+				Subject:  expr.Range().Ptr(),
+			})
+			continue
+		}
+
+		if len(traversal) < 2 {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid depends_on reference",
+				Detail:   "A step depends_on reference must include the step name (e.g. step.build).",
+				Subject:  expr.Range().Ptr(),
+			})
+			continue
+		}
+
+		if len(traversal) > 2 {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  "Unsupported depends_on instance key",
+				Detail:   "A step depends_on creates a dependency on the entire step, not a specific instance. The index or attribute will be ignored.",
+				Subject:  expr.Range().Ptr(),
+			})
+		}
+
+		ret = append(ret, traversal)
+	}
+
+	return ret, diags
 }

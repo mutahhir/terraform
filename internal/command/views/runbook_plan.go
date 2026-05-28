@@ -166,7 +166,7 @@ func (v *RunbookPlanHuman) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	v.info = append(v.info, entry)
 }
 func (v *RunbookPlanHuman) Plan(plan *runbookgraph.Plan) {
-	renderRunbookPlanHuman(v.view, buildRunbookPlan(plan, v.info), v.mode)
+	renderRunbookPlanHumanV2(v.view, plan, buildRunbookPlan(plan, v.info), v.mode)
 }
 
 type RunbookPlanJSON struct {
@@ -214,52 +214,6 @@ func (v *RunbookPlanJSON) Plan(plan *runbookgraph.Plan) {
 		typ = "runbook_show"
 	}
 	v.view.log.Info(msg, "type", typ, "plan", buildRunbookJSONPlan(plan, v.info))
-}
-
-func renderRunbookPlanHuman(view *View, viewPlan runbookPlan, mode runbookPlanRenderMode) {
-	if mode == runbookPlanRenderModeShow {
-		view.streams.Println("Saved runbook plan")
-	} else {
-		view.streams.Println("Runbook plan")
-	}
-	view.streams.Println("")
-	if len(viewPlan.Steps) == 0 {
-		if mode == runbookPlanRenderModeShow {
-			view.streams.Println("The saved runbook plan has no planned steps.")
-		} else {
-			view.streams.Println("No changes. The runbook has no planned steps.")
-		}
-		return
-	}
-	view.streams.Println("Steps:")
-	view.streams.Println("")
-
-	infoByStep := make(map[string][]runbookPlanInfo)
-	for _, info := range viewPlan.Info {
-		key := fmt.Sprintf("%s[%d]", info.StepName, info.StepIndex)
-		infoByStep[key] = append(infoByStep[key], info)
-	}
-
-	reads, lists, executes := 0, 0, 0
-	for _, step := range viewPlan.Steps {
-		stepInfo := dedupePlanInfo(infoByStep[fmt.Sprintf("%s[%d]", step.Name, step.Index)])
-		view.streams.Println(renderRunbookStepPlan(step, stepInfo))
-		for _, info := range stepInfo {
-			switch info.Type {
-			case "data", "workspace_read":
-				reads++
-			case "list":
-				lists++
-			case "execute":
-				executes++
-			}
-		}
-	}
-	prefix := "Plan"
-	if mode == runbookPlanRenderModeShow {
-		prefix = "Saved plan"
-	}
-	view.streams.Println(fmt.Sprintf("%s: %d to run, %d to skip. Operations: %d to read, %d to list, %d to execute.", prefix, countRunnableSteps(viewPlan.Steps), countSkippedSteps(viewPlan.Steps), reads, lists, executes))
 }
 
 type RunbookShowJSON struct {
@@ -471,6 +425,7 @@ type runbookStepSections struct {
 	lists      []runbookPlanInfo
 	actions    []runbookPlanInfo
 	executions []runbookPlanInfo
+	waits      []runbookPlanInfo
 }
 
 func classifyRunbookStepInfo(info []runbookPlanInfo) runbookStepSections {
@@ -494,6 +449,8 @@ func classifyRunbookStepInfo(info []runbookPlanInfo) runbookStepSections {
 			} else {
 				actionBySubject[item.Subject] = item
 			}
+		case "wait":
+			ret.waits = append(ret.waits, item)
 		}
 	}
 	if len(actionBySubject) != 0 {
@@ -552,7 +509,8 @@ func runbookPlanSymbol(typ string) string {
 func renderPlanInfo(info runbookPlanInfo, indentSize int) string {
 	switch info.Type {
 	case "data":
-		return fmt.Sprintf("data %q", info.Subject)
+		// info.Subject already includes the mode prefix (e.g. "data.aws_lambda_invocation.check")
+		return fmt.Sprintf("%q", info.Subject)
 	case "workspace_read":
 		if info.details != nil {
 			kind := "object"
@@ -631,12 +589,25 @@ func pruneUnsetValue(v cty.Value) cty.Value {
 			}
 			attrs[name] = pruneUnsetValue(value)
 		}
+		if len(attrs) == 0 {
+			return cty.MapValEmpty(ty.ElementType())
+		}
 		return cty.MapVal(attrs)
 	case ty.IsTupleType(), ty.IsListType(), ty.IsSetType():
 		vals := make([]cty.Value, 0, v.LengthInt())
 		for it := v.ElementIterator(); it.Next(); {
 			_, elem := it.Element()
 			vals = append(vals, pruneUnsetValue(elem))
+		}
+		if len(vals) == 0 {
+			switch {
+			case ty.IsTupleType():
+				return cty.EmptyTupleVal
+			case ty.IsListType():
+				return cty.ListValEmpty(ty.ElementType())
+			default:
+				return cty.SetValEmpty(ty.ElementType())
+			}
 		}
 		switch {
 		case ty.IsTupleType():
@@ -653,7 +624,7 @@ func pruneUnsetValue(v cty.Value) cty.Value {
 
 func shouldRenderPlanInfo(info runbookPlanInfo) bool {
 	switch info.Type {
-	case "data", "workspace_read", "list", "execute":
+	case "data", "workspace_read", "list", "execute", "wait":
 		return true
 	default:
 		return false

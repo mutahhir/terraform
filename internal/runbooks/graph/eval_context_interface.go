@@ -69,6 +69,10 @@ type EvalContext interface {
 	// ProviderForConfig returns a provider instance by full configuration address (with alias).
 	ProviderForConfig(addr terraformaddrs.AbsProviderConfig) (providers.Interface, bool)
 
+	// NewProviderInstance creates a fresh provider instance from the factory.
+	// Returns an error if no factory is registered for the given provider type.
+	NewProviderInstance(providerType terraformaddrs.Provider) (providers.Interface, error)
+
 	// --- Step State ---
 
 	// EnsureStep initializes or retrieves runtime state for a step (no-key instance).

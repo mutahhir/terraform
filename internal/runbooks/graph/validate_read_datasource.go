@@ -30,6 +30,20 @@ func outputReferencesDynamicData(output *configs.Output, step *runbookconfigs.St
 	return false
 }
 
+// outputReferencesWait returns true if the output expression references
+// wait.* variables, which are only populated at execute time.
+func outputReferencesWait(output *configs.Output) bool {
+	if output == nil || output.Expr == nil {
+		return false
+	}
+	for _, traversal := range output.Expr.Variables() {
+		if traversal.RootName() == "wait" {
+			return true
+		}
+	}
+	return false
+}
+
 func findDataSourceByAddr(step *runbookconfigs.Step, addr terraformaddrs.Resource) *configs.Resource {
 	if step == nil {
 		return nil
@@ -160,16 +174,14 @@ func validateNoDynamicDataInExpansion(config *runbookconfigs.RunbookConfig) tfdi
 		if step == nil {
 			continue
 		}
+		// count and for_each affect graph shape and cannot reference dynamic
+		// data. Preconditions CAN reference dynamic data — they will be
+		// deferred to execute time if the value is unknown at plan time.
 		if step.Count != nil {
 			diags = diags.Append(checkExprNotTaintedByDynamic(step.Count, step, config, dynamicAddrs, taintedOutputs, "count"))
 		}
 		if step.ForEach != nil {
 			diags = diags.Append(checkExprNotTaintedByDynamic(step.ForEach, step, config, dynamicAddrs, taintedOutputs, "for_each"))
-		}
-		for _, cond := range step.Preconditions {
-			if cond != nil && cond.Condition != nil {
-				diags = diags.Append(checkExprNotTaintedByDynamic(cond.Condition, step, config, dynamicAddrs, taintedOutputs, "precondition"))
-			}
 		}
 	}
 	return diags

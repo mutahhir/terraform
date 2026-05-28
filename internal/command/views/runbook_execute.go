@@ -150,23 +150,12 @@ func (v *RunbookExecuteHuman) ActionEvent(event runbookgraph.ActionExecEvent) {
 		state.RunningReported = true
 		state.Status = runbookruntime.StepStatusRunning
 		v.markStepStartedLocked(state)
-		v.emitStepLogLocked(state, fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
 	}
 
-	prefix := v.renderActionPrefix(event.StepIndex)
-	switch event.Status {
-	case "running":
-		v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s is running", prefix, event.Subject))
-	case "progress":
-		if event.Message != "" {
-			v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s: %s", prefix, event.Subject, event.Message))
-		} else {
-			v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s is making progress", prefix, event.Subject))
-		}
-	case "completed":
-		v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s completed", prefix, event.Subject))
-	default:
-		v.emitStepLogLocked(state, fmt.Sprintf("  %saction %s %s", prefix, event.Subject, event.Status))
+	sym := selectExecSymbols(v.view)
+	formatted := formatActionEventV2(event, sym, v.view.colorize)
+	if formatted != "" {
+		v.emitStepLogLocked(state, formatted)
 	}
 
 	if v.liveMode {
@@ -194,7 +183,9 @@ func (v *RunbookExecuteHuman) ExecutingStep(step *runbookruntime.Step) {
 	state.RunningReported = true
 	state.Status = runbookruntime.StepStatusRunning
 	v.markStepStartedLocked(state)
-	v.emitStepLogLocked(state, fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
+	if !v.liveMode {
+		v.emitStepLogLocked(state, v.renderNonTTYStepStart(state))
+	}
 	if v.liveMode {
 		v.redrawLiveLocked()
 	}
@@ -232,27 +223,11 @@ func (v *RunbookExecuteHuman) ExecutedStep(step *runbookruntime.Step) {
 	if !state.RunningReported {
 		state.RunningReported = true
 		v.markStepStartedLocked(state)
-		v.emitStepLogLocked(state, fmt.Sprintf("-> %s is in progress", v.renderStepLabel(state)))
 	}
 
 	state.TerminalReported = true
 	v.markStepFinishedLocked(state)
-	switch step.Status {
-	case runbookruntime.StepStatusCompleted:
-		v.emitStepLogLocked(state, fmt.Sprintf("ok %s completed", v.renderStepLabel(state)))
-	case runbookruntime.StepStatusSkipped:
-		line := fmt.Sprintf("sk %s skipped", v.renderStepLabel(state))
-		if step.SkipReason != "" {
-			line = fmt.Sprintf("%s: %s", line, step.SkipReason)
-		}
-		v.emitStepLogLocked(state, line)
-	case runbookruntime.StepStatusFailed:
-		line := fmt.Sprintf("!! %s failed", v.renderStepLabel(state))
-		if step.SkipReason != "" {
-			line = fmt.Sprintf("%s: %s", line, step.SkipReason)
-		}
-		v.emitStepLogLocked(state, line)
-	}
+	v.emitStepLogLocked(state, v.renderNonTTYStepEnd(state))
 
 	if v.liveMode {
 		v.redrawLiveLocked()
@@ -267,37 +242,40 @@ func (v *RunbookExecuteHuman) Executed(plan *runbookgraph.Plan) {
 		v.renderedLines = 0
 		v.view.streams.Print("\n")
 	}
-	v.mu.Unlock()
 
-	completed := 0
-	skipped := 0
-	failed := 0
-	for _, step := range plan.Steps {
-		switch step.Status {
-		case runbookruntime.StepStatusSkipped:
-			skipped++
-		case runbookruntime.StepStatusFailed:
-			failed++
-		default:
-			completed++
+	// Compute total duration
+	var totalDur time.Duration
+	for _, step := range v.steps {
+		if step != nil && !step.StartedAt.IsZero() && !step.FinishedAt.IsZero() {
+			d := step.FinishedAt.Sub(step.StartedAt)
+			if d > totalDur {
+				totalDur = d
+			}
 		}
 	}
-	v.view.streams.Printf("Runbook execute complete. Steps: %d completed, %d skipped, %d failed.\n", completed, skipped, failed)
-	v.renderExecutionReport(plan)
+	v.mu.Unlock()
+
+	sym := selectExecSymbols(v.view)
+	sep := planLeftPad + strings.Repeat("─", 57)
+	if sym.DotDone == "*" {
+		sep = planLeftPad + strings.Repeat("-", 57)
+	}
+	v.view.streams.Println(v.view.colorize.Color(sym.ColorDim + sep + sym.ColorReset))
+	v.view.streams.Println(v.view.colorize.Color(sym.ColorStep + renderExecSummary(v.steps, totalDur) + sym.ColorReset))
 
 	outputs, outputDiags := collectRunbookExecuteOutputs(plan)
 	v.Diagnostics(outputDiags)
 	if len(outputs) == 0 {
 		return
 	}
-	v.view.streams.Print(v.view.colorize.Color("[reset][bold][green]\nOutputs:\n\n"))
+	v.view.streams.Print(v.view.colorize.Color("\n" + planLeftPad + sym.ColorHeader + "Outputs:" + sym.ColorReset + "\n"))
 	keys := make([]string, 0, len(outputs))
 	for key := range outputs {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		v.view.streams.Printf("%s = %s\n", key, repl.FormatValue(outputs[key], 0))
+		v.view.streams.Printf("%s  %s = %s\n", planLeftPad, key, repl.FormatValue(outputs[key], 0))
 	}
 }
 
@@ -548,7 +526,7 @@ func (v *RunbookExecuteHuman) hasRunningStepsLocked() bool {
 }
 
 func (v *RunbookExecuteHuman) redrawLiveLocked() {
-	block := v.renderLiveBlockAtWidth(v.view.outputColumns())
+	block := v.renderLiveBlockV2(v.view.outputColumns())
 	if v.renderedLines > 0 {
 		v.view.streams.Printf("\x1b[%dA\r", v.renderedLines)
 		v.view.streams.Print("\x1b[0m\x1b[J")

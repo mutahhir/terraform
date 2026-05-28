@@ -249,9 +249,9 @@ func (n *NodeExpandStep) DynamicExpand(ctx EvalContext) (*terraform.Graph, tfdia
 		}
 		for _, output := range outputs {
 			connectStepReferences(&g, n.StepName, output, referencesForStepOutput(output.Output), refTargets)
-			// Outputs referencing dynamic data sources must wait for the
-			// execution node that refreshes them via read_datasource.
-			if outputReferencesDynamicData(output.Output, n.Config) {
+			// Outputs referencing dynamic data sources or wait state must wait
+			// for the execution node that refreshes/produces them.
+			if outputReferencesDynamicData(output.Output, n.Config) || outputReferencesWait(output.Output) {
 				for _, execution := range executions {
 					g.Connect(dag.BasicEdge(output, execution))
 				}

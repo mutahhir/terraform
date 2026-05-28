@@ -1,6 +1,7 @@
 package runbookgraph
 
 import (
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/terraform/internal/dag"
 	runbookaddrs "github.com/hashicorp/terraform/internal/runbooks/addrs"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
@@ -78,6 +79,16 @@ func referencesForStep(step *runbookconfigs.Step) []runbookaddrs.Referenceable {
 	}
 	for _, output := range step.Outputs {
 		refs = append(refs, referencesForStepOutput(output)...)
+	}
+	for _, traversal := range step.DependsOn {
+		// depends_on traversals are validated to be step.<name> at parse time
+		if len(traversal) >= 2 {
+			if nameAttr, ok := traversal[1].(hcl.TraverseAttr); ok {
+				refs = append(refs, runbookaddrs.Step{
+					Step: runbookaddrs.StepInstance{StepName: nameAttr.Name},
+				})
+			}
+		}
 	}
 	return refs
 }
