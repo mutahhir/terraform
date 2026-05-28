@@ -73,6 +73,19 @@ func isDynamicDataSource(step *runbookconfigs.Step, data *configs.Resource) bool
 				return true
 			}
 		}
+		// Also check wait blocks — their datasource is re-read at execute time
+		for _, op := range exec.Operations {
+			if op.Type != runbookconfigs.ExecuteOpWait || op.Wait == nil || op.Wait.DataSource == nil {
+				continue
+			}
+			ref, diags := runbookaddrs.ParseRef(op.Wait.DataSource)
+			if diags.HasErrors() || ref == nil {
+				continue
+			}
+			if resource, ok := ref.Subject.(terraformaddrs.Resource); ok && resource.String() == addr {
+				return true
+			}
+		}
 	}
 	return false
 }
