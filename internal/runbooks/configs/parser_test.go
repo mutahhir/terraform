@@ -595,8 +595,8 @@ step "deploy" {
 	if waitOp.Wait.Mode != WaitModeDuration {
 		t.Fatalf("expected duration mode, got %s", waitOp.Wait.Mode)
 	}
-	if waitOp.Wait.Duration.Seconds() != 30 {
-		t.Fatalf("expected 30s duration, got %s", waitOp.Wait.Duration)
+	if waitOp.Wait.Duration == nil {
+		t.Fatal("expected duration expression to be set")
 	}
 }
 
@@ -636,14 +636,14 @@ step "check" {
 	if waitOp.Wait.Mode != WaitModePolling {
 		t.Fatalf("expected polling mode, got %s", waitOp.Wait.Mode)
 	}
-	if waitOp.Wait.Timeout.Minutes() != 5 {
-		t.Fatalf("expected 5m timeout, got %s", waitOp.Wait.Timeout)
+	if waitOp.Wait.Timeout == nil {
+		t.Fatal("expected timeout expression to be set")
 	}
-	if waitOp.Wait.Interval.Seconds() != 15 {
-		t.Fatalf("expected 15s interval, got %s", waitOp.Wait.Interval)
+	if waitOp.Wait.Interval == nil {
+		t.Fatal("expected interval expression to be set")
 	}
-	if waitOp.Wait.MaxAttempts != 20 {
-		t.Fatalf("expected 20 max_attempts, got %d", waitOp.Wait.MaxAttempts)
+	if waitOp.Wait.MaxAttempts == nil {
+		t.Fatal("expected max_attempts expression to be set")
 	}
 }
 
@@ -718,5 +718,101 @@ step "bad" {
 	}
 	if !found {
 		t.Fatalf("expected missing-limit diagnostic, got: %s", diags.Error())
+	}
+}
+
+func TestStepWaitAcceptsVariableInDuration(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+variable "sleep_time" {
+  type    = string
+  default = "30s"
+}
+
+step "deploy" {
+  action "http" "trigger" {}
+
+  execute {
+    invoke_action {
+      action = action.http.trigger
+    }
+
+    wait "cooldown" {
+      duration = var.sleep_time
+    }
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	got, diags := p.LoadRunbookConfigDir("/runbook")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected errors: %s", diags.Error())
+	}
+	step := got.Steps["deploy"]
+	if step == nil {
+		t.Fatal("expected deploy step")
+	}
+	exec := step.Executions[0]
+	waitOp := exec.Operations[1]
+	if waitOp.Wait.Mode != WaitModeDuration {
+		t.Fatalf("expected duration mode, got %s", waitOp.Wait.Mode)
+	}
+	// The expression references var.sleep_time — it should have variables
+	vars := waitOp.Wait.Duration.Variables()
+	if len(vars) == 0 {
+		t.Fatal("expected duration expression to reference variables")
+	}
+	if vars[0].RootName() != "var" {
+		t.Fatalf("expected var reference, got %q", vars[0].RootName())
+	}
+}
+
+func TestStepWaitAcceptsVariableInTimeout(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	writeTestFile(t, fs, "/runbook/main.tfrun.hcl", `
+runbook {
+  terraform_version = ">= 1.0.0"
+}
+
+variable "poll_timeout" {
+  type    = string
+  default = "5m"
+}
+
+step "check" {
+  data "http" "status" {}
+
+  execute {
+    wait "ready" {
+      datasource   = data.http.status
+      condition    = data.http.status.body != ""
+      timeout      = var.poll_timeout
+    }
+  }
+}
+`)
+
+	p := NewRunbookParser(fs)
+	got, diags := p.LoadRunbookConfigDir("/runbook")
+	if diags.HasErrors() {
+		t.Fatalf("unexpected errors: %s", diags.Error())
+	}
+	step := got.Steps["check"]
+	exec := step.Executions[0]
+	waitOp := exec.Operations[0]
+	if waitOp.Wait.Timeout == nil {
+		t.Fatal("expected timeout expression to be set")
+	}
+	vars := waitOp.Wait.Timeout.Variables()
+	if len(vars) == 0 {
+		t.Fatal("expected timeout expression to reference variables")
+	}
+	if vars[0].RootName() != "var" {
+		t.Fatalf("expected var reference in timeout, got %q", vars[0].RootName())
 	}
 }

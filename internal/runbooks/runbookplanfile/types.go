@@ -5,7 +5,7 @@ import (
 	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 )
 
-const FormatVersion = 1
+const FormatVersion = 2
 
 type Plan struct {
 	Version            int                           `json:"version"`

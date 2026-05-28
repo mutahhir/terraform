@@ -5,7 +5,6 @@ package runbookgraph
 
 import (
 	"testing"
-	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -560,7 +559,7 @@ func TestExecuteWaitBlindModeSetsState(t *testing.T) {
 								Wait: &runbookconfigs.Wait{
 									Name:     "warmup",
 									Mode:     runbookconfigs.WaitModeDuration,
-									Duration: 1 * time.Second,
+									Duration: mustParseExpression(t, `"1s"`),
 								},
 							},
 						},

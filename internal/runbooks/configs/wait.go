@@ -1,9 +1,6 @@
 package runbookconfigs
 
 import (
-	"fmt"
-	"time"
-
 	"github.com/hashicorp/hcl/v2"
 )
 
@@ -16,20 +13,22 @@ const (
 )
 
 // Wait represents a named wait operation inside an execute block.
+// Duration, timeout, interval, and max_attempts are stored as expressions
+// so they can reference variables. They are evaluated at execution time.
 type Wait struct {
 	Name      string
 	Mode      WaitMode
 	DeclRange hcl.Range
 
 	// Blind mode
-	Duration time.Duration
+	Duration hcl.Expression
 
 	// Polling mode
 	DataSource  hcl.Traversal
 	Condition   hcl.Expression
-	Timeout     time.Duration
-	MaxAttempts int
-	Interval    time.Duration // default 10s
+	Timeout     hcl.Expression
+	MaxAttempts hcl.Expression
+	Interval    hcl.Expression
 }
 
 func decodeWaitBlock(block *hcl.Block) (*Wait, hcl.Diagnostics) {
@@ -43,29 +42,14 @@ func decodeWaitBlock(block *hcl.Block) (*Wait, hcl.Diagnostics) {
 	content, contentDiags := block.Body.Content(waitSchema)
 	diags = append(diags, contentDiags...)
 
-	// Parse duration (blind mode)
-	var hasDuration bool
+	// Collect which attributes are present (for mode detection)
+	var hasDuration, hasDataSource, hasCondition, hasTimeout, hasMaxAttempts, hasInterval bool
+
 	if attr, exists := content.Attributes["duration"]; exists {
 		hasDuration = true
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if !valDiags.HasErrors() {
-			d, err := time.ParseDuration(val.AsString())
-			if err != nil {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid duration value",
-					Detail:   fmt.Sprintf("Could not parse duration: %s", err),
-					Subject:  attr.Expr.Range().Ptr(),
-				})
-			} else {
-				wait.Duration = d
-			}
-		}
+		wait.Duration = attr.Expr
 	}
 
-	// Parse polling attributes
-	var hasDataSource, hasCondition bool
 	if attr, exists := content.Attributes["datasource"]; exists {
 		hasDataSource = true
 		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
@@ -81,53 +65,22 @@ func decodeWaitBlock(block *hcl.Block) (*Wait, hcl.Diagnostics) {
 	}
 
 	if attr, exists := content.Attributes["timeout"]; exists {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if !valDiags.HasErrors() {
-			d, err := time.ParseDuration(val.AsString())
-			if err != nil {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid timeout value",
-					Detail:   fmt.Sprintf("Could not parse timeout: %s", err),
-					Subject:  attr.Expr.Range().Ptr(),
-				})
-			} else {
-				wait.Timeout = d
-			}
-		}
+		hasTimeout = true
+		wait.Timeout = attr.Expr
 	}
 
 	if attr, exists := content.Attributes["max_attempts"]; exists {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if !valDiags.HasErrors() {
-			bf := val.AsBigFloat()
-			n, _ := bf.Int64()
-			wait.MaxAttempts = int(n)
-		}
+		hasMaxAttempts = true
+		wait.MaxAttempts = attr.Expr
 	}
 
 	if attr, exists := content.Attributes["interval"]; exists {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if !valDiags.HasErrors() {
-			d, err := time.ParseDuration(val.AsString())
-			if err != nil {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid interval value",
-					Detail:   fmt.Sprintf("Could not parse interval: %s", err),
-					Subject:  attr.Expr.Range().Ptr(),
-				})
-			} else {
-				wait.Interval = d
-			}
-		}
+		hasInterval = true
+		wait.Interval = attr.Expr
 	}
 
 	// Determine mode and validate mutual exclusivity
-	hasPolling := hasDataSource || hasCondition || wait.Timeout > 0 || wait.MaxAttempts > 0 || wait.Interval > 0
+	hasPolling := hasDataSource || hasCondition || hasTimeout || hasMaxAttempts || hasInterval
 
 	if hasDuration && hasPolling {
 		diags = append(diags, &hcl.Diagnostic{
@@ -141,14 +94,6 @@ func decodeWaitBlock(block *hcl.Block) (*Wait, hcl.Diagnostics) {
 
 	if hasDuration {
 		wait.Mode = WaitModeDuration
-		if wait.Duration < time.Second {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Wait duration too short",
-				Detail:   "Wait duration must be at least 1s.",
-				Subject:  block.DefRange.Ptr(),
-			})
-		}
 	} else if hasPolling {
 		wait.Mode = WaitModePolling
 		if !hasDataSource {
@@ -167,19 +112,11 @@ func decodeWaitBlock(block *hcl.Block) (*Wait, hcl.Diagnostics) {
 				Subject:  block.DefRange.Ptr(),
 			})
 		}
-		if wait.Timeout == 0 && wait.MaxAttempts == 0 {
+		if !hasTimeout && !hasMaxAttempts {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  "Missing polling limit",
 				Detail:   "A polling wait must have at least one of 'timeout' or 'max_attempts' to prevent infinite loops.",
-				Subject:  block.DefRange.Ptr(),
-			})
-		}
-		if wait.Interval > 0 && wait.Interval < time.Second {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Wait interval too short",
-				Detail:   "Wait interval must be at least 1s.",
 				Subject:  block.DefRange.Ptr(),
 			})
 		}

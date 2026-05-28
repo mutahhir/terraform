@@ -435,19 +435,17 @@ func (n *NodeStepExecution) Execute(ctx EvalContext, op walkOperation) tfdiags.D
 					"mode": cty.StringVal(string(wait.Mode)),
 				}
 				if wait.Mode == runbookconfigs.WaitModeDuration {
-					details["duration"] = cty.StringVal(wait.Duration.String())
+					details["has_duration"] = cty.True
 				} else {
-					if wait.Timeout > 0 {
-						details["timeout"] = cty.StringVal(wait.Timeout.String())
+					if wait.Timeout != nil {
+						details["has_timeout"] = cty.True
 					}
-					if wait.MaxAttempts > 0 {
-						details["max_attempts"] = cty.NumberIntVal(int64(wait.MaxAttempts))
+					if wait.MaxAttempts != nil {
+						details["has_max_attempts"] = cty.True
 					}
-					interval := wait.Interval
-					if interval == 0 {
-						interval = 10 * time.Second
+					if wait.Interval != nil {
+						details["has_interval"] = cty.True
 					}
-					details["interval"] = cty.StringVal(interval.String())
 				}
 				ctx.EmitStepPlanInfo(StepPlanInfo{
 					StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
@@ -654,13 +652,17 @@ func (n *NodeStepExecution) executeWait(ctx EvalContext, wait *runbookconfigs.Wa
 
 	// Blind wait (duration mode)
 	if wait.Mode == runbookconfigs.WaitModeDuration {
+		duration, durDiags := n.evalDuration(ctx, wait.Duration, "duration")
+		if durDiags.HasErrors() {
+			return durDiags
+		}
 		ctx.EmitActionEvent(ActionExecEvent{
 			StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
 			Subject: subject, ActionType: "wait", Status: "waiting",
-			Message: fmt.Sprintf("sleeping %s", wait.Duration),
+			Message: fmt.Sprintf("sleeping %s", duration),
 		})
 		select {
-		case <-time.After(wait.Duration):
+		case <-time.After(duration):
 		case <-ctx.StopCtx().Done():
 			return tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
 				tfdiags.Error, "Wait cancelled", "The wait operation was cancelled.",
@@ -671,26 +673,49 @@ func (n *NodeStepExecution) executeWait(ctx EvalContext, wait *runbookconfigs.Wa
 				state.waits = map[string]*waitEvalState{}
 			}
 			state.waits[wait.Name] = &waitEvalState{
-				Satisfied: true, Attempts: 0, Elapsed: wait.Duration,
+				Satisfied: true, Attempts: 0, Elapsed: duration,
 			}
 		})
 		ctx.EmitActionEvent(ActionExecEvent{
 			StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
 			Subject: subject, ActionType: "wait", Status: "completed",
-			Message: fmt.Sprintf("slept %s", wait.Duration),
+			Message: fmt.Sprintf("slept %s", duration),
 		})
 		return nil
 	}
 
-	// Polling wait
-	interval := wait.Interval
-	if interval == 0 {
-		interval = 10 * time.Second
+	// Polling wait — evaluate timing parameters
+	interval := 10 * time.Second
+	if wait.Interval != nil {
+		var intervalDiags tfdiags.Diagnostics
+		interval, intervalDiags = n.evalDuration(ctx, wait.Interval, "interval")
+		if intervalDiags.HasErrors() {
+			return intervalDiags
+		}
 	}
+
 	var deadline time.Time
-	if wait.Timeout > 0 {
-		deadline = startTime.Add(wait.Timeout)
+	if wait.Timeout != nil {
+		timeout, timeoutDiags := n.evalDuration(ctx, wait.Timeout, "timeout")
+		if timeoutDiags.HasErrors() {
+			return timeoutDiags
+		}
+		deadline = startTime.Add(timeout)
 	}
+
+	maxAttempts := 0
+	if wait.MaxAttempts != nil {
+		maxVal, maxDiags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, wait.MaxAttempts)
+		if maxDiags.HasErrors() {
+			return maxDiags
+		}
+		if maxVal.IsKnown() && !maxVal.IsNull() {
+			bf := maxVal.AsBigFloat()
+			v, _ := bf.Int64()
+			maxAttempts = int(v)
+		}
+	}
+
 	attempt := 0
 
 	for {
@@ -740,7 +765,7 @@ func (n *NodeStepExecution) executeWait(ctx EvalContext, wait *runbookconfigs.Wa
 		})
 
 		// Check limits before sleeping
-		if wait.MaxAttempts > 0 && attempt >= wait.MaxAttempts {
+		if maxAttempts > 0 && attempt >= maxAttempts {
 			break
 		}
 		if !deadline.IsZero() && time.Now().Add(interval).After(deadline) {
@@ -774,6 +799,31 @@ func (n *NodeStepExecution) executeWait(ctx EvalContext, wait *runbookconfigs.Wa
 	})
 	return diags
 }
+
+// evalDuration evaluates an expression to a duration string and parses it.
+func (n *NodeStepExecution) evalDuration(ctx EvalContext, expr hcl.Expression, name string) (time.Duration, tfdiags.Diagnostics) {
+	val, diags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, expr)
+	if diags.HasErrors() {
+		return 0, diags
+	}
+	if !val.IsKnown() || val.IsNull() {
+		diags = diags.Append(tfdiags.Sourceless(
+			tfdiags.Error, fmt.Sprintf("Unknown %s value", name),
+			fmt.Sprintf("The %s expression must produce a known string value.", name),
+		))
+		return 0, diags
+	}
+	d, err := time.ParseDuration(val.AsString())
+	if err != nil {
+		diags = diags.Append(tfdiags.Sourceless(
+			tfdiags.Error, fmt.Sprintf("Invalid %s value", name),
+			fmt.Sprintf("Could not parse %s %q: %s", name, val.AsString(), err),
+		))
+		return 0, diags
+	}
+	return d, nil
+}
+
 
 type NodeStepCondition struct {
 	Step      *NodeStepInstance
