@@ -64,6 +64,13 @@ func (p *RunbookParser) parseRunbookConfigFile(body hcl.Body, diags hcl.Diagnost
 			if step != nil {
 				file.Steps = append(file.Steps, step)
 			}
+
+		case "catch":
+			catch, catchDiags := decodeCatchBlock(block)
+			diags = append(diags, catchDiags...)
+			if catch != nil {
+				file.Catches = append(file.Catches, catch)
+			}
 		}
 	}
 
@@ -117,6 +124,10 @@ var runbookConfigFileSchema = &hcl.BodySchema{
 		},
 		{
 			Type:       "step",
+			LabelNames: []string{"name"},
+		},
+		{
+			Type:       "catch",
 			LabelNames: []string{"name"},
 		},
 	},

@@ -17,6 +17,7 @@ type RunbookFile struct {
 	Variables []*configs.Variable
 	Outputs   []*configs.Output
 	Steps     []*Step
+	Catches   []*Catch
 }
 
 type RunbookConfig struct {
@@ -27,7 +28,8 @@ type RunbookConfig struct {
 	// directory tree rooted at RunbookSourceDir.
 	RunbookSourceDir string
 
-	Steps map[string]*Step
+	Steps   map[string]*Step
+	Catches map[string]*Catch
 
 	// Reusing a lot of Terraform configurations
 	Outputs              map[string]*configs.Output
@@ -40,6 +42,7 @@ type RunbookConfig struct {
 func NewRunbook(files []*RunbookFile) (*RunbookConfig, hcl.Diagnostics) {
 	ret := &RunbookConfig{
 		Steps:              make(map[string]*Step),
+		Catches:            make(map[string]*Catch),
 		Outputs:            make(map[string]*configs.Output),
 		Variables:          make(map[string]*configs.Variable),
 		ProviderConfigs:    make(map[string]*configs.Provider),
@@ -77,6 +80,19 @@ func NewRunbook(files []*RunbookFile) (*RunbookConfig, hcl.Diagnostics) {
 				continue
 			}
 			ret.Steps[step.Name] = step
+		}
+
+		for _, catch := range file.Catches {
+			if existing, exists := ret.Catches[catch.Name]; exists {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate catch declaration",
+					Detail:   "A catch block named " + catch.Name + " was already declared at " + existing.DeclRange.String() + ".",
+					Subject:  catch.DeclRange.Ptr(),
+				})
+				continue
+			}
+			ret.Catches[catch.Name] = catch
 		}
 
 		for _, output := range file.Outputs {
