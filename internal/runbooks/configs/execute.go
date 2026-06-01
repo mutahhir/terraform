@@ -9,7 +9,7 @@ type ExecuteOperationType string
 
 const (
 	ExecuteOpInvokeAction   ExecuteOperationType = "invoke_action"
-	ExecuteOpReadDataSource ExecuteOperationType = "read_datasource"
+	ExecuteOpReadDataSource ExecuteOperationType = "read"
 	ExecuteOpWait           ExecuteOperationType = "wait"
 )
 
@@ -44,7 +44,7 @@ func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Empty execute block",
-			Detail:   "An execute block must contain at least one invoke_action, read_datasource, or wait block.",
+			Detail:   "An execute block must contain at least one invoke_action, read, or wait block.",
 			Subject:  block.DefRange.Ptr(),
 		})
 		return nil, diags
@@ -74,7 +74,7 @@ func decodeExecutionBlock(block *hcl.Block) (*Execution, hcl.Diagnostics) {
 				Traversal: traversal,
 			})
 
-		case "read_datasource":
+		case "read":
 			readContent, readDiags := innerBlock.Body.Content(readDataSourceSchema)
 			diags = append(diags, readDiags...)
 
@@ -127,7 +127,7 @@ var executeSchema = &hcl.BodySchema{
 			Type: "invoke_action",
 		},
 		{
-			Type: "read_datasource",
+			Type: "read",
 		},
 		{
 			Type:       "wait",

@@ -11,7 +11,7 @@ import (
 )
 
 // outputReferencesDynamicData returns true if the output expression references
-// a data source that has a read_datasource directive in the step.
+// a data source that has a read directive in the step.
 func outputReferencesDynamicData(output *configs.Output, step *runbookconfigs.Step) bool {
 	if output == nil || output.Expr == nil || step == nil {
 		return false
@@ -57,7 +57,7 @@ func findDataSourceByAddr(step *runbookconfigs.Step, addr terraformaddrs.Resourc
 }
 
 // isDynamicDataSource returns true if any execute block in the step has a
-// read_datasource directive referencing this data source.
+// read directive referencing this data source.
 func isDynamicDataSource(step *runbookconfigs.Step, data *configs.Resource) bool {
 	if step == nil || data == nil {
 		return false
@@ -90,7 +90,7 @@ func isDynamicDataSource(step *runbookconfigs.Step, data *configs.Resource) bool
 	return false
 }
 
-// validateReadDataSourceRefs checks that each read_datasource traversal in
+// validateReadDataSourceRefs checks that each read traversal in
 // execute blocks references a declared step-level data source.
 func validateReadDataSourceRefs(config *runbookconfigs.RunbookConfig) tfdiags.Diagnostics {
 	if config == nil {
@@ -119,7 +119,7 @@ func validateReadDataSourceRefs(config *runbookconfigs.RunbookConfig) tfdiags.Di
 				if !ok || resource.Mode != terraformaddrs.DataResourceMode {
 					diags = diags.Append(&hcl.Diagnostic{
 						Severity: hcl.DiagError,
-						Summary:  "Invalid read_datasource reference",
+						Summary:  "Invalid read reference",
 						Detail:   "The datasource attribute must reference a data source (e.g., data.aws_lambda_function.created).",
 						Subject:  traversal.SourceRange().Ptr(),
 					})
@@ -128,8 +128,8 @@ func validateReadDataSourceRefs(config *runbookconfigs.RunbookConfig) tfdiags.Di
 				if !declared[resource.String()] {
 					diags = diags.Append(&hcl.Diagnostic{
 						Severity: hcl.DiagError,
-						Summary:  "Undeclared data source in read_datasource",
-						Detail:   "The data source " + resource.String() + " is not declared in this step. read_datasource can only reference data sources declared at the step level.",
+						Summary:  "Undeclared data source in read",
+						Detail:   "The data source " + resource.String() + " is not declared in this step. read can only reference data sources declared at the step level.",
 						Subject:  traversal.SourceRange().Ptr(),
 					})
 				}
@@ -140,7 +140,7 @@ func validateReadDataSourceRefs(config *runbookconfigs.RunbookConfig) tfdiags.Di
 }
 
 // collectDynamicDataAddrs returns the set of data source address strings that
-// are referenced by any read_datasource directive across all steps.
+// are referenced by any read directive across all steps.
 func collectDynamicDataAddrs(config *runbookconfigs.RunbookConfig) map[string]bool {
 	addrs := map[string]bool{}
 	if config == nil {
@@ -167,7 +167,7 @@ func collectDynamicDataAddrs(config *runbookconfigs.RunbookConfig) map[string]bo
 
 // validateNoDynamicDataInExpansion checks that no count, for_each, or
 // precondition expression references a dynamic data source (one that has a
-// read_datasource directive) either directly or transitively through step
+// read directive) either directly or transitively through step
 // outputs.
 func validateNoDynamicDataInExpansion(config *runbookconfigs.RunbookConfig) tfdiags.Diagnostics {
 	if config == nil {
@@ -256,7 +256,7 @@ func checkExprNotTaintedByDynamic(
 				diags = diags.Append(&hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "Dynamic data source in " + context,
-					Detail:   "The " + context + " expression references " + resource.String() + " which has a read_datasource directive. Dynamic data sources cannot be used in expressions that determine graph shape.",
+					Detail:   "The " + context + " expression references " + resource.String() + " which has a read directive. Dynamic data sources cannot be used in expressions that determine graph shape.",
 					Subject:  traversal.SourceRange().Ptr(),
 				})
 			}
@@ -268,7 +268,7 @@ func checkExprNotTaintedByDynamic(
 				diags = diags.Append(&hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "Dynamic data dependency in " + context,
-					Detail:   "The " + context + " expression references step." + key + " which depends on a dynamic data source (one with a read_datasource directive). Dynamic data cannot influence graph shape.",
+					Detail:   "The " + context + " expression references step." + key + " which depends on a dynamic data source (one with a read directive). Dynamic data cannot influence graph shape.",
 					Subject:  traversal.SourceRange().Ptr(),
 				})
 			}

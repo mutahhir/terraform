@@ -554,6 +554,41 @@ func validateStepWaitDeclarations(step *runbookconfigs.Step) tfdiags.Diagnostics
 							fmt.Sprintf("The wait %q references %s, but this data source is not declared in step %q.", wait.Name, fullRef, step.Name),
 						))
 					}
+
+					// Check for self-reference: the data source's config body must not
+					// reference its own attributes, as that creates a feedback loop
+					// within the wait's poll iterations.
+					if typePart != "" && namePart != "" {
+						for _, data := range step.DataSources {
+							if data.Type != typePart || data.Name != namePart {
+								continue
+							}
+							if data.Config != nil {
+								attrs, _ := data.Config.JustAttributes()
+								for _, attr := range attrs {
+									for _, traversal := range attr.Expr.Variables() {
+										if traversal.RootName() == "data" && len(traversal) >= 3 {
+											refType := ""
+											refName := ""
+											if a, ok := traversal[1].(hcl.TraverseAttr); ok {
+												refType = a.Name
+											}
+											if a, ok := traversal[2].(hcl.TraverseAttr); ok {
+												refName = a.Name
+											}
+											if refType == typePart && refName == namePart {
+												diags = diags.Append(tfdiags.Sourceless(
+													tfdiags.Error,
+													"Self-referencing wait datasource",
+													fmt.Sprintf("The data source %s in wait %q references its own output in its config. This creates a feedback loop during polling. Use a separate data source for the config inputs.", fullRef, wait.Name),
+												))
+											}
+										}
+									}
+								}
+							}
+						}
+					}
 				} else if dsRef != "data" {
 					diags = diags.Append(tfdiags.Sourceless(
 						tfdiags.Error,

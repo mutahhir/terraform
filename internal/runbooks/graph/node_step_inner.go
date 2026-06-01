@@ -125,7 +125,7 @@ func (n *NodeStepAction) Execute(ctx EvalContext, op walkOperation) tfdiags.Diag
 type NodeStepData struct {
 	Step           *NodeStepInstance
 	Data           *configs.Resource
-	RefreshAtApply bool // true if a read_datasource directive references this data source
+	RefreshAtApply bool // true if a read directive references this data source
 }
 
 func (n *NodeStepData) Hashcode() interface{} {
@@ -191,7 +191,7 @@ func (n *NodeStepData) Execute(ctx EvalContext, op walkOperation) tfdiags.Diagno
 	})
 	resp := provider.ReadDataSource(providers.ReadDataSourceRequest{TypeName: n.Data.Type, Config: configVal, ProviderMeta: providerMetaVal})
 	if resp.Diagnostics.HasErrors() && n.RefreshAtApply {
-		// Data source will be refreshed at apply time via read_datasource.
+		// Data source will be refreshed at apply time via read.
 		// Store DynamicVal as placeholder — plan continues without failure.
 		ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
 			state.data[n.Data.Addr().String()] = cty.DynamicVal
@@ -426,7 +426,7 @@ func (n *NodeStepExecution) Execute(ctx EvalContext, op walkOperation) tfdiags.D
 		case runbookconfigs.ExecuteOpReadDataSource:
 			traversal := operation.Traversal
 			if ref, refDiags := runbookaddrs.ParseRef(traversal); !refDiags.HasErrors() && ref != nil {
-				ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "read_datasource", Subject: ref.Subject.String(), Status: runbookruntime.StepStatusPlanned})
+				ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: "read", Subject: ref.Subject.String(), Status: runbookruntime.StepStatusPlanned})
 			}
 		case runbookconfigs.ExecuteOpWait:
 			wait := operation.Wait
@@ -551,7 +551,7 @@ func (n *NodeStepExecution) executeReadDataSource(ctx EvalContext, traversal hcl
 	ctx.EmitStepPlanInfo(StepPlanInfo{
 		StepName:  n.Step.StepName,
 		StepIndex: stepRuntimeIndex(n.Step),
-		Type:      "read_datasource",
+		Type:      "read",
 		Subject:   dataConfig.Addr().String(),
 		Status:    runbookruntime.StepStatusCompleted,
 	})
@@ -861,7 +861,7 @@ func (n *NodeStepCondition) Execute(ctx EvalContext, op walkOperation) tfdiags.D
 	value, diags := ctx.EvaluateExprForInstance(n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData, n.Condition.Condition)
 	if diags.HasErrors() {
 		// If evaluation fails because references are not yet available at plan
-		// time (e.g., depends on execute-time read_datasource), defer rather
+		// time (e.g., depends on execute-time read), defer rather
 		// than fail. This only applies during the plan walk.
 		if op == walkOperationPlan && containsUnknownDiag(diags) {
 			ctx.EmitStepPlanInfo(StepPlanInfo{StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step), Type: string(n.Condition.Kind) + "_deferred", Subject: n.Condition.DeclRange.String(), Status: runbookruntime.StepStatusPlanned})

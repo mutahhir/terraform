@@ -32,7 +32,7 @@ func TestValidateReadDataSourceRefsMustReferenceDeclaredData(t *testing.T) {
 
 	diags := validateReadDataSourceRefs(config)
 	if diags.HasErrors() {
-		t.Fatalf("expected no errors for valid read_datasource ref, got: %s", diags.Err())
+		t.Fatalf("expected no errors for valid read ref, got: %s", diags.Err())
 	}
 }
 
@@ -141,7 +141,7 @@ func TestValidateNoDynamicDataAllowsNonDynamicInCount(t *testing.T) {
 				DataSources: []*configs.Resource{
 					{Type: "aws_lambda_function", Name: "targets", Mode: terraformaddrs.DataResourceMode},
 				},
-				// No read_datasource — this data source is NOT dynamic
+				// No read — this data source is NOT dynamic
 				Executions: []*runbookconfigs.Execution{},
 				Count:      mustParseExpression(t, `length(data.aws_lambda_function.targets.results)`),
 			},
@@ -192,7 +192,7 @@ execute {
   invoke_action {
     action = action.lambda.create
   }
-  read_datasource {
+  read {
     datasource = data.aws_lambda_function.created
   }
 }
@@ -218,7 +218,7 @@ execute {
 		t.Fatalf("expected 1 invoke_action, got %d", len(exec.InvokeAction))
 	}
 	if len(exec.ReadDataSources) != 1 {
-		t.Fatalf("expected 1 read_datasource, got %d", len(exec.ReadDataSources))
+		t.Fatalf("expected 1 read, got %d", len(exec.ReadDataSources))
 	}
 	if len(exec.Operations) != 2 {
 		t.Fatalf("expected 2 operations, got %d", len(exec.Operations))
@@ -227,7 +227,7 @@ execute {
 		t.Fatalf("expected first op to be invoke_action, got %s", exec.Operations[0].Type)
 	}
 	if exec.Operations[1].Type != runbookconfigs.ExecuteOpReadDataSource {
-		t.Fatalf("expected second op to be read_datasource, got %s", exec.Operations[1].Type)
+		t.Fatalf("expected second op to be read, got %s", exec.Operations[1].Type)
 	}
 }
 

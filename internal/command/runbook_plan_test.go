@@ -225,7 +225,7 @@ step "fetch" {
   data "test_data" "status" {}
 
   execute {
-    read_datasource {
+    read {
       datasource = data.test_data.status
     }
   }
