@@ -24,11 +24,12 @@ type Wait struct {
 	Duration hcl.Expression
 
 	// Polling mode
-	DataSource  hcl.Traversal
-	Condition   hcl.Expression
-	Timeout     hcl.Expression
-	MaxAttempts hcl.Expression
-	Interval    hcl.Expression
+	DataSource       hcl.Traversal
+	Condition        hcl.Expression
+	Timeout          hcl.Expression
+	MaxAttempts      hcl.Expression
+	Interval         hcl.Expression
+	IgnoreReadErrors bool
 }
 
 func decodeWaitBlock(block *hcl.Block) (*Wait, hcl.Diagnostics) {
@@ -77,6 +78,13 @@ func decodeWaitBlock(block *hcl.Block) (*Wait, hcl.Diagnostics) {
 	if attr, exists := content.Attributes["interval"]; exists {
 		hasInterval = true
 		wait.Interval = attr.Expr
+	}
+
+	if attr, exists := content.Attributes["ignore_read_errors"]; exists {
+		val, valDiags := attr.Expr.Value(nil)
+		if !valDiags.HasErrors() && val.IsKnown() && !val.IsNull() {
+			wait.IgnoreReadErrors = val.True()
+		}
 	}
 
 	// Determine mode and validate mutual exclusivity
@@ -140,5 +148,6 @@ var waitSchema = &hcl.BodySchema{
 		{Name: "timeout"},
 		{Name: "max_attempts"},
 		{Name: "interval"},
+		{Name: "ignore_read_errors"},
 	},
 }

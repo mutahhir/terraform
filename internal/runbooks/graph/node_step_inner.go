@@ -722,46 +722,57 @@ func (n *NodeStepExecution) executeWait(ctx EvalContext, wait *runbookconfigs.Wa
 		attempt++
 
 		// Read the data source
+		readFailed := false
 		readDiags := n.executeReadDataSource(ctx, wait.DataSource, providerCache)
 		if readDiags.HasErrors() {
-			diags = diags.Append(readDiags)
-			break
+			if !wait.IgnoreReadErrors {
+				diags = diags.Append(readDiags)
+				break
+			}
+			// Read failed but ignore_read_errors is set — treat as "not satisfied"
+			readFailed = true
 		}
 
-		// Evaluate condition
-		condVal, condDiags := ctx.EvaluateExprForInstance(
-			n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData,
-			wait.Condition,
-		)
-		if condDiags.HasErrors() {
-			diags = diags.Append(condDiags)
-			break
-		}
+		// Evaluate condition (skip if read failed)
+		if !readFailed {
+			condVal, condDiags := ctx.EvaluateExprForInstance(
+				n.Step.StepName, n.Step.InstanceKey, n.Step.RepetitionData,
+				wait.Condition,
+			)
+			if condDiags.HasErrors() {
+				diags = diags.Append(condDiags)
+				break
+			}
 
-		if condVal.IsKnown() && !condVal.IsNull() && condVal.True() {
-			// Satisfied
-			elapsed := time.Since(startTime)
-			ctx.EmitActionEvent(ActionExecEvent{
-				StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
-				Subject: subject, ActionType: "wait", Status: "satisfied",
-				Message: fmt.Sprintf("satisfied after %d attempts (%s)", attempt, elapsed.Truncate(time.Second)),
-			})
-			ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
-				if state.waits == nil {
-					state.waits = map[string]*waitEvalState{}
-				}
-				state.waits[wait.Name] = &waitEvalState{
-					Satisfied: true, Attempts: attempt, Elapsed: elapsed,
-				}
-			})
-			return nil
+			if condVal.IsKnown() && !condVal.IsNull() && condVal.True() {
+				// Satisfied
+				elapsed := time.Since(startTime)
+				ctx.EmitActionEvent(ActionExecEvent{
+					StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
+					Subject: subject, ActionType: "wait", Status: "satisfied",
+					Message: fmt.Sprintf("satisfied after %d attempts (%s)", attempt, elapsed.Truncate(time.Second)),
+				})
+				ctx.setStepValueWithKey(n.Step.StepName, n.Step.InstanceKey, func(state *stepEvalState) {
+					if state.waits == nil {
+						state.waits = map[string]*waitEvalState{}
+					}
+					state.waits[wait.Name] = &waitEvalState{
+						Satisfied: true, Attempts: attempt, Elapsed: elapsed,
+					}
+				})
+				return nil
+			}
 		}
 
 		// Progress
+		msg := fmt.Sprintf("attempt %d — not satisfied", attempt)
+		if readFailed {
+			msg = fmt.Sprintf("attempt %d — read failed, retrying", attempt)
+		}
 		ctx.EmitActionEvent(ActionExecEvent{
 			StepName: n.Step.StepName, StepIndex: stepRuntimeIndex(n.Step),
 			Subject: subject, ActionType: "wait", Status: "progress",
-			Message: fmt.Sprintf("attempt %d — not satisfied", attempt),
+			Message: msg,
 		})
 
 		// Check limits before sleeping
