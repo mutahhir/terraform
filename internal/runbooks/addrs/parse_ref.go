@@ -40,6 +40,10 @@ func ParseRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
 		return &Reference{Subject: terraformaddrs.Resource{Mode: terraformaddrs.ListResourceMode, Type: typ, Name: name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, diags
 	case "step":
 		return parseStepRef(traversal)
+	case "failed_step":
+		return parseFailedStepRef(traversal)
+	case "catch":
+		return parseCatchRef(traversal)
 	default:
 		return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
@@ -242,4 +246,52 @@ func parseWorkspaceRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics
 		rng := hcl.RangeBetween(traversal[0].SourceRange(), traversal[idx+1].SourceRange())
 		return &Reference{Subject: WorkspaceResource{Module: modulePath, Resource: resource}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, nil
 	}
+}
+
+// parseFailedStepRef handles references like failed_step.name, failed_step.diagnostics, etc.
+// The failed_step object is an opaque value — we return it as a FailedStep reference
+// and let the eval context provide the full cty.ObjectVal. Any remaining traversal
+// (e.g., .name, .diagnostics[0].summary) is passed through for the HCL evaluator.
+func parseFailedStepRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
+	rng := traversal[0].SourceRange()
+	var remain hcl.Traversal
+	if len(traversal) > 1 {
+		remain = traversal[1:]
+	}
+	return &Reference{Subject: FailedStep{}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: remain}, nil
+}
+
+// parseCatchRef handles references like catch.<name> or catch.<name>.<output>.
+func parseCatchRef(traversal hcl.Traversal) (*Reference, tfdiags.Diagnostics) {
+	if len(traversal) < 2 {
+		return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid catch reference",
+			Detail:   "A catch reference must include the catch block name (e.g., catch.notify).",
+			Subject:  traversal.SourceRange().Ptr(),
+		})
+	}
+	nameAttr, ok := traversal[1].(hcl.TraverseAttr)
+	if !ok {
+		return nil, tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid catch reference",
+			Detail:   "Expected a catch block name after \"catch\".",
+			Subject:  traversal[1].SourceRange().Ptr(),
+		})
+	}
+
+	if len(traversal) < 3 {
+		rng := hcl.RangeBetween(traversal[0].SourceRange(), traversal[1].SourceRange())
+		return &Reference{Subject: CatchAddr{Name: nameAttr.Name}, SourceRange: tfdiags.SourceRangeFromHCL(rng)}, nil
+	}
+
+	outputAttr, ok := traversal[2].(hcl.TraverseAttr)
+	if !ok {
+		rng := hcl.RangeBetween(traversal[0].SourceRange(), traversal[1].SourceRange())
+		return &Reference{Subject: CatchAddr{Name: nameAttr.Name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: traversal[2:]}, nil
+	}
+
+	rng := hcl.RangeBetween(traversal[0].SourceRange(), traversal[2].SourceRange())
+	return &Reference{Subject: CatchOutput{CatchName: nameAttr.Name, OutputName: outputAttr.Name}, SourceRange: tfdiags.SourceRangeFromHCL(rng), Remaining: traversal[3:]}, nil
 }

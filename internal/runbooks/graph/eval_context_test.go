@@ -11,8 +11,10 @@ import (
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/providers"
 	runbookconfigs "github.com/hashicorp/terraform/internal/runbooks/configs"
+	runbookruntime "github.com/hashicorp/terraform/internal/runbooks/runtime"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/terraform"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -471,4 +473,134 @@ func TestEvalContextProviderAliasDoesNotOverwrite(t *testing.T) {
 type mockProviderForTest struct {
 	providers.Interface
 	name string
+}
+
+func TestEvalContextFailedStepVariable(t *testing.T) {
+	config := &runbookconfigs.RunbookConfig{
+		Steps:   map[string]*runbookconfigs.Step{},
+		Catches: map[string]*runbookconfigs.Catch{},
+	}
+	ctx := NewEvalContext(EvalContextOpts{Config: config})
+
+	// Set a failed step
+	failedStep := &runbookruntime.Step{
+		Name:  "deploy",
+		Index: 2,
+	}
+	failDiags := tfdiags.Diagnostics{}.Append(tfdiags.Sourceless(
+		tfdiags.Error,
+		"Deployment timed out",
+		"The deployment exceeded the 300s timeout.",
+	))
+	ctx.SetFailedStep(failedStep, failDiags)
+
+	// Evaluate failed_step.name
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.name`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value.AsString() != "deploy" {
+		t.Fatalf("expected 'deploy', got %#v", value)
+	}
+
+	// Evaluate failed_step.error_summary
+	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.error_summary`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value.AsString() != "Deployment timed out" {
+		t.Fatalf("expected 'Deployment timed out', got %#v", value)
+	}
+
+	// Evaluate failed_step.error_message
+	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.error_message`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value.AsString() != "The deployment exceeded the 300s timeout." {
+		t.Fatalf("expected detail message, got %#v", value)
+	}
+
+	// Evaluate failed_step.index
+	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.index`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !value.RawEquals(cty.NumberIntVal(2)) {
+		t.Fatalf("expected index 2, got %#v", value)
+	}
+
+	// Clear and verify it's gone
+	ctx.ClearFailedStep()
+	_, diags = ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.name`))
+	if !diags.HasErrors() {
+		t.Fatal("expected error evaluating failed_step after clear")
+	}
+}
+
+func TestEvalContextCatchOutputVariable(t *testing.T) {
+	config := &runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{},
+		Catches: map[string]*runbookconfigs.Catch{
+			"notify": {
+				Name:    "notify",
+				Outputs: []*configs.Output{{Name: "sent"}},
+			},
+		},
+	}
+	ctx := NewEvalContext(EvalContextOpts{Config: config})
+
+	// Before catch fires, output is null
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `catch.notify.sent`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !value.IsNull() {
+		t.Fatalf("expected null before catch fires, got %#v", value)
+	}
+
+	// Set catch output
+	ctx.SetCatchOutput("notify", "sent", cty.True)
+
+	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `catch.notify.sent`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if value != cty.True {
+		t.Fatalf("expected true after catch fires, got %#v", value)
+	}
+}
+
+func TestEvalContextFailedStepOutputsAreNull(t *testing.T) {
+	config := &runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"deploy": {
+				Name:    "deploy",
+				Outputs: []*configs.Output{{Name: "url"}, {Name: "status"}},
+			},
+		},
+		Catches: map[string]*runbookconfigs.Catch{},
+	}
+	ctx := NewEvalContext(EvalContextOpts{Config: config})
+
+	// Ensure step exists and mark it failed
+	ctx.EnsureStep("deploy", config.Steps["deploy"], nil)
+	ctx.SetStepStatus("deploy", runbookruntime.StepStatusFailed, "timed out")
+
+	// Outputs should be null, not unknown
+	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `step.deploy.url`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !value.IsNull() {
+		t.Fatalf("expected null for failed step output, got %#v", value)
+	}
+
+	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `step.deploy.status`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	if !value.IsNull() {
+		t.Fatalf("expected null for failed step output, got %#v", value)
+	}
 }

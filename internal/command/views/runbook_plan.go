@@ -142,6 +142,10 @@ func (v *RunbookPlanHuman) PlannedStep(step *runbookruntime.Step)          {}
 func (v *RunbookPlanHuman) ExecutingStep(step *runbookruntime.Step)        {}
 func (v *RunbookPlanHuman) ExecutedStep(step *runbookruntime.Step)         {}
 func (v *RunbookPlanHuman) ActionEvent(event runbookgraph.ActionExecEvent) {}
+func (v *RunbookPlanHuman) CatchTriggered(catchName, failedStepName string) {}
+func (v *RunbookPlanHuman) CatchCompleted(catchName, failedStepName string) {}
+func (v *RunbookPlanHuman) CatchSkipped(catchName, reason string)           {}
+func (v *RunbookPlanHuman) CatchFailed(catchName, err string)               {}
 func (v *RunbookPlanHuman) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	entry := runbookPlanInfo{
 		StepName:  info.StepName,
@@ -183,6 +187,10 @@ func (v *RunbookPlanJSON) PlannedStep(step *runbookruntime.Step)          {}
 func (v *RunbookPlanJSON) ExecutingStep(step *runbookruntime.Step)        {}
 func (v *RunbookPlanJSON) ExecutedStep(step *runbookruntime.Step)         {}
 func (v *RunbookPlanJSON) ActionEvent(event runbookgraph.ActionExecEvent) {}
+func (v *RunbookPlanJSON) CatchTriggered(catchName, failedStepName string) {}
+func (v *RunbookPlanJSON) CatchCompleted(catchName, failedStepName string) {}
+func (v *RunbookPlanJSON) CatchSkipped(catchName, reason string)           {}
+func (v *RunbookPlanJSON) CatchFailed(catchName, err string)               {}
 func (v *RunbookPlanJSON) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	entry := runbookPlanInfo{
 		StepName:  info.StepName,
@@ -229,6 +237,10 @@ func (v *RunbookShowJSON) PlannedStep(step *runbookruntime.Step)          {}
 func (v *RunbookShowJSON) ExecutingStep(step *runbookruntime.Step)        {}
 func (v *RunbookShowJSON) ExecutedStep(step *runbookruntime.Step)         {}
 func (v *RunbookShowJSON) ActionEvent(event runbookgraph.ActionExecEvent) {}
+func (v *RunbookShowJSON) CatchTriggered(catchName, failedStepName string) {}
+func (v *RunbookShowJSON) CatchCompleted(catchName, failedStepName string) {}
+func (v *RunbookShowJSON) CatchSkipped(catchName, reason string)           {}
+func (v *RunbookShowJSON) CatchFailed(catchName, err string)               {}
 func (v *RunbookShowJSON) PlannedStepInfo(info runbookgraph.StepPlanInfo) {
 	entry := runbookPlanInfo{
 		StepName:  info.StepName,

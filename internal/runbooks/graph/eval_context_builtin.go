@@ -53,6 +53,12 @@ type BuiltinEvalContext struct {
 	steps     map[string]*stepEvalState
 	stepOrder []string
 	stepsLock sync.RWMutex
+
+	// Catch-all support
+	failedStep      *runbookruntime.Step
+	failedStepDiags tfdiags.Diagnostics
+	catchOutputs    map[string]map[string]cty.Value // catch name -> output name -> value
+	catchLock       sync.RWMutex
 }
 
 type EvalContextOpts struct {
@@ -869,6 +875,27 @@ func (ec *BuiltinEvalContext) expressionVariablesForInstance(stepName string, in
 	}
 	for name, entries := range stepGroups {
 		if len(entries) == 1 && entries[0].instance.InstanceKey == terraformaddrs.NoKey {
+			// If step is failed/skipped, produce null outputs
+			if entries[0].state.runtime != nil &&
+				(entries[0].state.runtime.Status == runbookruntime.StepStatusFailed ||
+					entries[0].state.runtime.Status == runbookruntime.StepStatusSkipped) {
+				nullOutputs := map[string]cty.Value{}
+				if ec.config != nil {
+					if stepCfg, ok := ec.config.Steps[name]; ok {
+						for _, output := range stepCfg.Outputs {
+							if output != nil {
+								nullOutputs[output.Name] = cty.NullVal(cty.DynamicPseudoType)
+							}
+						}
+					}
+				}
+				if len(nullOutputs) == 0 {
+					stepAttrs[name] = cty.EmptyObjectVal
+				} else {
+					stepAttrs[name] = cty.ObjectVal(nullOutputs)
+				}
+				continue
+			}
 			outputs := map[string]cty.Value{}
 			for outputName, value := range entries[0].state.outputs {
 				outputs[outputName] = value
@@ -906,6 +933,12 @@ func (ec *BuiltinEvalContext) expressionVariablesForInstance(stepName string, in
 	stepVals := cty.ObjectVal(stepAttrs)
 	variables["step"] = stepVals
 	variables["workspace"] = ec.workspaceVariables()
+
+	// Catch-all support: inject failed_step and catch namespaces
+	if ec.failedStep != nil {
+		variables["failed_step"] = ec.buildFailedStepValue()
+	}
+	variables["catch"] = ec.catchVariables()
 
 	return variables
 }
@@ -1435,4 +1468,172 @@ func cloneRuntimeStepValue(step *runbookruntime.Step) *runbookruntime.Step {
 		copy.RepetitionData = &repetitionCopy
 	}
 	return &copy
+}
+
+// --- Catch-all support ---
+
+// SetFailedStep sets the currently failed step and its diagnostics on the context.
+// This makes `failed_step.*` available in HCL expression evaluation within catch blocks.
+func (ec *BuiltinEvalContext) SetFailedStep(step *runbookruntime.Step, diags tfdiags.Diagnostics) {
+	ec.catchLock.Lock()
+	defer ec.catchLock.Unlock()
+	ec.failedStep = step
+	ec.failedStepDiags = diags
+}
+
+// ClearFailedStep removes the failed step from the context.
+func (ec *BuiltinEvalContext) ClearFailedStep() {
+	ec.catchLock.Lock()
+	defer ec.catchLock.Unlock()
+	ec.failedStep = nil
+	ec.failedStepDiags = nil
+}
+
+// FailedStep returns the currently failed step and its diagnostics, if any.
+func (ec *BuiltinEvalContext) FailedStep() (*runbookruntime.Step, tfdiags.Diagnostics) {
+	ec.catchLock.RLock()
+	defer ec.catchLock.RUnlock()
+	return ec.failedStep, ec.failedStepDiags
+}
+
+// SetCatchOutput stores an output value produced by a catch block.
+func (ec *BuiltinEvalContext) SetCatchOutput(catchName, outputName string, value cty.Value) {
+	ec.catchLock.Lock()
+	defer ec.catchLock.Unlock()
+	if ec.catchOutputs == nil {
+		ec.catchOutputs = make(map[string]map[string]cty.Value)
+	}
+	if ec.catchOutputs[catchName] == nil {
+		ec.catchOutputs[catchName] = make(map[string]cty.Value)
+	}
+	ec.catchOutputs[catchName][outputName] = value
+}
+
+// CatchOutput retrieves an output value from a catch block.
+func (ec *BuiltinEvalContext) CatchOutput(catchName, outputName string) (cty.Value, bool) {
+	ec.catchLock.RLock()
+	defer ec.catchLock.RUnlock()
+	if ec.catchOutputs == nil {
+		return cty.NilVal, false
+	}
+	outputs, ok := ec.catchOutputs[catchName]
+	if !ok {
+		return cty.NilVal, false
+	}
+	val, ok := outputs[outputName]
+	return val, ok
+}
+
+// buildFailedStepValue constructs the cty.ObjectVal for the failed_step variable.
+func (ec *BuiltinEvalContext) buildFailedStepValue() cty.Value {
+	ec.catchLock.RLock()
+	step := ec.failedStep
+	diags := ec.failedStepDiags
+	ec.catchLock.RUnlock()
+
+	if step == nil {
+		return cty.EmptyObjectVal
+	}
+
+	instanceKey := ""
+	if step.InstanceKey != nil {
+		instanceKey = step.InstanceKey.String()
+	}
+
+	// Build diagnostics list
+	diagsList := make([]cty.Value, 0)
+	var firstSummary, firstDetail string
+	for _, diag := range diags {
+		if diag.Severity() != tfdiags.Error {
+			continue
+		}
+		desc := diag.Description()
+		if firstSummary == "" {
+			firstSummary = desc.Summary
+			firstDetail = desc.Detail
+		}
+		sourceFile := ""
+		sourceLine := 0
+		if src := diag.Source(); src.Subject != nil {
+			sourceFile = src.Subject.Filename
+			sourceLine = src.Subject.Start.Line
+		}
+		diagsList = append(diagsList, cty.ObjectVal(map[string]cty.Value{
+			"severity":    cty.StringVal("error"),
+			"summary":     cty.StringVal(desc.Summary),
+			"detail":      cty.StringVal(desc.Detail),
+			"source_file": cty.StringVal(sourceFile),
+			"source_line": cty.NumberIntVal(int64(sourceLine)),
+		}))
+	}
+
+	var diagnosticsVal cty.Value
+	if len(diagsList) > 0 {
+		diagnosticsVal = cty.ListVal(diagsList)
+	} else {
+		diagnosticsVal = cty.ListValEmpty(cty.Object(map[string]cty.Type{
+			"severity":    cty.String,
+			"summary":     cty.String,
+			"detail":      cty.String,
+			"source_file": cty.String,
+			"source_line": cty.Number,
+		}))
+	}
+
+	outputs := step.Outputs
+	if outputs == cty.NilVal {
+		outputs = cty.EmptyObjectVal
+	}
+
+	return cty.ObjectVal(map[string]cty.Value{
+		"name":          cty.StringVal(step.Name),
+		"instance_key":  cty.StringVal(instanceKey),
+		"index":         cty.NumberIntVal(int64(step.Index)),
+		"outputs":       outputs,
+		"error_message": cty.StringVal(firstDetail),
+		"error_summary": cty.StringVal(firstSummary),
+		"diagnostics":   diagnosticsVal,
+	})
+}
+
+// catchVariables builds the catch.* namespace for expression evaluation.
+func (ec *BuiltinEvalContext) catchVariables() cty.Value {
+	ec.catchLock.RLock()
+	defer ec.catchLock.RUnlock()
+
+	if len(ec.catchOutputs) == 0 && ec.config != nil && len(ec.config.Catches) == 0 {
+		return cty.EmptyObjectVal
+	}
+
+	catchAttrs := map[string]cty.Value{}
+
+	// Pre-fill with nulls for declared catches
+	if ec.config != nil {
+		for name, catch := range ec.config.Catches {
+			outputs := map[string]cty.Value{}
+			for _, output := range catch.Outputs {
+				if output != nil {
+					outputs[output.Name] = cty.NullVal(cty.DynamicPseudoType)
+				}
+			}
+			if len(outputs) == 0 {
+				catchAttrs[name] = cty.EmptyObjectVal
+			} else {
+				catchAttrs[name] = cty.ObjectVal(outputs)
+			}
+		}
+	}
+
+	// Override with actual values
+	for catchName, outputs := range ec.catchOutputs {
+		if len(outputs) == 0 {
+			continue
+		}
+		catchAttrs[catchName] = cty.ObjectVal(copyValueMap(outputs))
+	}
+
+	if len(catchAttrs) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return cty.ObjectVal(catchAttrs)
 }

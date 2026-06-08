@@ -234,6 +234,26 @@ func (v *RunbookExecuteHuman) ExecutedStep(step *runbookruntime.Step) {
 	}
 }
 
+func (v *RunbookExecuteHuman) CatchTriggered(catchName, failedStepName string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.view.streams.Println(v.view.colorize.Color(fmt.Sprintf("  [yellow]⚡ catch %q triggered[reset]", catchName)))
+}
+
+func (v *RunbookExecuteHuman) CatchCompleted(catchName, failedStepName string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.view.streams.Println(v.view.colorize.Color(fmt.Sprintf("  [yellow]⚡ catch %q completed[reset]", catchName)))
+}
+
+func (v *RunbookExecuteHuman) CatchSkipped(catchName, reason string) {}
+
+func (v *RunbookExecuteHuman) CatchFailed(catchName, err string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.view.streams.Println(v.view.colorize.Color(fmt.Sprintf("  [red]⚠ catch %q failed: %s[reset]", catchName, err)))
+}
+
 func (v *RunbookExecuteHuman) Executed(plan *runbookgraph.Plan) {
 	v.mu.Lock()
 	v.stopSpinnerLoopLocked()
@@ -314,6 +334,16 @@ func (v *RunbookExecuteJSON) ExecutedStep(step *runbookruntime.Step) {
 		return
 	}
 	v.events = append(v.events, map[string]any{"step_name": step.Name, "step_index": step.Index, "status": string(step.Status), "reason": step.SkipReason})
+}
+func (v *RunbookExecuteJSON) CatchTriggered(catchName, failedStepName string) {
+	v.events = append(v.events, map[string]any{"type": "catch_triggered", "catch": catchName, "failed_step": failedStepName})
+}
+func (v *RunbookExecuteJSON) CatchCompleted(catchName, failedStepName string) {
+	v.events = append(v.events, map[string]any{"type": "catch_completed", "catch": catchName, "failed_step": failedStepName})
+}
+func (v *RunbookExecuteJSON) CatchSkipped(catchName, reason string) {}
+func (v *RunbookExecuteJSON) CatchFailed(catchName, err string) {
+	v.events = append(v.events, map[string]any{"type": "catch_failed", "catch": catchName, "error": err})
 }
 func (v *RunbookExecuteJSON) Executed(plan *runbookgraph.Plan) {
 	sort.SliceStable(v.events, func(i, j int) bool {

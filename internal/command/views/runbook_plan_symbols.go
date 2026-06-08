@@ -17,6 +17,7 @@ type runbookPlanSymbols struct {
 	Read      string // Read operation (data/list)
 	Condition string // Condition (pre/post)
 	Output    string // Output value
+	Lightning string // Catch block indicator
 
 	// Colors (colorstring format strings, empty when no-color)
 	ColorStep      string // For step names in execution graph
@@ -41,6 +42,7 @@ func unicodePlanSymbols() runbookPlanSymbols {
 		Read:           "⇐",
 		Condition:      "◇",
 		Output:         "↳",
+		Lightning:      "⚡",
 		ColorStep:      "[bold][green]",
 		ColorSkip:      "[light_gray]",
 		ColorAction:    "[yellow]",
@@ -64,6 +66,7 @@ func asciiPlanSymbols() runbookPlanSymbols {
 		Read:      "<=",
 		Condition: "<>",
 		Output:    "->",
+		Lightning: "!",
 		// No colors in ASCII mode
 		ColorStep:      "",
 		ColorSkip:      "",

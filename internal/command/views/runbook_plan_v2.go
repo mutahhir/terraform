@@ -74,6 +74,15 @@ func renderRunbookPlanHumanV2(view *View, plan *runbookgraph.Plan, viewPlan runb
 		view.streams.Println(planLeftPad + planSeparator(sym))
 	}
 
+	// Error handlers section (catch blocks)
+	if plan != nil && plan.Config != nil && len(plan.Config.Catches) > 0 {
+		view.streams.Println("")
+		view.streams.Println(c.Color(planLeftPad + sym.ColorHeader + "Error handlers:" + sym.ColorReset))
+		view.streams.Println("")
+		renderCatchBlocks(view, plan, sym)
+		view.streams.Println(planLeftPad + planSeparator(sym))
+	}
+
 	// Summary line
 	reads, lists, executes := countOperations(viewPlan, infoByStep)
 	prefix := "Plan"
@@ -516,4 +525,57 @@ func pluralize(word string, count int) string {
 		return word
 	}
 	return word + "s"
+}
+
+// renderCatchBlocks renders the error handlers section of plan output.
+func renderCatchBlocks(view *View, plan *runbookgraph.Plan, sym runbookPlanSymbols) {
+	if plan == nil || plan.Config == nil {
+		return
+	}
+
+	c := view.colorize
+	catches := runbookgraph.SortedCatchNames(plan.Config)
+
+	for _, name := range catches {
+		catch := plan.Config.Catches[name]
+		if catch == nil {
+			continue
+		}
+
+		// Catch name line
+		view.streams.Println(c.Color(fmt.Sprintf("%s    [yellow]%s catch %q[reset]", planLeftPad, sym.Lightning, name)))
+
+		// Trigger description
+		trigger := "any step failure"
+		if len(catch.Preconditions) > 0 {
+			trigger = fmt.Sprintf("%d precondition(s)", len(catch.Preconditions))
+		}
+		view.streams.Println(fmt.Sprintf("%s        Triggers: %s", planLeftPad, trigger))
+
+		// Actions summary
+		var ops []string
+		for _, action := range catch.Actions {
+			ops = append(ops, fmt.Sprintf("action.%s.%s", action.Type, action.Name))
+		}
+		for _, exec := range catch.Executions {
+			for _, op := range exec.Operations {
+				switch op.Type {
+				case "read":
+					ops = append(ops, "read_datasource")
+				case "invoke_action":
+					// Already counted via actions
+				case "wait":
+					ops = append(ops, "wait")
+				}
+			}
+		}
+		if len(catch.Outputs) > 0 {
+			ops = append(ops, fmt.Sprintf("%d output(s)", len(catch.Outputs)))
+		}
+		if len(ops) > 0 {
+			view.streams.Println(fmt.Sprintf("%s        Actions:  %s", planLeftPad, strings.Join(ops, ", ")))
+		}
+
+		view.streams.Println("")
+	}
 }

@@ -227,3 +227,83 @@ func mustParseTraversal(t *testing.T, src string) hcl.Traversal {
 	}
 	return traversal
 }
+
+func TestParseRefFailedStep(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `failed_step.name`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	_, ok := ref.Subject.(FailedStep)
+	if !ok {
+		t.Fatalf("expected FailedStep, got %T", ref.Subject)
+	}
+	if len(ref.Remaining) != 1 {
+		t.Fatalf("expected 1 remaining traversal for .name, got %d", len(ref.Remaining))
+	}
+}
+
+func TestParseRefFailedStepDiagnostics(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `failed_step.diagnostics`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	_, ok := ref.Subject.(FailedStep)
+	if !ok {
+		t.Fatalf("expected FailedStep, got %T", ref.Subject)
+	}
+	if len(ref.Remaining) != 1 {
+		t.Fatalf("expected 1 remaining traversal, got %d", len(ref.Remaining))
+	}
+}
+
+func TestParseRefFailedStepBare(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `failed_step`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	_, ok := ref.Subject.(FailedStep)
+	if !ok {
+		t.Fatalf("expected FailedStep, got %T", ref.Subject)
+	}
+	if len(ref.Remaining) != 0 {
+		t.Fatalf("expected 0 remaining traversal, got %d", len(ref.Remaining))
+	}
+}
+
+func TestParseRefCatchOutput(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `catch.rollback.success`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	catchOut, ok := ref.Subject.(CatchOutput)
+	if !ok {
+		t.Fatalf("expected CatchOutput, got %T", ref.Subject)
+	}
+	if catchOut.CatchName != "rollback" {
+		t.Errorf("expected catch name 'rollback', got %q", catchOut.CatchName)
+	}
+	if catchOut.OutputName != "success" {
+		t.Errorf("expected output name 'success', got %q", catchOut.OutputName)
+	}
+}
+
+func TestParseRefCatchAddr(t *testing.T) {
+	ref, diags := ParseRef(mustParseTraversal(t, `catch.notify`))
+	if diags.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %s", diags.Err())
+	}
+	catchAddr, ok := ref.Subject.(CatchAddr)
+	if !ok {
+		t.Fatalf("expected CatchAddr, got %T", ref.Subject)
+	}
+	if catchAddr.Name != "notify" {
+		t.Errorf("expected catch name 'notify', got %q", catchAddr.Name)
+	}
+}
+
+func TestParseRefCatchMissingName(t *testing.T) {
+	_, diags := ParseRef(mustParseTraversal(t, `catch`))
+	if !diags.HasErrors() {
+		t.Fatal("expected diagnostics but got none")
+	}
+}

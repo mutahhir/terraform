@@ -69,7 +69,13 @@ func walkGraph(graph *terraform.Graph, ctx EvalContext, op walkOperation) tfdiag
 				markVertexSkipped(ctx, vertex, graph)
 				return nil
 			}
-			return executable.Execute(ctx, op)
+			execDiags := executable.Execute(ctx, op)
+			if execDiags.HasErrors() && op == walkOperationExecute {
+				if step, ok := stepForVertex(ctx, vertex); ok && step != nil {
+					executeCatchBlocks(ctx, step, execDiags)
+				}
+			}
+			return execDiags
 		}
 
 		return nil
@@ -108,7 +114,13 @@ func walkSubGraph(graph *terraform.Graph, ctx EvalContext, op walkOperation) tfd
 			return nil
 		}
 
-		return executable.Execute(ctx, op)
+		execDiags := executable.Execute(ctx, op)
+		if execDiags.HasErrors() && op == walkOperationExecute {
+			if step, ok := stepForVertex(ctx, vertex); ok && step != nil {
+				executeCatchBlocks(ctx, step, execDiags)
+			}
+		}
+		return execDiags
 	})
 }
 

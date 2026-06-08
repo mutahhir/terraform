@@ -26,6 +26,10 @@ type UI interface {
 	ExecutingStep(*runbookruntime.Step)
 	ExecutedStep(*runbookruntime.Step)
 	ActionEvent(ActionExecEvent)
+	CatchTriggered(catchName string, failedStepName string)
+	CatchCompleted(catchName string, failedStepName string)
+	CatchSkipped(catchName string, reason string)
+	CatchFailed(catchName string, err string)
 }
 
 // Hook allows external observers to monitor and control runbook execution.
@@ -37,6 +41,10 @@ type Hook interface {
 	ExecutingStep(*runbookruntime.Step) (HookAction, error)
 	ExecutedStep(*runbookruntime.Step) (HookAction, error)
 	ActionEvent(ActionExecEvent) (HookAction, error)
+	CatchTriggered(catchName string, failedStepName string) (HookAction, error)
+	CatchCompleted(catchName string, failedStepName string) (HookAction, error)
+	CatchSkipped(catchName string, reason string) (HookAction, error)
+	CatchFailed(catchName string, err string) (HookAction, error)
 }
 
 type StepPlanInfo struct {
