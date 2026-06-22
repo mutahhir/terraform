@@ -933,6 +933,7 @@ func (ec *BuiltinEvalContext) expressionVariablesForInstance(stepName string, in
 	stepVals := cty.ObjectVal(stepAttrs)
 	variables["step"] = stepVals
 	variables["workspace"] = ec.workspaceVariables()
+	variables["action"] = ec.stepLocalActionVariables(stepName)
 
 	// Catch-all support: inject failed_step and catch namespaces
 	if ec.failedStep != nil {
@@ -941,6 +942,38 @@ func (ec *BuiltinEvalContext) expressionVariablesForInstance(stepName string, in
 	variables["catch"] = ec.catchVariables()
 
 	return variables
+}
+
+// stepLocalActionVariables builds the top-level `action` namespace for a
+// step's own expression scope (outputs, pre/postconditions). It exposes the
+// step's declared actions as action.<type>.<name>. Action result attributes
+// are not known until the action is invoked, so each action resolves to an
+// unknown (dynamic) value; attribute access such as
+// action.<type>.<name>.build_id therefore yields an unknown value and defers
+// any condition that depends on it, matching the existing deferred-condition
+// pattern.
+func (ec *BuiltinEvalContext) stepLocalActionVariables(stepName string) cty.Value {
+	if ec.config == nil {
+		return cty.EmptyObjectVal
+	}
+	step, ok := ec.config.Steps[stepName]
+	if !ok || step == nil {
+		return cty.EmptyObjectVal
+	}
+	actions := map[string]map[string]cty.Value{}
+	for _, action := range step.Actions {
+		if action == nil {
+			continue
+		}
+		if actions[action.Type] == nil {
+			actions[action.Type] = map[string]cty.Value{}
+		}
+		actions[action.Type][action.Name] = cty.DynamicVal
+	}
+	if len(actions) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return nestedObjectValue(actions)
 }
 
 func instanceObjectKey(key terraformaddrs.InstanceKey) string {

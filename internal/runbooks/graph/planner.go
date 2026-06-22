@@ -75,6 +75,33 @@ func (p *Plan) OutputValues() (map[string]cty.Value, tfdiags.Diagnostics) {
 	return ret, diags
 }
 
+// newPlanEvalContext builds the BuiltinEvalContext shared by the runbook plan
+// producers (BuildPlan from source and ImportSavedPlan from a saved file). It
+// wires input variables and shared provider instances identically for both
+// producers so they cannot silently diverge in how the evaluation context is
+// constructed.
+//
+// Provider *factories* (used to mint fresh per-step provider instances during
+// parallel execution) are intentionally not registered here. They are
+// registered at execute time by ExecutePlan, which is the single point that
+// needs them and the only place guaranteed to run for every producer.
+func newPlanEvalContext(ctxOpts EvalContextOpts, variables terraform.InputValues, providerFactories map[terraformaddrs.Provider]providers.Factory) (*BuiltinEvalContext, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	evalCtx := NewEvalContext(ctxOpts)
+	for name, value := range variables {
+		evalCtx.SetVariable(name, value)
+	}
+	for providerType, factory := range providerFactories {
+		provider, err := factory()
+		if err != nil {
+			diags = diags.Append(err)
+			continue
+		}
+		evalCtx.SetProvider(providerType, provider)
+	}
+	return evalCtx, diags
+}
+
 func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	if config == nil {
@@ -82,24 +109,21 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 	}
 
 	validateOpts := &ValidateOpts{}
-	evalCtx := NewEvalContext(EvalContextOpts{StopCtx: optsStopCtx(opts), Config: config, WorkspaceState: optsWorkspaceState(opts), UI: optsUI(opts), Hooks: optsHooks(opts)})
+	var inputValues terraform.InputValues
+	var providerFactories map[terraformaddrs.Provider]providers.Factory
 	if opts != nil {
-		for name, value := range opts.InputValues {
-			evalCtx.SetVariable(name, value)
-		}
-		for providerType, factory := range opts.Providers {
-			provider, err := factory()
-			if err != nil {
-				diags = diags.Append(err)
-				continue
-			}
-			evalCtx.SetProvider(providerType, provider)
-		}
-		evalCtx.SetProviderFactories(opts.Providers)
-	}
-	if opts != nil {
+		inputValues = opts.InputValues
+		providerFactories = opts.Providers
 		validateOpts.Providers = opts.Providers
 	}
+	evalCtx, ctxDiags := newPlanEvalContext(EvalContextOpts{
+		StopCtx:        optsStopCtx(opts),
+		Config:         config,
+		WorkspaceState: optsWorkspaceState(opts),
+		UI:             optsUI(opts),
+		Hooks:          optsHooks(opts),
+	}, inputValues, providerFactories)
+	diags = diags.Append(ctxDiags)
 	diags = diags.Append(ValidateWithContext(config, evalCtx, validateOpts))
 	diags = diags.Append(validateStepDeclarations(config, evalCtx, validateOpts))
 	diags = diags.Append(validateStepReferences(config))
@@ -140,6 +164,17 @@ func ExecutePlan(plan *Plan, opts *ExecuteOpts) tfdiags.Diagnostics {
 	if opts != nil {
 		evalCtx.ui = optsUI(opts)
 		evalCtx.hooks = optsHooks(opts)
+		// Register provider factories at execute time so per-step fresh
+		// provider instantiation behaves identically regardless of which
+		// producer (BuildPlan from source or ImportSavedPlan from a saved
+		// file) built this plan. ExecutePlan is the sole registrar of
+		// factories: producers intentionally do not set them (plan-time never
+		// mints fresh instances). ExecuteOpts.Providers must therefore be
+		// populated for per-step provider isolation; the nil check only avoids
+		// overwriting with an empty map when a caller passes no providers.
+		if opts.Providers != nil {
+			evalCtx.SetProviderFactories(opts.Providers)
+		}
 	}
 	evalCtx.stepsLock.Lock()
 	for _, step := range plan.Steps {

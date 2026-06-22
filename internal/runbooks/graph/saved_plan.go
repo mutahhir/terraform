@@ -70,20 +70,18 @@ func ImportSavedPlan(config *runbookconfigs.RunbookConfig, saved *runbookplanfil
 	if saved == nil {
 		return nil, diags.Append(tfdiags.Sourceless(tfdiags.Error, "Missing runbook saved plan", "A saved runbook plan file is required."))
 	}
-	evalCtx := NewEvalContext(EvalContextOpts{Config: config, WorkspaceState: workspaceState})
+	inputValues := make(terraform.InputValues, len(saved.Variables))
 	for name, raw := range saved.Variables {
 		val, err := raw.Decode(cty.DynamicPseudoType)
 		if err != nil {
 			return nil, diags.Append(err)
 		}
-		evalCtx.SetVariable(name, &terraform.InputValue{Value: val})
+		inputValues[name] = &terraform.InputValue{Value: val}
 	}
-	for providerType, factory := range providersMap {
-		provider, err := factory()
-		if err != nil {
-			return nil, diags.Append(err)
-		}
-		evalCtx.SetProvider(providerType, provider)
+	evalCtx, ctxDiags := newPlanEvalContext(EvalContextOpts{Config: config, WorkspaceState: workspaceState}, inputValues, providersMap)
+	diags = diags.Append(ctxDiags)
+	if diags.HasErrors() {
+		return nil, diags
 	}
 	for _, savedStep := range saved.Steps {
 		if savedStep == nil {
