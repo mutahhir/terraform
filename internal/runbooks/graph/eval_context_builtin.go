@@ -46,7 +46,7 @@ type BuiltinEvalContext struct {
 	variables     terraform.InputValues
 	variablesLock sync.RWMutex
 
-	providers          map[string]providers.Interface // keyed by AbsProviderConfig.String()
+	providers          map[string]*providerEntry // keyed by AbsProviderConfig.String()
 	providersLock      sync.RWMutex
 	providerFactories  map[terraformaddrs.Provider]providers.Factory
 
@@ -54,11 +54,13 @@ type BuiltinEvalContext struct {
 	stepOrder []string
 	stepsLock sync.RWMutex
 
-	// Catch-all support
-	failedStep      *runbookruntime.Step
-	failedStepDiags tfdiags.Diagnostics
-	catchOutputs    map[string]map[string]cty.Value // catch name -> output name -> value
-	catchLock       sync.RWMutex
+	// Catch-all support. The failed step for catch evaluation is no longer held
+	// here as a shared slot; it is threaded per catch-evaluation through the
+	// EvaluateCatch* entry points so concurrent step failures cannot stomp each
+	// other's failed_step (hc-terraform-wdc.4). catchOutputs (keyed by catch
+	// name) remains global by design.
+	catchOutputs map[string]map[string]cty.Value // catch name -> output name -> value
+	catchLock    sync.RWMutex
 }
 
 type EvalContextOpts struct {
@@ -86,7 +88,7 @@ func NewEvalContext(opts EvalContextOpts) *BuiltinEvalContext {
 		planInfo:          make([]StepPlanInfo, 0),
 		variables:         make(terraform.InputValues),
 		variablesLock:     sync.RWMutex{},
-		providers:         make(map[string]providers.Interface),
+		providers:         make(map[string]*providerEntry),
 		providersLock:     sync.RWMutex{},
 		steps:             make(map[string]*stepEvalState),
 		stepOrder:         make([]string, 0),
@@ -322,7 +324,7 @@ func (ec *BuiltinEvalContext) SetProviderForConfig(addr terraformaddrs.AbsProvid
 	ec.providersLock.Lock()
 	defer ec.providersLock.Unlock()
 
-	ec.providers[addr.String()] = provider
+	ec.providers[addr.String()] = &providerEntry{instance: provider}
 }
 
 // Provider looks up a provider by type, returning the default (no-alias)
@@ -342,21 +344,28 @@ func (ec *BuiltinEvalContext) ProviderForConfig(addr terraformaddrs.AbsProviderC
 	ec.providersLock.RLock()
 	defer ec.providersLock.RUnlock()
 
-	// Exact match first
-	if provider, ok := ec.providers[addr.String()]; ok {
-		return provider, true
+	if entry, ok := ec.providerEntryForConfigLocked(addr); ok {
+		return entry.instance, true
 	}
+	return nil, false
+}
 
-	// Fallback: if no alias was requested, try to find any provider of this type
-	// by checking the default key format (provider type with no alias)
+// providerEntryForConfigLocked resolves the pooled provider entry for a config
+// address. Callers must hold providersLock (read or write). It performs an
+// exact-address match first, then, if no alias was requested, falls back to any
+// configuration of the same provider type (backward compatibility for callers
+// that don't track aliases).
+func (ec *BuiltinEvalContext) providerEntryForConfigLocked(addr terraformaddrs.AbsProviderConfig) (*providerEntry, bool) {
+	if entry, ok := ec.providers[addr.String()]; ok && entry != nil {
+		return entry, true
+	}
 	if addr.Alias == "" {
-		for key, provider := range ec.providers {
-			if strings.Contains(key, addr.Provider.String()) {
-				return provider, true
+		for key, entry := range ec.providers {
+			if entry != nil && strings.Contains(key, addr.Provider.String()) {
+				return entry, true
 			}
 		}
 	}
-
 	return nil, false
 }
 
@@ -366,18 +375,93 @@ func (ec *BuiltinEvalContext) SetProviderFactories(factories map[terraformaddrs.
 	ec.providerFactories = factories
 }
 
-// NewProviderInstance creates a fresh provider instance from the factory.
-// This is used during execution to avoid sharing a single provider instance
-// across parallel steps.
-func (ec *BuiltinEvalContext) NewProviderInstance(providerType terraformaddrs.Provider) (providers.Interface, error) {
-	if ec.providerFactories == nil {
-		return nil, fmt.Errorf("no provider factory registered for %s", providerType.ForDisplay())
-	}
-	factory, ok := ec.providerFactories[providerType]
+// providerEntry holds a single pooled provider instance together with a guard
+// that ensures the instance is ConfigureProvider'd exactly once, no matter how
+// many parallel graph-walk goroutines request it. This is what makes a single
+// shared instance safe to call concurrently: configuration happens once on
+// first use, and every subsequent caller receives the already-configured
+// instance with no re-Configure (fixing hc-terraform-wdc.3).
+type providerEntry struct {
+	instance    providers.Interface
+	configOnce  sync.Once
+	configDiags tfdiags.Diagnostics
+}
+
+// ConfiguredProviderForConfig returns the shared, pooled provider instance for
+// the given configuration address, invoking the supplied configure function at
+// most once across all goroutines to configure that instance. Subsequent
+// callers receive the already-configured instance and the diagnostics produced
+// by the single configure call.
+//
+// The configure function is run without holding providersLock so that the
+// (potentially blocking) gRPC ConfigureProvider call does not serialize
+// unrelated provider lookups. If no instance is registered for the address and
+// none can be created from a registered factory, a missing-provider diagnostic
+// is returned and configure is not called.
+func (ec *BuiltinEvalContext) ConfiguredProviderForConfig(addr terraformaddrs.AbsProviderConfig, configure func(providers.Interface) tfdiags.Diagnostics) (providers.Interface, tfdiags.Diagnostics) {
+	ec.providersLock.RLock()
+	entry, ok := ec.providerEntryForConfigLocked(addr)
+	ec.providersLock.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("no provider factory registered for %s", providerType.ForDisplay())
+		entry, ok = ec.ensureProviderEntry(addr)
 	}
-	return factory()
+	if !ok || entry == nil || entry.instance == nil {
+		return nil, missingProviderDiagnostic(addr.Provider, nil)
+	}
+	entry.configOnce.Do(func() {
+		entry.configDiags = configure(entry.instance)
+	})
+	return entry.instance, entry.configDiags
+}
+
+// ensureProviderEntry lazily creates a pooled provider entry from a registered
+// factory when one has not already been pre-registered by a producer. This is a
+// safety net: both runbook plan producers normally pre-register one shared
+// instance per provider type via SetProvider, so this path is only reached if a
+// configuration address is requested that was not pre-registered.
+func (ec *BuiltinEvalContext) ensureProviderEntry(addr terraformaddrs.AbsProviderConfig) (*providerEntry, bool) {
+	ec.providersLock.Lock()
+	defer ec.providersLock.Unlock()
+
+	if entry, ok := ec.providerEntryForConfigLocked(addr); ok {
+		return entry, true
+	}
+	if ec.providerFactories == nil {
+		return nil, false
+	}
+	factory, ok := ec.providerFactories[addr.Provider]
+	if !ok {
+		return nil, false
+	}
+	instance, err := factory()
+	if err != nil || instance == nil {
+		return nil, false
+	}
+	entry := &providerEntry{instance: instance}
+	ec.providers[addr.String()] = entry
+	return entry, true
+}
+
+// closeProviders closes every pooled provider instance exactly once and clears
+// the pool. It is the teardown counterpart to lazy creation/configuration and
+// is called at the end of the execute walk (and for terminal plans) so that
+// provider plugin subprocesses are reaped rather than leaked
+// (fixing hc-terraform-wdc.2). Safe to call multiple times: the pool is emptied
+// on the first call, so subsequent calls are no-ops.
+func (ec *BuiltinEvalContext) closeProviders() tfdiags.Diagnostics {
+	ec.providersLock.Lock()
+	defer ec.providersLock.Unlock()
+
+	var diags tfdiags.Diagnostics
+	for key, entry := range ec.providers {
+		if entry != nil && entry.instance != nil {
+			if err := entry.instance.Close(); err != nil {
+				diags = diags.Append(err)
+			}
+		}
+		delete(ec.providers, key)
+	}
+	return diags
 }
 
 func (ec *BuiltinEvalContext) EnsureStep(name string, config *runbookconfigs.Step, existing *runbookruntime.Step) *runbookruntime.Step {
@@ -736,6 +820,18 @@ func (ec *BuiltinEvalContext) EvaluateExpr(stepName string, expr hcl.Expression)
 }
 
 func (ec *BuiltinEvalContext) EvaluateExprForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, expr hcl.Expression) (cty.Value, tfdiags.Diagnostics) {
+	return ec.evaluateExprForInstance(stepName, instanceKey, repetitionData, nil, nil, expr)
+}
+
+// EvaluateCatchExpr evaluates an expression within a catch block's scope. The
+// failed step and its diagnostics are threaded in per-evaluation (rather than
+// read from a shared context slot) so that concurrent catch executions each see
+// their own failed_step (hc-terraform-wdc.4).
+func (ec *BuiltinEvalContext) EvaluateCatchExpr(failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics, expr hcl.Expression) (cty.Value, tfdiags.Diagnostics) {
+	return ec.evaluateExprForInstance("", terraformaddrs.NoKey, nil, failedStep, failDiags, expr)
+}
+
+func (ec *BuiltinEvalContext) evaluateExprForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics, expr hcl.Expression) (cty.Value, tfdiags.Diagnostics) {
 	if expr == nil {
 		return cty.NilVal, nil
 	}
@@ -748,7 +844,7 @@ func (ec *BuiltinEvalContext) EvaluateExprForInstance(stepName string, instanceK
 	}
 	scope := &lang.Scope{BaseDir: ".", PureOnly: true}
 	hclCtx := &hcl.EvalContext{
-		Variables: ec.expressionVariablesForInstance(stepName, instanceKey, repetitionData),
+		Variables: ec.expressionVariablesForInstanceWithFailedStep(stepName, instanceKey, repetitionData, failedStep, failDiags),
 		Functions: scope.Functions(),
 	}
 	value, hclDiags := expr.Value(hclCtx)
@@ -760,6 +856,16 @@ func (ec *BuiltinEvalContext) expressionVariables(stepName string) map[string]ct
 }
 
 func (ec *BuiltinEvalContext) expressionVariablesForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData) map[string]cty.Value {
+	return ec.expressionVariablesForInstanceWithFailedStep(stepName, instanceKey, repetitionData, nil, nil)
+}
+
+// expressionVariablesForInstanceWithFailedStep builds the expression scope for a
+// step instance, optionally injecting the `failed_step` namespace from the
+// supplied failed step and diagnostics. A nil failedStep omits the namespace
+// (the normal, non-catch path). The failed step is passed per-evaluation rather
+// than read from a shared field so concurrent catch executions don't interfere
+// (hc-terraform-wdc.4).
+func (ec *BuiltinEvalContext) expressionVariablesForInstanceWithFailedStep(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics) map[string]cty.Value {
 	variables := map[string]cty.Value{}
 
 	varAttrs := map[string]cty.Value{}
@@ -935,9 +1041,10 @@ func (ec *BuiltinEvalContext) expressionVariablesForInstance(stepName string, in
 	variables["workspace"] = ec.workspaceVariables()
 	variables["action"] = ec.stepLocalActionVariables(stepName)
 
-	// Catch-all support: inject failed_step and catch namespaces
-	if ec.failedStep != nil {
-		variables["failed_step"] = ec.buildFailedStepValue()
+	// Catch-all support: inject failed_step and catch namespaces. failed_step is
+	// taken from the per-evaluation argument (nil outside catch blocks).
+	if failedStep != nil {
+		variables["failed_step"] = buildFailedStepValue(failedStep, failDiags)
 	}
 	variables["catch"] = ec.catchVariables()
 
@@ -1297,6 +1404,13 @@ func (ec *BuiltinEvalContext) EvaluateBlock(body hcl.Body, schema *configschema.
 	return ec.EvaluateBlockForInstance("", terraformaddrs.NoKey, nil, body, schema)
 }
 
+// EvaluateCatchBlock decodes an HCL body within a catch block's scope, threading
+// the failed step in per-evaluation so concurrent catch executions each see
+// their own failed_step (hc-terraform-wdc.4).
+func (ec *BuiltinEvalContext) EvaluateCatchBlock(failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics, body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {
+	return ec.evaluateBlockForInstance("", terraformaddrs.NoKey, nil, failedStep, failDiags, body, schema)
+}
+
 func waitVariables(waits map[string]*waitEvalState) cty.Value {
 	if len(waits) == 0 {
 		return cty.EmptyObjectVal
@@ -1344,6 +1458,10 @@ func waitVariablesFromConfig(config *runbookconfigs.RunbookConfig, stepName stri
 }
 
 func (ec *BuiltinEvalContext) EvaluateBlockForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {
+	return ec.evaluateBlockForInstance(stepName, instanceKey, repetitionData, nil, nil, body, schema)
+}
+
+func (ec *BuiltinEvalContext) evaluateBlockForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics, body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {
 	if schema == nil {
 		return cty.EmptyObjectVal, body, nil
 	}
@@ -1357,7 +1475,7 @@ func (ec *BuiltinEvalContext) EvaluateBlockForInstance(stepName string, instance
 
 	funcs := (&lang.Scope{BaseDir: ".", PureOnly: true, ForProvider: true}).Functions()
 	hclCtx := &hcl.EvalContext{
-		Variables: ec.expressionVariablesForInstance(stepName, instanceKey, repetitionData),
+		Variables: ec.expressionVariablesForInstanceWithFailedStep(stepName, instanceKey, repetitionData, failedStep, failDiags),
 		Functions: funcs,
 	}
 	var diags tfdiags.Diagnostics
@@ -1505,30 +1623,6 @@ func cloneRuntimeStepValue(step *runbookruntime.Step) *runbookruntime.Step {
 
 // --- Catch-all support ---
 
-// SetFailedStep sets the currently failed step and its diagnostics on the context.
-// This makes `failed_step.*` available in HCL expression evaluation within catch blocks.
-func (ec *BuiltinEvalContext) SetFailedStep(step *runbookruntime.Step, diags tfdiags.Diagnostics) {
-	ec.catchLock.Lock()
-	defer ec.catchLock.Unlock()
-	ec.failedStep = step
-	ec.failedStepDiags = diags
-}
-
-// ClearFailedStep removes the failed step from the context.
-func (ec *BuiltinEvalContext) ClearFailedStep() {
-	ec.catchLock.Lock()
-	defer ec.catchLock.Unlock()
-	ec.failedStep = nil
-	ec.failedStepDiags = nil
-}
-
-// FailedStep returns the currently failed step and its diagnostics, if any.
-func (ec *BuiltinEvalContext) FailedStep() (*runbookruntime.Step, tfdiags.Diagnostics) {
-	ec.catchLock.RLock()
-	defer ec.catchLock.RUnlock()
-	return ec.failedStep, ec.failedStepDiags
-}
-
 // SetCatchOutput stores an output value produced by a catch block.
 func (ec *BuiltinEvalContext) SetCatchOutput(catchName, outputName string, value cty.Value) {
 	ec.catchLock.Lock()
@@ -1557,13 +1651,11 @@ func (ec *BuiltinEvalContext) CatchOutput(catchName, outputName string) (cty.Val
 	return val, ok
 }
 
-// buildFailedStepValue constructs the cty.ObjectVal for the failed_step variable.
-func (ec *BuiltinEvalContext) buildFailedStepValue() cty.Value {
-	ec.catchLock.RLock()
-	step := ec.failedStep
-	diags := ec.failedStepDiags
-	ec.catchLock.RUnlock()
-
+// buildFailedStepValue constructs the cty.ObjectVal for the failed_step
+// variable from the given failed step and its diagnostics. It is a pure
+// function of its arguments (no shared context state) so it is safe to call
+// concurrently from independent catch executions (hc-terraform-wdc.4).
+func buildFailedStepValue(step *runbookruntime.Step, diags tfdiags.Diagnostics) cty.Value {
 	if step == nil {
 		return cty.EmptyObjectVal
 	}

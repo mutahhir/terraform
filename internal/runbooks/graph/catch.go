@@ -17,6 +17,10 @@ import (
 // Catch blocks execute sequentially in declaration order.
 // A catch block failure does NOT prevent subsequent catches from running.
 // The failed_step object is always the original failed step (never changes).
+// The failed step is threaded through the catch evaluation chain per-call
+// (rather than stored on the shared context) so that concurrent step failures
+// running catch blocks cannot overwrite each other's failed_step
+// (hc-terraform-wdc.4).
 func executeCatchBlocks(ctx EvalContext, failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics) tfdiags.Diagnostics {
 	config := ctx.Config()
 	if config == nil || len(config.Catches) == 0 {
@@ -29,18 +33,10 @@ func executeCatchBlocks(ctx EvalContext, failedStep *runbookruntime.Step, failDi
 		return nil
 	}
 
-	// Set the failed step on the context so failed_step.* is evaluable
-	builtinCtx, ok := ctx.(*BuiltinEvalContext)
-	if !ok {
-		return nil
-	}
-	builtinCtx.SetFailedStep(failedStep, failDiags)
-	defer builtinCtx.ClearFailedStep()
-
 	var catchDiags tfdiags.Diagnostics
 
 	for _, catch := range catches {
-		shouldRun, precondDiags := evaluateCatchPreconditions(ctx, catch)
+		shouldRun, precondDiags := evaluateCatchPreconditions(ctx, catch, failedStep, failDiags)
 		catchDiags = catchDiags.Append(precondDiags)
 
 		if !shouldRun {
@@ -49,7 +45,7 @@ func executeCatchBlocks(ctx EvalContext, failedStep *runbookruntime.Step, failDi
 		}
 
 		emitCatchTriggered(ctx, catch.Name, failedStep.Name)
-		bodyDiags := executeCatchBody(ctx, catch)
+		bodyDiags := executeCatchBody(ctx, catch, failedStep, failDiags)
 		if bodyDiags.HasErrors() {
 			// Log catch failure as warning — do not re-enter catch loop
 			emitCatchFailed(ctx, catch.Name, bodyDiags.Err().Error())
@@ -64,14 +60,14 @@ func executeCatchBlocks(ctx EvalContext, failedStep *runbookruntime.Step, failDi
 
 // evaluateCatchPreconditions checks all preconditions for a catch block.
 // Returns true if all preconditions pass (or there are none).
-func evaluateCatchPreconditions(ctx EvalContext, catch *runbookconfigs.Catch) (bool, tfdiags.Diagnostics) {
+func evaluateCatchPreconditions(ctx EvalContext, catch *runbookconfigs.Catch, failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics) (bool, tfdiags.Diagnostics) {
 	if len(catch.Preconditions) == 0 {
 		return true, nil
 	}
 
 	var diags tfdiags.Diagnostics
 	for _, pre := range catch.Preconditions {
-		val, evalDiags := ctx.EvaluateExpr("", pre.Condition)
+		val, evalDiags := ctx.EvaluateCatchExpr(failedStep, failDiags, pre.Condition)
 		diags = diags.Append(evalDiags)
 		if evalDiags.HasErrors() {
 			return false, diags
@@ -85,12 +81,12 @@ func evaluateCatchPreconditions(ctx EvalContext, catch *runbookconfigs.Catch) (b
 
 // executeCatchBody runs the body of a catch block: data sources, locals,
 // actions + execute blocks, and outputs.
-func executeCatchBody(ctx EvalContext, catch *runbookconfigs.Catch) tfdiags.Diagnostics {
+func executeCatchBody(ctx EvalContext, catch *runbookconfigs.Catch, failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	// Evaluate locals
 	for _, local := range catch.Locals {
-		value, evalDiags := ctx.EvaluateExpr("", local.Expr)
+		value, evalDiags := ctx.EvaluateCatchExpr(failedStep, failDiags, local.Expr)
 		diags = diags.Append(evalDiags)
 		if evalDiags.HasErrors() {
 			return diags
@@ -105,7 +101,7 @@ func executeCatchBody(ctx EvalContext, catch *runbookconfigs.Catch) tfdiags.Diag
 	// Execute data sources via execute blocks (read_datasource operations)
 	// and invoke actions via execute blocks (invoke_action operations)
 	for _, execution := range catch.Executions {
-		execDiags := executeCatchExecution(ctx, catch, execution)
+		execDiags := executeCatchExecution(ctx, catch, execution, failedStep, failDiags)
 		diags = diags.Append(execDiags)
 		if execDiags.HasErrors() {
 			return diags
@@ -114,7 +110,7 @@ func executeCatchBody(ctx EvalContext, catch *runbookconfigs.Catch) tfdiags.Diag
 
 	// Evaluate and store outputs
 	for _, output := range catch.Outputs {
-		value, evalDiags := ctx.EvaluateExpr("", output.Expr)
+		value, evalDiags := ctx.EvaluateCatchExpr(failedStep, failDiags, output.Expr)
 		diags = diags.Append(evalDiags)
 		if evalDiags.HasErrors() {
 			continue
@@ -130,7 +126,7 @@ func executeCatchBody(ctx EvalContext, catch *runbookconfigs.Catch) tfdiags.Diag
 
 // executeCatchExecution runs the operations within a single execute block
 // of a catch. This handles invoke_action and read_datasource operations.
-func executeCatchExecution(ctx EvalContext, catch *runbookconfigs.Catch, execution *runbookconfigs.Execution) tfdiags.Diagnostics {
+func executeCatchExecution(ctx EvalContext, catch *runbookconfigs.Catch, execution *runbookconfigs.Execution, failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	operations := execution.Operations
@@ -146,9 +142,9 @@ func executeCatchExecution(ctx EvalContext, catch *runbookconfigs.Catch, executi
 	for _, operation := range operations {
 		switch operation.Type {
 		case runbookconfigs.ExecuteOpInvokeAction:
-			diags = diags.Append(executeCatchInvokeAction(ctx, catch, operation))
+			diags = diags.Append(executeCatchInvokeAction(ctx, catch, operation, failedStep, failDiags))
 		case runbookconfigs.ExecuteOpReadDataSource:
-			diags = diags.Append(executeCatchReadDataSource(ctx, catch, operation))
+			diags = diags.Append(executeCatchReadDataSource(ctx, catch, operation, failedStep, failDiags))
 		case runbookconfigs.ExecuteOpWait:
 			// Wait operations in catch blocks: could be supported but
 			// we'll defer for now — catches should be fast
@@ -167,7 +163,7 @@ func executeCatchExecution(ctx EvalContext, catch *runbookconfigs.Catch, executi
 }
 
 // executeCatchInvokeAction invokes an action within a catch block.
-func executeCatchInvokeAction(ctx EvalContext, catch *runbookconfigs.Catch, operation runbookconfigs.ExecuteOperation) tfdiags.Diagnostics {
+func executeCatchInvokeAction(ctx EvalContext, catch *runbookconfigs.Catch, operation runbookconfigs.ExecuteOperation, failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	traversal := operation.Traversal
@@ -199,7 +195,7 @@ func executeCatchInvokeAction(ctx EvalContext, catch *runbookconfigs.Catch, oper
 	actionSchema := schemaResp.Actions[action.Type]
 	configVal := cty.EmptyObjectVal
 	if action.Config != nil && actionSchema.ConfigSchema != nil {
-		value, _, valueDiags := ctx.EvaluateBlock(action.Config, actionSchema.ConfigSchema)
+		value, _, valueDiags := ctx.EvaluateCatchBlock(failedStep, failDiags, action.Config, actionSchema.ConfigSchema)
 		diags = diags.Append(valueDiags)
 		if valueDiags.HasErrors() {
 			return diags
@@ -221,12 +217,25 @@ func executeCatchInvokeAction(ctx EvalContext, catch *runbookconfigs.Catch, oper
 		return diags
 	}
 
-	// Invoke
+	// Invoke. Surface the action's events and completion diagnostics the same way
+	// the normal step path does (node_step_inner.go executeInvokeAction), so a
+	// catch action's output is visible. Print-style actions deliver their entire
+	// observable effect through these events, so draining them made the catch-all
+	// appear to "not trigger" its action (hc-terraform-81y).
+	subject := ref.actionType + "." + ref.actionName
+	catchStepName := "catch." + catch.Name
+	ctx.EmitActionEvent(ActionExecEvent{StepName: catchStepName, Subject: subject, ActionType: action.Type, Status: "running"})
 	resp := provider.InvokeAction(providers.InvokeActionRequest{ActionType: action.Type, PlannedActionData: configVal})
 	diags = diags.Append(resp.Diagnostics)
 	if resp.Events != nil {
-		for range resp.Events {
-			// Drain events — UI integration will come in atw.5
+		for event := range resp.Events {
+			switch e := event.(type) {
+			case providers.InvokeActionEvent_Progress:
+				ctx.EmitActionEvent(ActionExecEvent{StepName: catchStepName, Subject: subject, ActionType: action.Type, Status: "progress", Message: e.Message})
+			case providers.InvokeActionEvent_Completed:
+				ctx.EmitActionEvent(ActionExecEvent{StepName: catchStepName, Subject: subject, ActionType: action.Type, Status: "completed"})
+				diags = diags.Append(e.Diagnostics)
+			}
 		}
 	}
 
@@ -234,7 +243,7 @@ func executeCatchInvokeAction(ctx EvalContext, catch *runbookconfigs.Catch, oper
 }
 
 // executeCatchReadDataSource reads a data source within a catch block.
-func executeCatchReadDataSource(ctx EvalContext, catch *runbookconfigs.Catch, operation runbookconfigs.ExecuteOperation) tfdiags.Diagnostics {
+func executeCatchReadDataSource(ctx EvalContext, catch *runbookconfigs.Catch, operation runbookconfigs.ExecuteOperation, failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	traversal := operation.Traversal
@@ -268,7 +277,7 @@ func executeCatchReadDataSource(ctx EvalContext, catch *runbookconfigs.Catch, op
 		providerMetaVal = schemaResp.ProviderMeta.Body.EmptyValue()
 	}
 	if resourceSchema.Body != nil {
-		value, _, valueDiags := ctx.EvaluateBlock(dataConfig.Config, resourceSchema.Body)
+		value, _, valueDiags := ctx.EvaluateCatchBlock(failedStep, failDiags, dataConfig.Config, resourceSchema.Body)
 		diags = diags.Append(valueDiags)
 		if valueDiags.HasErrors() {
 			return diags

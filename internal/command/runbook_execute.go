@@ -86,6 +86,12 @@ func (c *RunbookExecuteCommand) Run(rawArgs []string) int {
 	}
 	view.Prepare(plan)
 	planView.Plan(plan)
+	// Both producers (BuildPlan / ImportSavedPlan) spin up live provider plugin
+	// instances at plan/import time. Ensure they are torn down on every exit
+	// path, including the confirmation-decline and other early returns below
+	// where ExecutePlan (which also closes the pool) never runs. Plan.Close is
+	// idempotent, so the later ExecutePlan teardown is a harmless no-op.
+	defer plan.Close()
 
 	if args.PlanPath == "" && !args.AutoApprove && args.ViewType != arguments.ViewJSON {
 		c.Ui.Output("Runbook actions will be executed. Only 'yes' will be accepted to continue.\n")

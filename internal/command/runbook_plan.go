@@ -58,6 +58,10 @@ func (c *RunbookPlanCommand) Run(rawArgs []string) int {
 		view.Diagnostics(diags)
 		return 1
 	}
+	// `runbook plan` is terminal: it never executes the plan, so close the
+	// pooled provider instances it created once we're done with the plan to
+	// avoid leaking plugin subprocesses (hc-terraform-wdc.2).
+	defer plan.Close()
 
 	view.Plan(plan)
 	if args.OutPath != "" {

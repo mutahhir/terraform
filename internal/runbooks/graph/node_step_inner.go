@@ -1004,62 +1004,31 @@ func runbookProvider(ctx EvalContext, providerType terraformaddrs.Provider) (pro
 	})
 }
 
-// runbookProviderFresh creates a new provider instance from the factory,
-// configures it, and returns it. This is used during execution to ensure
-// parallel steps get independent provider instances and don't serialize
-// on a shared gRPC connection.
+// runbookProviderFresh returns the shared, pooled provider instance for the
+// given provider type, configured exactly once. Historically this minted a
+// brand-new provider instance per step at execute time; that approach spawned
+// one plugin subprocess per step and never closed it (hc-terraform-wdc.2). It
+// now funnels through the shared pool (runbookProviderForConfig), so all
+// parallel steps share a single configured instance whose lifecycle the pool
+// owns and closes at walk teardown.
 func runbookProviderFresh(ctx EvalContext, providerType terraformaddrs.Provider) (providers.Interface, tfdiags.Diagnostics) {
-	provider, err := ctx.NewProviderInstance(providerType)
-	if err != nil {
-		// Fall back to shared instance if no factory available
-		return runbookProvider(ctx, providerType)
-	}
-
-	configVal, diags := runbookProviderConfigValue(ctx, providerType)
-	if diags.HasErrors() {
-		return nil, diags
-	}
-	resp := provider.ConfigureProvider(providers.ConfigureProviderRequest{Config: configVal})
-	if resp.Diagnostics.HasErrors() {
-		return nil, resp.Diagnostics
-	}
-	return provider, nil
+	return runbookProvider(ctx, providerType)
 }
 
+// runbookProviderForConfig returns the shared provider instance for the given
+// configuration address, ensuring it is ConfigureProvider'd exactly once. The
+// configuration value is evaluated and applied inside a once-guard owned by the
+// eval context, so concurrent graph-walk goroutines never re-Configure the same
+// shared instance (fixing hc-terraform-wdc.3).
 func runbookProviderForConfig(ctx EvalContext, addr terraformaddrs.AbsProviderConfig) (providers.Interface, tfdiags.Diagnostics) {
-	provider, ok := ctx.ProviderForConfig(addr)
-	if !ok {
-		// Fallback: try without alias in case the provider was registered by type only
-		provider, ok = ctx.Provider(addr.Provider)
-	}
-	if !ok {
-		return nil, missingProviderDiagnostic(addr.Provider, nil)
-	}
-
-	configVal, diags := runbookProviderConfigValueForAddr(ctx, addr)
-	if diags.HasErrors() {
-		return nil, diags
-	}
-	resp := provider.ConfigureProvider(providers.ConfigureProviderRequest{Config: configVal})
-	if resp.Diagnostics.HasErrors() {
-		return nil, resp.Diagnostics
-	}
-	return provider, nil
-}
-
-func runbookProviderConfigValue(ctx EvalContext, providerType terraformaddrs.Provider) (cty.Value, tfdiags.Diagnostics) {
-	config := ctx.Config()
-	providerConfig := providerConfigForType(config, providerType)
-	if providerConfig == nil {
-		return cty.EmptyObjectVal, nil
-	}
-
-	addr := terraformaddrs.AbsProviderConfig{
-		Module:   terraformaddrs.RootModule,
-		Provider: providerType,
-		Alias:    providerConfig.Alias,
-	}
-	return runbookProviderConfigValueForAddr(ctx, addr)
+	return ctx.ConfiguredProviderForConfig(addr, func(provider providers.Interface) tfdiags.Diagnostics {
+		configVal, diags := runbookProviderConfigValueForAddr(ctx, addr)
+		if diags.HasErrors() {
+			return diags
+		}
+		resp := provider.ConfigureProvider(providers.ConfigureProviderRequest{Config: configVal})
+		return diags.Append(resp.Diagnostics)
+	})
 }
 
 func runbookProviderConfigValueForAddr(ctx EvalContext, addr terraformaddrs.AbsProviderConfig) (cty.Value, tfdiags.Diagnostics) {

@@ -51,6 +51,10 @@ step "discover" {
     value = data.test_data.selected.id
   }
 }
+
+output "discovered_id" {
+  value = step.discover.result
+}
 `)
 	t.Chdir(runbookDir)
 
@@ -85,8 +89,12 @@ step "discover" {
 	if !strings.Contains(stdout, `target = "srv-123"`) {
 		t.Fatalf("expected action attributes in output, got: %s", stdout)
 	}
-	if !strings.Contains(stdout, `result = "srv-123"`) {
-		t.Fatalf("expected outputs in output, got: %s", stdout)
+	if !strings.Contains(stdout, `discovered_id = "srv-123"`) {
+		t.Fatalf("expected top-level output in output, got: %s", stdout)
+	}
+	// Step-level outputs are internal wiring and must NOT appear in plan output.
+	if strings.Contains(stdout, `result = "srv-123"`) {
+		t.Fatalf("step-level output should not be displayed in plan, got: %s", stdout)
 	}
 	if !strings.Contains(stdout, `Plan: 1 step (1 will execute)`) {
 		t.Fatalf("expected runbook plan summary in output, got: %s", stdout)

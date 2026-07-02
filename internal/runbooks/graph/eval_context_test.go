@@ -482,7 +482,8 @@ func TestEvalContextFailedStepVariable(t *testing.T) {
 	}
 	ctx := NewEvalContext(EvalContextOpts{Config: config})
 
-	// Set a failed step
+	// The failed step is threaded per-evaluation rather than stored on the
+	// context (hc-terraform-wdc.4).
 	failedStep := &runbookruntime.Step{
 		Name:  "deploy",
 		Index: 2,
@@ -492,10 +493,9 @@ func TestEvalContextFailedStepVariable(t *testing.T) {
 		"Deployment timed out",
 		"The deployment exceeded the 300s timeout.",
 	))
-	ctx.SetFailedStep(failedStep, failDiags)
 
 	// Evaluate failed_step.name
-	value, diags := ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.name`))
+	value, diags := ctx.EvaluateCatchExpr(failedStep, failDiags, mustParseExpression(t, `failed_step.name`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
@@ -504,7 +504,7 @@ func TestEvalContextFailedStepVariable(t *testing.T) {
 	}
 
 	// Evaluate failed_step.error_summary
-	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.error_summary`))
+	value, diags = ctx.EvaluateCatchExpr(failedStep, failDiags, mustParseExpression(t, `failed_step.error_summary`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
@@ -513,7 +513,7 @@ func TestEvalContextFailedStepVariable(t *testing.T) {
 	}
 
 	// Evaluate failed_step.error_message
-	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.error_message`))
+	value, diags = ctx.EvaluateCatchExpr(failedStep, failDiags, mustParseExpression(t, `failed_step.error_message`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
@@ -522,7 +522,7 @@ func TestEvalContextFailedStepVariable(t *testing.T) {
 	}
 
 	// Evaluate failed_step.index
-	value, diags = ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.index`))
+	value, diags = ctx.EvaluateCatchExpr(failedStep, failDiags, mustParseExpression(t, `failed_step.index`))
 	if diags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", diags.Err())
 	}
@@ -530,11 +530,10 @@ func TestEvalContextFailedStepVariable(t *testing.T) {
 		t.Fatalf("expected index 2, got %#v", value)
 	}
 
-	// Clear and verify it's gone
-	ctx.ClearFailedStep()
+	// A normal (non-catch) evaluation injects no failed_step namespace.
 	_, diags = ctx.EvaluateExpr("", mustParseExpression(t, `failed_step.name`))
 	if !diags.HasErrors() {
-		t.Fatal("expected error evaluating failed_step after clear")
+		t.Fatal("expected error evaluating failed_step outside a catch block")
 	}
 }
 

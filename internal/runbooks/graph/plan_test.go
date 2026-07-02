@@ -327,7 +327,7 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerOutputToProducerOutp
 	// Verify cross-step output resolution via EvalContext
 	ctx := NewEvalContext(EvalContextOpts{Config: cfg})
 	ctx.SetVariable("input", &terraform.InputValue{Value: cty.StringVal("ok")})
-	walkDiags := walkGraph(graph, ctx, walkOperationPlan)
+	walkDiags := walkGraph(graph, ctx, walkOperationPlan, defaultRunbookParallelism)
 	if walkDiags.HasErrors() {
 		t.Fatalf("unexpected walk diagnostics: %s", walkDiags.Err())
 	}
@@ -369,7 +369,7 @@ func TestCrossStepOutputReferenceTransformerConnectsConsumerLocalToProducerOutpu
 
 	// Verify cross-step local resolution via EvalContext
 	ctx := NewEvalContext(EvalContextOpts{Config: cfg})
-	walkDiags := walkGraph(graph, ctx, walkOperationPlan)
+	walkDiags := walkGraph(graph, ctx, walkOperationPlan, defaultRunbookParallelism)
 	if walkDiags.HasErrors() {
 		t.Fatalf("unexpected walk diagnostics: %s", walkDiags.Err())
 	}
@@ -578,12 +578,12 @@ func TestExecuteWaitBlindModeSetsState(t *testing.T) {
 	}
 
 	ctx := NewEvalContext(EvalContextOpts{Config: cfg})
-	planDiags := walkGraph(graph, ctx, walkOperationPlan)
+	planDiags := walkGraph(graph, ctx, walkOperationPlan, defaultRunbookParallelism)
 	if planDiags.HasErrors() {
 		t.Fatalf("plan walk failed: %s", planDiags.Err())
 	}
 
-	execDiags := walkGraph(graph, ctx, walkOperationExecute)
+	execDiags := walkGraph(graph, ctx, walkOperationExecute, defaultRunbookParallelism)
 	if execDiags.HasErrors() {
 		t.Fatalf("execute walk failed: %s", execDiags.Err())
 	}

@@ -61,6 +61,16 @@ type EvalContext interface {
 	// EvaluateBlockForInstance decodes an HCL body for a specific step instance.
 	EvaluateBlockForInstance(stepName string, instanceKey terraformaddrs.InstanceKey, repetitionData *terraform.InstanceKeyEvalData, body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics)
 
+	// EvaluateCatchExpr evaluates an expression within a catch block's scope,
+	// threading the failed step and its diagnostics in per-evaluation so that
+	// concurrent catch executions each observe their own failed_step rather than
+	// a shared global slot (hc-terraform-wdc.4).
+	EvaluateCatchExpr(failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics, expr hcl.Expression) (cty.Value, tfdiags.Diagnostics)
+
+	// EvaluateCatchBlock decodes an HCL body within a catch block's scope,
+	// threading the failed step in per-evaluation (see EvaluateCatchExpr).
+	EvaluateCatchBlock(failedStep *runbookruntime.Step, failDiags tfdiags.Diagnostics, body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics)
+
 	// --- Provider Access ---
 
 	// Provider returns a provider instance by type (default/no-alias configuration).
@@ -69,9 +79,13 @@ type EvalContext interface {
 	// ProviderForConfig returns a provider instance by full configuration address (with alias).
 	ProviderForConfig(addr terraformaddrs.AbsProviderConfig) (providers.Interface, bool)
 
-	// NewProviderInstance creates a fresh provider instance from the factory.
-	// Returns an error if no factory is registered for the given provider type.
-	NewProviderInstance(providerType terraformaddrs.Provider) (providers.Interface, error)
+	// ConfiguredProviderForConfig returns the shared, pooled provider instance for
+	// the given configuration address, invoking the supplied configure function at
+	// most once across all goroutines. Subsequent callers receive the already
+	// configured instance and the diagnostics from the single configure call. This
+	// guarantees a shared instance is ConfigureProvider'd exactly once even under
+	// the parallel graph walk.
+	ConfiguredProviderForConfig(addr terraformaddrs.AbsProviderConfig, configure func(providers.Interface) tfdiags.Diagnostics) (providers.Interface, tfdiags.Diagnostics)
 
 	// --- Step State ---
 

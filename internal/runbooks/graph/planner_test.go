@@ -112,7 +112,7 @@ func TestBuildPlanPreservesRuntimeOutputsWhenProvided(t *testing.T) {
 	evalCtx := NewEvalContext(EvalContextOpts{Config: &runbookconfigs.RunbookConfig{
 		Steps: map[string]*runbookconfigs.Step{"discover": stepConfig},
 	}})
-	runtimeDiags := walkGraph(graph, evalCtx, walkOperationPlan)
+	runtimeDiags := walkGraph(graph, evalCtx, walkOperationPlan, defaultRunbookParallelism)
 	if runtimeDiags.HasErrors() {
 		t.Fatalf("unexpected diagnostics: %s", runtimeDiags.Err())
 	}
@@ -153,6 +153,46 @@ func TestPlanOutputValuesReturnsTopLevelRunbookOutputs(t *testing.T) {
 	}
 	if got := outputs["summary"].AsString(); got != "srv-123" {
 		t.Fatalf("expected summary output, got %q", got)
+	}
+}
+
+func TestPlanOutputValuesRetainsErroredOutputAsUnknown(t *testing.T) {
+	// An output whose expression errors at eval time must still appear in the
+	// returned map (as unknown) rather than vanishing, so `runbook execute`
+	// renders the output name alongside the surfaced error (hc-terraform-uns).
+	plan, diags := BuildPlan(&runbookconfigs.RunbookConfig{
+		Steps: map[string]*runbookconfigs.Step{
+			"producer": {
+				Name:    "producer",
+				Outputs: []*configs.Output{{Name: "result", Expr: mustParseExpression(t, `"ok"`)}},
+			},
+		},
+		Outputs: map[string]*configs.Output{
+			"good": {Name: "good", Expr: mustParseExpression(t, `step.producer.result`)},
+			"bad":  {Name: "bad", Expr: mustParseExpression(t, `tonumber("not-a-number")`)},
+		},
+	}, nil)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected plan diagnostics: %s", diags.Err())
+	}
+	if executeDiags := ExecutePlan(plan, nil); executeDiags.HasErrors() {
+		t.Fatalf("unexpected execute diagnostics: %s", executeDiags.Err())
+	}
+
+	outputs, outputDiags := plan.OutputValues()
+	if !outputDiags.HasErrors() {
+		t.Fatal("expected an error diagnostic for the failing output")
+	}
+	// Both keys must be present — the errored one is no longer dropped.
+	if _, ok := outputs["good"]; !ok {
+		t.Fatal("expected 'good' output to be present")
+	}
+	bad, ok := outputs["bad"]
+	if !ok {
+		t.Fatal("expected errored 'bad' output to be retained, not dropped (hc-terraform-uns)")
+	}
+	if bad.IsKnown() {
+		t.Fatalf("expected errored output to be unknown placeholder, got %#v", bad)
 	}
 }
 

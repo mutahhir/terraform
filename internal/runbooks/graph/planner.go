@@ -22,6 +22,10 @@ type PlannerOpts struct {
 	WorkspaceState *states.State
 	UI             UI
 	Hooks          []Hook
+	// Parallelism bounds how many step/operation callbacks run concurrently
+	// during the graph walk. Values <= 0 fall back to defaultRunbookParallelism
+	// (10), matching Terraform core's default -parallelism.
+	Parallelism int
 }
 
 type ExecuteOpts = PlannerOpts
@@ -68,6 +72,10 @@ func (p *Plan) OutputValues() (map[string]cty.Value, tfdiags.Diagnostics) {
 		value, outputDiags := p.evalCtx.EvaluateExpr("", output.Expr)
 		diags = diags.Append(outputDiags)
 		if outputDiags.HasErrors() {
+			// Keep the output visible with an unknown placeholder rather than
+			// dropping the key entirely; the error is surfaced via diags
+			// (hc-terraform-uns).
+			ret[name] = cty.UnknownVal(cty.DynamicPseudoType)
 			continue
 		}
 		ret[name] = value
@@ -141,7 +149,7 @@ func BuildPlan(config *runbookconfigs.RunbookConfig, opts *PlannerOpts) (*Plan, 
 		return nil, diags
 	}
 
-	diags = diags.Append(walkGraph(graph, evalCtx, walkOperationPlan))
+	diags = diags.Append(walkGraph(graph, evalCtx, walkOperationPlan, optsParallelism(opts)))
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -194,12 +202,38 @@ func ExecutePlan(plan *Plan, opts *ExecuteOpts) tfdiags.Diagnostics {
 		}
 	}
 	evalCtx.stepsLock.Unlock()
-	diags := walkGraph(plan.Graph, evalCtx, walkOperationExecute)
-	if diags.HasErrors() {
+	walkDiags := walkGraph(plan.Graph, evalCtx, walkOperationExecute, optsParallelism(opts))
+	diags := walkDiags
+	// Close pooled provider instances once execution finishes so plugin
+	// subprocesses are reaped rather than leaked (hc-terraform-wdc.2). This is
+	// the terminal point for the shared instances created/configured during the
+	// plan and execute walks.
+	diags = diags.Append(evalCtx.closeProviders())
+	if walkDiags.HasErrors() {
 		return diags
 	}
 	plan.Steps = evalCtx.StepsInOrder()
 	return diags
+}
+
+// Close releases provider instances held by the plan's evaluation context. It
+// is safe to call multiple times and is intended for plan-only flows
+// (e.g. `runbook plan`) that build a plan but never execute it; the execute
+// path closes providers itself at the end of ExecutePlan.
+func (p *Plan) Close() tfdiags.Diagnostics {
+	if p == nil || p.evalCtx == nil {
+		return nil
+	}
+	return p.evalCtx.closeProviders()
+}
+
+// optsParallelism returns the configured walk parallelism, defaulting to
+// defaultRunbookParallelism when unset or non-positive.
+func optsParallelism(opts *PlannerOpts) int {
+	if opts == nil || opts.Parallelism <= 0 {
+		return defaultRunbookParallelism
+	}
+	return opts.Parallelism
 }
 
 func optsUI(opts *PlannerOpts) UI {

@@ -2,6 +2,7 @@ package views
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/terraform/internal/repl"
@@ -60,19 +61,10 @@ func renderRunbookPlanHumanV2(view *View, plan *runbookgraph.Plan, viewPlan runb
 		view.streams.Println(planLeftPad + planSeparator(sym))
 	}
 
-	// Outputs section
-	outputSteps := stepsWithOutputs(viewPlan.Steps)
-	if len(outputSteps) > 0 {
-		view.streams.Println("")
-		view.streams.Println(c.Color(planLeftPad + sym.ColorHeader + "Outputs:" + sym.ColorReset))
-		for _, step := range outputSteps {
-			for _, name := range sortedOutputNames(step.outputValues) {
-				view.streams.Println(fmt.Sprintf("%s    %s = %s", planLeftPad, name, step.outputValues[name]))
-			}
-		}
-		view.streams.Println("")
-		view.streams.Println(planLeftPad + planSeparator(sym))
-	}
+	// Outputs section — top-level runbook outputs are the only real, user-facing
+	// results. Step-level `output` blocks are internal wiring (one step feeding
+	// another) and are intentionally not displayed here.
+	renderTopLevelOutputs(view, plan, sym)
 
 	// Error handlers section (catch blocks)
 	if plan != nil && plan.Config != nil && len(plan.Config.Catches) > 0 {
@@ -253,14 +245,9 @@ func renderStepDetailsV2(step runbookPlanStep, info []runbookPlanInfo, sym runbo
 		}
 	}
 
-	// Outputs
-	if len(step.outputValues) != 0 {
-		b.WriteString("\n")
-		b.WriteString(c.Color(fmt.Sprintf("%s    %s%s outputs:%s\n", pad, sym.ColorOutput, sym.Output, sym.ColorReset)))
-		for _, name := range sortedOutputNames(step.outputValues) {
-			b.WriteString(c.Color(fmt.Sprintf("%s         %s%s = %s%s\n", pad, sym.ColorDim, name, step.outputValues[name], sym.ColorReset)))
-		}
-	}
+	// Step-level outputs are internal wiring, not user-facing results, so they
+	// are intentionally omitted from the plan detail (top-level outputs are the
+	// only real outputs; rendered once in the Outputs section).
 
 	b.WriteString("\n")
 	return b.String()
@@ -465,14 +452,36 @@ func sortStringSlice(s []string) {
 	}
 }
 
-func stepsWithOutputs(steps []runbookPlanStep) []runbookPlanStep {
-	var ret []runbookPlanStep
-	for _, step := range steps {
-		if len(step.outputValues) > 0 {
-			ret = append(ret, step)
-		}
+// renderTopLevelOutputs prints the runbook's top-level outputs — the only
+// user-facing results. Names are always shown (sorted); values that aren't yet
+// resolvable at plan time render as "(known after apply)". Step-level output
+// blocks are internal wiring and are deliberately not shown.
+func renderTopLevelOutputs(view *View, plan *runbookgraph.Plan, sym runbookPlanSymbols) {
+	if plan == nil || plan.Config == nil || len(plan.Config.Outputs) == 0 {
+		return
 	}
-	return ret
+	c := view.colorize
+
+	names := make([]string, 0, len(plan.Config.Outputs))
+	for name := range plan.Config.Outputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	values, diags := plan.OutputValues()
+	view.Diagnostics(diags)
+
+	view.streams.Println("")
+	view.streams.Println(c.Color(planLeftPad + sym.ColorHeader + "Outputs:" + sym.ColorReset))
+	for _, name := range names {
+		val, ok := values[name]
+		if !ok {
+			val = cty.UnknownVal(cty.DynamicPseudoType)
+		}
+		view.streams.Println(fmt.Sprintf("%s    %s = %s", planLeftPad, name, formatAttributeValue(val, 0)))
+	}
+	view.streams.Println("")
+	view.streams.Println(planLeftPad + planSeparator(sym))
 }
 
 func countOperations(viewPlan runbookPlan, infoByStep map[string][]runbookPlanInfo) (reads, lists, executes int) {
